@@ -67,6 +67,26 @@ class MetricStabilizerTest(unittest.TestCase):
         self.assertEqual(raw_dip.fps, 20.0)
         self.assertGreater(display.fps, 42.0)
 
+    def test_long_sampling_gap_moves_display_closer_to_current_value(self) -> None:
+        stable_interval = MetricStabilizer()
+        slow_interval = MetricStabilizer()
+        stable_interval.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        slow_interval.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+
+        stable_display = stable_interval.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, fps=30.0))
+        slow_display = slow_interval.smooth_sample(
+            PerfSample(
+                timestamp=5.0,
+                elapsed=5.0,
+                fps=30.0,
+                note="采样耗时 3.20s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+            )
+        )
+
+        self.assertGreater(stable_display.fps, 43.0)
+        self.assertLess(slow_display.fps, stable_display.fps - 3.0)
+        self.assertGreater(slow_display.fps, 30.0)
+
     def test_dampens_single_sample_cpu_spike_for_display(self) -> None:
         stabilizer = MetricStabilizer()
         stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, cpu_percent=18.0))

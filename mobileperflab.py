@@ -1004,9 +1004,10 @@ class MetricStabilizer:
 
     def _smooth(self, metric: str, value: float, timestamp: float, note: str = "") -> float:
         previous = self._values.get(metric)
+        previous_timestamp = self._timestamps.get(metric, timestamp)
+        elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
         historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
-            previous_timestamp = self._timestamps.get(metric, timestamp)
             hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(metric, note)
             if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
                 held = previous * self._quality_hold_decay(metric, note)
@@ -1020,29 +1021,50 @@ class MetricStabilizer:
             return value
         alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
         alpha *= self._quality_alpha_factor(metric, note)
+        alpha = self._time_adjusted_alpha(alpha, elapsed_delta)
         blended = previous + alpha * (value - previous)
         delta_ratio = abs(value - previous) / max(abs(previous), 1.0)
         if delta_ratio > 0.35:
             keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
             blended = blended * (1.0 - keep) + value * keep
-        blended = self._limit_display_step(metric, previous, blended, note)
+        blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta)
         blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility)
         self._values[metric] = blended
         self._timestamps[metric] = timestamp
         self._remember_raw_volatility(metric, value)
         return max(blended, 0.0)
 
-    def _limit_display_step(self, metric: str, previous: float, value: float, note: str = "") -> float:
+    @staticmethod
+    def _elapsed_delta(timestamp: float, previous_timestamp: float) -> float:
+        if timestamp <= previous_timestamp:
+            return 1.0
+        return min(max(timestamp - previous_timestamp, 0.25), 6.0)
+
+    @staticmethod
+    def _time_adjusted_alpha(alpha: float, elapsed_delta: float) -> float:
+        alpha = min(max(alpha, 0.0), 1.0)
+        if alpha <= 0 or alpha >= 1.0:
+            return alpha
+        return 1.0 - (1.0 - alpha) ** max(elapsed_delta, 0.25)
+
+    def _limit_display_step(self, metric: str, previous: float, value: float, note: str = "", elapsed_delta: float = 1.0) -> float:
         limits = self.MAX_STEP_RATIO_BY_METRIC.get(metric)
         if not limits or previous <= 0 or value <= 0:
             return value
         down_ratio, up_ratio = limits
         factor = self._quality_step_factor(metric, note)
+        factor *= self._time_step_factor(elapsed_delta)
         down_ratio *= factor
         up_ratio *= factor
         lower = previous * max(0.0, 1.0 - down_ratio)
         upper = previous * (1.0 + up_ratio)
         return min(max(value, lower), upper)
+
+    @staticmethod
+    def _time_step_factor(elapsed_delta: float) -> float:
+        if elapsed_delta <= 1.0:
+            return 1.0
+        return min(1.0 + (elapsed_delta - 1.0) * 0.45, 2.4)
 
     def _dampen_when_volatile(self, metric: str, previous: float, value: float, volatility: float) -> float:
         sensitivity = self.VOLATILITY_SENSITIVITY_BY_METRIC.get(metric, 0.0)
