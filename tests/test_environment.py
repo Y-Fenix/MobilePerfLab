@@ -373,6 +373,85 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
         self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
 
+    def test_handle_sample_surfaces_live_session_usability_when_core_metrics_missing(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeMetricHealth:
+            def analyze(self, _sample: PerfSample) -> dict[str, object]:
+                return {}
+
+        class FakeCard:
+            def set_value(self, _value: float, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = FakeMetricHealth()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                memory_mb=512.0,
+                temperature_c=36.8,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+            ),
+        )
+
+        self.assertIn("会话可用性：只可参考部分指标", app.performance_conclusion_var.value)
+        self.assertIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
+
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
     def test_marks_all_android_collection_links_as_ok_when_sources_are_healthy(self) -> None:

@@ -2050,6 +2050,24 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     return " · ".join(parts) if parts else "指标等待数据"
 
 
+def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
+    required = {
+        "fps": "FPS",
+        "cpu_percent": "CPU",
+        "rx_kbps": "网络",
+        "tx_kbps": "网络",
+    }
+    missing: list[str] = []
+    for metric, label in required.items():
+        status = health.get(metric)
+        state = status.state if status is not None else "waiting"
+        if state in {"missing", "waiting"} and label not in missing:
+            missing.append(label)
+    if missing:
+        return f"会话可用性：只可参考部分指标 · {'/'.join(missing)}不可用"
+    return "会话可用性：可分析性能"
+
+
 class LiveQualityTracker:
     def __init__(self, expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> None:
         self.sample_count = 0
@@ -8639,7 +8657,14 @@ class App:
             live_recent_window_summary(recent_window, self.live_quality.low_end_display_mode(), self.live_quality.expected_interval)
         )
         self.performance_conclusion_var.set(
-            performance_conclusion_text(performance_conclusion_status(recent_window), self.live_quality.expected_interval)
+            " · ".join(
+                part
+                for part in (
+                    performance_conclusion_text(performance_conclusion_status(recent_window), self.live_quality.expected_interval),
+                    live_session_usability_text(self.live_quality.last_metric_health),
+                )
+                if part
+            )
         )
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()

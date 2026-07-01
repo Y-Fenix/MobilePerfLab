@@ -8,6 +8,7 @@ from mobileperflab import (
     SAMPLING_INTERVAL_OPTIONS,
     build_recent_window_health,
     live_recent_window_summary,
+    live_session_usability_text,
     live_sampling_action_label,
     performance_conclusion_status,
     performance_conclusion_text,
@@ -306,6 +307,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
 
         self.assertIn("可用：内存/温度", text)
         self.assertIn("不可用：FPS/CPU/Power/下行/上行", text)
+
+    def test_live_session_usability_blocks_when_core_metrics_are_missing(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=5.0,
+                memory_mb=512.0,
+                temperature_c=36.8,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数；Android 电量/温度/功耗 采集失败：power denied",
+            )
+        )
+
+        text = live_session_usability_text(health)
+
+        self.assertIn("只可参考部分指标", text)
+        self.assertIn("FPS/CPU/网络不可用", text)
 
     def test_summarizes_session_confidence_foreground_and_slow_sampling(self) -> None:
         tracker = LiveQualityTracker()
