@@ -4539,6 +4539,18 @@ class IOSAdapter(BaseAdapter):
     def _normalize_process_name(value: str) -> str:
         return re.sub(r"[^a-z0-9]", "", value.lower())
 
+    @staticmethod
+    def _process_display_name(record: dict[str, object]) -> str:
+        return str(
+            record.get("name")
+            or record.get("processName")
+            or record.get("realAppName")
+            or record.get("displayName")
+            or record.get("localizedName")
+            or record.get("executable")
+            or ""
+        )
+
     def start_session(self, device: DeviceInfo, app_id: str) -> None:
         key = (device.serial, app_id)
         self._pid_cache.pop(key, None)
@@ -4713,7 +4725,7 @@ class IOSAdapter(BaseAdapter):
             return None
 
         for record in records:
-            name = str(record.get("name") or record.get("processName") or record.get("executable") or "")
+            name = self._process_display_name(record)
             if self._normalize_process_name(name) in normalized_names:
                 return record
             if self._executable_path_matches_names(record.get("executable"), normalized_names):
@@ -5390,7 +5402,7 @@ class IOSAdapter(BaseAdapter):
             for item in items:
                 if self._item_pid(item) != pid:
                     continue
-                name = str(item.get("name") or item.get("processName") or item.get("executable") or "")
+                name = self._process_display_name(item)
                 normalized = self._normalize_process_name(name)
                 if not normalized_names or not normalized or normalized in normalized_names:
                     return item
@@ -5398,7 +5410,7 @@ class IOSAdapter(BaseAdapter):
             return None
 
         for item in items:
-            name = str(item.get("name") or item.get("processName") or item.get("executable") or "")
+            name = self._process_display_name(item)
             if self._normalize_process_name(name) in normalized_names:
                 return item
             if self._executable_path_matches_names(item.get("executable"), normalized_names):
