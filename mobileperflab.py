@@ -1031,6 +1031,131 @@ def build_quality_recommendations(
     return recommendations
 
 
+def metric_availability_state_label(state: str) -> str:
+    return {
+        "available": "可用",
+        "partial": "部分可用",
+        "fallback": "兜底",
+        "unavailable": "不可用",
+        "waiting": "待验证",
+    }.get(state, state)
+
+
+def build_metric_availability(
+    samples: list[PerfSample],
+    quality: dict[str, object],
+    collection_diagnostics: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
+    metric_defs = [
+        ("fps", "FPS", "fps_source"),
+        ("cpu_percent", "CPU", "pid_source"),
+        ("memory_mb", "内存", "pid_source"),
+        ("temperature_c", "温度", ""),
+        ("power_w", "功耗", ""),
+        ("rx_kbps", "下行网络", "network_source"),
+        ("tx_kbps", "上行网络", "network_source"),
+    ]
+    total = len(samples)
+    diagnostics = collection_diagnostics if isinstance(collection_diagnostics, dict) else {}
+    network_source = str(diagnostics.get("network_source", "") or quality.get("network_source", ""))
+    rows: list[dict[str, object]] = []
+
+    def note_count(*tokens: str) -> int:
+        return sum(1 for sample in samples if any(token in sample.note for token in tokens))
+
+    def positive_count(metric: str) -> int:
+        return sum(1 for sample in samples if float(getattr(sample, metric, 0.0) or 0.0) > 0.0)
+
+    for key, label, diagnostic_key in metric_defs:
+        positives = positive_count(key)
+        coverage = round(positives / total * 100.0, 1) if total else 0.0
+        source = ""
+        detail = ""
+        state = "waiting"
+        if diagnostic_key:
+            source_value = str(diagnostics.get(diagnostic_key, ""))
+            source = f"{diagnostic_key}={source_value}" if source_value else ""
+        if key == "fps":
+            issue = note_count("FPS 未采集", "FPS 当前无帧增量", "无帧增量")
+            if source == "fps_source=missing" or (issue and positives == 0):
+                state = "unavailable"
+                detail = "FPS 来源不可用或无帧增量。"
+            elif positives:
+                state = "partial" if issue else "available"
+                detail = f"{positives}/{total} 个样本有 FPS。"
+            else:
+                detail = "尚无 FPS 有效值。"
+        elif key == "cpu_percent":
+            issue = note_count("CPU 当前无进程增量", "CPU 采集失败")
+            if source == "pid_source=missing" or (issue and positives == 0):
+                state = "unavailable"
+                detail = "CPU 依赖目标 PID，当前 PID 或 /proc 链路不可用。"
+            elif positives:
+                state = "partial" if issue else "available"
+                detail = f"{positives}/{total} 个样本有 CPU。"
+            else:
+                detail = "尚无 CPU 有效值。"
+        elif key == "memory_mb":
+            issue = note_count("内存 采集失败")
+            if positives:
+                state = "partial" if issue else "available"
+                detail = f"{positives}/{total} 个样本有内存。"
+            elif issue:
+                state = "unavailable"
+                detail = "内存采集通道失败。"
+            else:
+                detail = "尚无内存有效值。"
+        elif key == "temperature_c":
+            issue = note_count("电量/温度/功耗 采集失败")
+            if positives:
+                state = "available"
+                detail = f"{positives}/{total} 个样本有温度。"
+            elif issue:
+                state = "unavailable"
+                detail = "温度/电池通道不可用。"
+            else:
+                detail = "尚无温度有效值。"
+        elif key == "power_w":
+            issue = note_count("电量/温度/功耗 采集失败")
+            if positives:
+                state = "partial" if issue else "available"
+                detail = f"{positives}/{total} 个样本有功耗估算。"
+            elif issue:
+                state = "unavailable"
+                detail = "功耗依赖电池电流/电压，当前不可用。"
+            else:
+                detail = "尚无功耗有效值。"
+        elif key in {"rx_kbps", "tx_kbps"}:
+            issue = note_count("网络未匹配", "无法按应用统计", "网络采集失败", "网络采集不可用")
+            fallback_count = int(quality.get("network_fallback_samples", 0) or 0)
+            if "missing" in source or "per-UID 不可用" in network_source or (issue and positives == 0 and fallback_count == 0):
+                state = "unavailable"
+                detail = "上下行网络未命中 per-UID，且没有可用兜底计数。"
+            elif fallback_count:
+                state = "fallback"
+                detail = "上下行来自设备级兜底，不是目标 App 独占流量。"
+                source = source or "network_source=device"
+            elif positives:
+                state = "available"
+                detail = f"{positives}/{total} 个样本有网络速率。"
+            else:
+                detail = "目标 App 当前无网络流量，需结合业务动作复测。"
+        rows.append(
+            {
+                "key": key,
+                "name": label,
+                "state": state,
+                "state_label": metric_availability_state_label(state),
+                "valid_samples": positives,
+                "sample_count": total,
+                "coverage_percent": coverage,
+                "source": source,
+                "detail": detail,
+            }
+        )
+    return rows
+
+
 def build_display_samples(samples: list[PerfSample]) -> list[dict[str, object]]:
     stabilizer = MetricStabilizer()
     display_rows: list[dict[str, object]] = []
@@ -4693,6 +4818,7 @@ class SessionRecorder:
             }
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
+            quality["metric_availability"] = build_metric_availability([], quality)
             return quality
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
@@ -4782,6 +4908,7 @@ class SessionRecorder:
         }
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
+        quality["metric_availability"] = build_metric_availability(self.samples, quality)
         return quality
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
@@ -4823,6 +4950,11 @@ class SessionRecorder:
         quality["recommendations"] = build_quality_recommendations(
             quality["validation_checklist"],
             weak_network,
+            collection_diagnostics_payload,
+        )
+        quality["metric_availability"] = build_metric_availability(
+            self.samples,
+            quality,
             collection_diagnostics_payload,
         )
         display_samples = build_display_samples(self.samples)
@@ -4931,6 +5063,17 @@ class SessionRecorder:
             for issue in quality.get("issues", [])
             if isinstance(issue, dict)
         ) or "<tr><td colspan='4'>未发现明显采集异常或兜底说明</td></tr>"
+        availability_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('name', '')))}</td>"
+            f"<td>{html.escape(str(item.get('state_label', metric_availability_state_label(str(item.get('state', ''))))))}</td>"
+            f"<td>{html.escape(str(item.get('valid_samples', 0)))} / {html.escape(str(item.get('sample_count', 0)))}（{html.escape(str(item.get('coverage_percent', 0.0)))}%）</td>"
+            f"<td>{html.escape(str(item.get('source', '')))}</td>"
+            f"<td>{html.escape(str(item.get('detail', '')))}</td>"
+            "</tr>"
+            for item in quality.get("metric_availability", [])
+            if isinstance(item, dict)
+        ) or "<tr><td colspan='5'>暂无指标可用性结论</td></tr>"
         validation_rows = "".join(
             "<tr>"
             f"<td>{html.escape(str(item.get('name', '')))}</td>"
@@ -5174,6 +5317,8 @@ class SessionRecorder:
     <table style="margin-top: 16px;">__SUMMARY_ROWS__</table>
     <h2>采集质量</h2>
     <div class="quality-grid">__QUALITY_CARDS__</div>
+    <h2>指标可用性</h2>
+    <table class="issue-table"><tr><th>指标</th><th>状态</th><th>有效样本</th><th>来源</th><th>说明</th></tr>__AVAILABILITY_ROWS__</table>
     <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
     <h2>实机验证清单</h2>
     <table class="issue-table"><tr><th>链路</th><th>状态</th><th>结论</th></tr>__VALIDATION_ROWS__</table>
@@ -5667,6 +5812,7 @@ class SessionRecorder:
             .replace("__KPI_CARDS__", kpi_cards)
             .replace("__SUMMARY_ROWS__", rows)
             .replace("__QUALITY_CARDS__", quality_cards)
+            .replace("__AVAILABILITY_ROWS__", availability_rows)
             .replace("__ISSUE_ROWS__", issue_rows)
             .replace("__VALIDATION_ROWS__", validation_rows)
             .replace("__RECOMMENDATION_ROWS__", recommendation_rows)
