@@ -1079,6 +1079,23 @@ def build_recent_window_health(
     }
 
 
+def live_sampling_action_label(recent_window: dict[str, object], low_end_display_mode: bool = False) -> str:
+    state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
+    trend_source = str(recent_window.get("trend_source", "waiting") if isinstance(recent_window, dict) else "waiting")
+    slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    fallback_samples = int(recent_window.get("fallback_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    if state == "waiting":
+        return "建议：等待更多样本"
+    if trend_source == "collection" or slow_samples or issue_samples or low_end_display_mode:
+        return "建议：采样间隔调到 1.5s/2s，优先看稳定展示"
+    if fallback_samples:
+        return "建议：先确认网络来源"
+    if trend_source == "performance":
+        return "建议：按真实性能波动分析"
+    return "建议：继续采集"
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -1725,11 +1742,13 @@ class LiveQualityTracker:
         metric_summary = live_metric_availability_summary(self.last_metric_health)
         display_label = "低端机保守" if self.low_end_display_mode() else "标准稳定"
         recent_window = self.recent_window_health()
+        sampling_action = live_sampling_action_label(recent_window, self.low_end_display_mode())
         return (
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
             f"{recent_window.get('label', '窗口：等待数据')} · "
             f"{recent_window.get('trend_label', '趋势：等待数据')} · "
+            f"{sampling_action} · "
             f"展示：{display_label} · "
             f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
