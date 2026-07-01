@@ -71,6 +71,21 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["quality_gate"]["label"], "不可信")
         self.assertIn('"qualityTag": "issue"', html_text)
 
+    def test_quality_summary_uses_cadence_slow_intervals_even_without_notes(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        for elapsed in [1.0, 2.7, 4.5, 5.5, 7.3]:
+            recorder.append(PerfSample(timestamp=elapsed, elapsed=elapsed, fps=55.0, cpu_percent=20.0, memory_mb=512.0))
+
+        quality = recorder.quality_summary()
+        gate = quality["quality_gate"]
+        cadence = quality["cadence"]
+
+        self.assertEqual(cadence["state"], "bad")
+        self.assertEqual(cadence["slow_intervals"], 3)
+        self.assertEqual(gate["label"], "不可信")
+        self.assertIn("慢采样", gate["detail"])
+
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

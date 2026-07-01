@@ -4339,7 +4339,10 @@ class SessionRecorder:
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
         issue_count = sum(1 for sample in self.samples if sample_quality_tag(sample) == "issue")
         foreground_count = sum(1 for sample in self.samples if "目标应用不在前台" in sample.note)
-        slow_count = sum(1 for sample in self.samples if "采样耗时" in sample.note)
+        cadence = sampling_cadence_summary(self.samples)
+        cadence_slow_count = int(cadence.get("slow_intervals", 0) or 0)
+        noted_slow_count = sum(1 for sample in self.samples if "采样耗时" in sample.note)
+        slow_count = max(noted_slow_count, cadence_slow_count)
         missing_tokens = {
             "FPS 未采集": ("FPS 未采集", "帧率数据缺失，通常与 Surface 识别、页面静止或系统输出受限有关。"),
             "FPS 当前无帧增量": ("FPS 无帧增量", "采样窗口内没有新增帧，低端机或静止页面可能更常见。"),
@@ -4377,6 +4380,15 @@ class SessionRecorder:
                     "detail": "上下行来自设备总流量，不是目标 App 独占流量。",
                 }
             )
+        if cadence.get("state") in {"bad", "caution"} and cadence_slow_count:
+            issues.append(
+                {
+                    "label": "采样节拍失稳" if cadence.get("state") == "bad" else "采样节拍波动",
+                    "count": cadence_slow_count,
+                    "percent": round(cadence_slow_count / max(int(cadence.get("interval_count", total) or total), 1) * 100.0, 1),
+                    "detail": str(cadence.get("detail", "样本间隔不稳定，低端机或 adb 慢命令可能影响曲线可信度。")),
+                }
+            )
         network_source = "目标 App per-UID"
         if fallback_samples and len(fallback_samples) == total:
             network_source = "设备级网络兜底"
@@ -4403,7 +4415,7 @@ class SessionRecorder:
                     slow_count,
                 )
             ),
-            "cadence": sampling_cadence_summary(self.samples),
+            "cadence": cadence,
             "network_source": network_source,
             "network_fallback_samples": len(fallback_samples),
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
