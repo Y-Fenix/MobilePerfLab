@@ -4623,6 +4623,16 @@ class IOSAdapter(BaseAdapter):
             name = str(record.get("name") or record.get("processName") or record.get("executable") or "")
             if self._normalize_process_name(name) in normalized_names:
                 return record
+            executable = str(record.get("executable") or "")
+            executable_path = self._file_url_path(executable)
+            executable_parts = [
+                self._normalize_process_name(part[:-4] if part.endswith(".app") else part)
+                for part in executable_path.split("/")
+                if part
+            ]
+            executable_leaf = self._normalize_process_name(Path(executable_path).name)
+            if executable_leaf in normalized_names or any(part in normalized_names for part in executable_parts):
+                return record
         return None
 
     def _start_network_session(self, device: DeviceInfo, force: bool = False) -> None:
