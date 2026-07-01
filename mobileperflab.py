@@ -223,6 +223,16 @@ class WeakNetworkDiagnostics:
 
 
 @dataclass(frozen=True)
+class EnvironmentCheck:
+    key: str
+    name: str
+    state: str
+    level: str
+    detail: str
+    action: str
+
+
+@dataclass(frozen=True)
 class ProxyTrafficSnapshot:
     up_bytes: int = 0
     down_bytes: int = 0
@@ -259,6 +269,67 @@ def verify_android_proxy_state(expected_proxy: str, actual_proxy: str) -> ProxyV
         actual=actual,
         status_text=f"Android 代理写入后未确认：期望 {expected or '未设置'}，当前{actual_label}",
         log_text=f"Android 代理写入后读回不一致：期望 {expected or '未设置'}，实际 {actual_label}",
+    )
+
+
+def build_environment_checks(paths: dict[str, str | None]) -> list[EnvironmentCheck]:
+    python_path = paths.get("python") or sys.executable or ""
+    adb_path = paths.get("adb") or ""
+    pymobiledevice_path = paths.get("pymobiledevice3") or ""
+    xcrun_path = paths.get("xcrun") or ""
+    return [
+        EnvironmentCheck(
+            key="python",
+            name="Python 3",
+            state="ok" if python_path else "missing",
+            level="required",
+            detail=f"运行环境：{python_path}" if python_path else "缺少 Python 3，应用无法启动。",
+            action="安装 Python 3，或使用项目自带 .venv。",
+        ),
+        EnvironmentCheck(
+            key="adb",
+            name="Android ADB",
+            state="ok" if adb_path else "missing",
+            level="required",
+            detail=f"Android 真机采集可用：{adb_path}" if adb_path else "Android 真机采集需要 adb。",
+            action="安装 Android SDK Platform-Tools，并把 adb 加入 PATH 或放到项目 platform-tools/adb。",
+        ),
+        EnvironmentCheck(
+            key="pymobiledevice3",
+            name="iOS pymobiledevice3",
+            state="ok" if pymobiledevice_path else "missing",
+            level="optional",
+            detail=f"iOS 采集工具可用：{pymobiledevice_path}" if pymobiledevice_path else "iOS CPU/内存/FPS/网络采集需要 pymobiledevice3 和 tunneld。",
+            action="双击“安装iOS依赖.command”，再按需启动“启动iOS采集服务.command”。",
+        ),
+        EnvironmentCheck(
+            key="xcrun",
+            name="Xcode xcrun",
+            state="ok" if xcrun_path else "missing",
+            level="optional",
+            detail=f"Xcode 设备信息工具可用：{xcrun_path}" if xcrun_path else "iOS 设备状态补充识别建议安装 Xcode Command Line Tools。",
+            action="安装 Xcode 或 Command Line Tools。",
+        ),
+    ]
+
+
+def current_environment_paths() -> dict[str, str | None]:
+    return {
+        "python": sys.executable,
+        "adb": resolve_adb_path(),
+        "pymobiledevice3": resolve_pymobiledevice3_path(),
+        "xcrun": shutil.which("xcrun"),
+    }
+
+
+def format_environment_checks(checks: list[EnvironmentCheck]) -> str:
+    state_labels = {
+        "ok": "可用",
+        "missing": "缺失",
+    }
+    return "\n".join(
+        f"{check.name}：{state_labels.get(check.state, check.state)}"
+        for check in checks
     )
 
 
@@ -4392,6 +4463,7 @@ class App:
         self._configure_styles()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._log_environment_checks()
         self.refresh_devices()
         self.root.after(250, self._drain_events)
         self.root.after(1000, self._tick)
@@ -5036,7 +5108,14 @@ class App:
         self.capability_var.set("演示模式只用于预览界面与报告流程，不代表真实设备数据。")
 
     def _capability_text(self) -> str:
-        return "\n".join([self.android.capability_note(), self.ios.capability_note()])
+        return format_environment_checks(build_environment_checks(current_environment_paths()))
+
+    def _log_environment_checks(self) -> None:
+        for check in build_environment_checks(current_environment_paths()):
+            if check.state == "ok":
+                self.recorder.log(f"环境自检：{check.name} 可用。{check.detail}")
+            else:
+                self.recorder.log(f"环境自检：{check.name} 缺失。{check.action}")
 
     def apply_weak_profile(self) -> None:
         profile = WEAK_NETWORK_PROFILES.get(self.weak_profile_var.get())

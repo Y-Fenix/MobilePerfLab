@@ -53,6 +53,8 @@ dist/MobilePerfLab.app
 
 设备需开启 USB 调试并授权当前电脑。
 
+启动后侧栏会显示环境自检结果，日志里会列出 Python、Android ADB、iOS `pymobiledevice3`、Xcode `xcrun` 的可用状态。缺少 `adb` 时仍可使用演示模式和 iOS 基础能力，但 Android 真机采集不可用。
+
 ## 弱网工具
 
 主工作区包含“性能采集”和“弱网工具”两个页签。“弱网工具”提供常用网络预设，也可以手动配置端口、延迟、抖动、丢包率、下行和上行限速。
