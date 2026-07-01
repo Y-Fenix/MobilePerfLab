@@ -676,6 +676,27 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertAlmostEqual(tx2, 2.0)
         self.assertNotIn("设备级网络兜底", adapter._network_note_cache[("serial-1", "com.example.game")])
 
+    def test_network_kbps_reads_pm_list_packages_uid_with_spaced_separator(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "",
+                "pidof com.example.game": "101",
+                "cat /proc/101/status": "",
+                "pm list packages -U com.example.game": "package:com.example.game uid: 10234\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "\n---NEXT---\n".join(["1024", "5120"]),
+                "cat /proc/uid_stat/10234/tcp_snd": "\n---NEXT---\n".join(["512", "2560"]),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0]):
+            rx1, tx1 = adapter._network_kbps(self.device, "com.example.game", 10.0)
+            rx2, tx2 = adapter._network_kbps(self.device, "com.example.game", 11.0)
+
+        self.assertEqual((rx1, tx1), (0.0, 0.0))
+        self.assertAlmostEqual(rx2, 4.0)
+        self.assertAlmostEqual(tx2, 2.0)
+        self.assertEqual(adapter._uid_cache[(self.device.serial, "com.example.game")], 10234)
+
     def test_network_kbps_uses_cmd_package_uid_when_pm_list_packages_is_missing(self) -> None:
         adapter = FakeAndroidAdapter(
             {

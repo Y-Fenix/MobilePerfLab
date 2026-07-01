@@ -3489,7 +3489,7 @@ class AndroidAdapter(BaseAdapter):
             package_match = re.search(r"package:([^\s]+)", line)
             if package_match and package_match.group(1) != app_id:
                 continue
-            uid_match = re.search(r"\buid[:=](\d+)", line)
+            uid_match = re.search(r"\buid\s*[:=]\s*(\d+)", line)
             if uid_match:
                 return int(uid_match.group(1))
         return None
