@@ -1262,6 +1262,10 @@ def build_quality_recommendations(
             "title": "补齐采样数据",
             "action": "先选择设备和目标 App，启动采集后保持业务场景运行至少 30 秒，再导出报告。",
         },
+        "sampling_action": {
+            "title": "优化低端机采样",
+            "action": "把采样间隔调到 1.5s 或 2s，优先看稳定展示曲线；复测后再用原始曲线确认真实性能波动。",
+        },
     }
     severity_rank = {"fail": 0, "warning": 1, "waiting": 2}
     recommendations: list[dict[str, str]] = []
@@ -5254,6 +5258,7 @@ class SessionRecorder:
                 )
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
+            self._add_sampling_action_recommendation(quality)
             quality["metric_availability"] = build_metric_availability([], quality)
             return quality
         noted_samples = [sample for sample in self.samples if sample.note]
@@ -5351,8 +5356,30 @@ class SessionRecorder:
             )
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
+        self._add_sampling_action_recommendation(quality)
         quality["metric_availability"] = build_metric_availability(self.samples, quality)
         return quality
+
+    @staticmethod
+    def _add_sampling_action_recommendation(quality: dict[str, object]) -> None:
+        recent_window = quality.get("recent_window", {})
+        recommendations = quality.get("recommendations", [])
+        if not isinstance(recent_window, dict) or not isinstance(recommendations, list):
+            return
+        action = str(recent_window.get("action", ""))
+        if "采样间隔调到 1.5s/2s" not in action:
+            return
+        if any(isinstance(item, dict) and item.get("key") == "sampling_action" for item in recommendations):
+            return
+        recommendations.append(
+            {
+                "key": "sampling_action",
+                "severity": "warning",
+                "title": "优化低端机采样",
+                "reason": action,
+                "action": "把采样间隔调到 1.5s 或 2s，优先看稳定展示曲线；复测后再用原始曲线确认真实性能波动。",
+            }
+        )
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -5400,6 +5427,7 @@ class SessionRecorder:
             weak_network_payload,
             collection_diagnostics_payload,
         )
+        self._add_sampling_action_recommendation(quality)
         quality["metric_availability"] = build_metric_availability(
             self.samples,
             quality,
@@ -5408,6 +5436,10 @@ class SessionRecorder:
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
         display_strategy = quality["display_strategy"]
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
+        recent_window = quality.get("recent_window", {})
+        if isinstance(recent_window, dict):
+            recent_window["action"] = live_sampling_action_label(recent_window, conservative_display)
+        self._add_sampling_action_recommendation(quality)
         display_samples = build_display_samples(self.samples, conservative=conservative_display)
         payload = {
             "app": APP_NAME,

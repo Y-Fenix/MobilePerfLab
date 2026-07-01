@@ -699,13 +699,16 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("fps", recommendations)
         self.assertIn("network", recommendations)
         self.assertIn("cadence", recommendations)
+        self.assertIn("sampling_action", recommendations)
         self.assertIn("weak_network", recommendations)
         self.assertIn("保持目标页面可见", recommendations["fps"]["action"])
         self.assertIn("设备级兜底不能当目标 App 独占流量", recommendations["network"]["action"])
         self.assertIn("采样间隔", recommendations["cadence"]["action"])
+        self.assertIn("优先看稳定展示", recommendations["sampling_action"]["action"])
         self.assertIn("系统 HTTP/HTTPS 代理", recommendations["weak_network"]["action"])
         self.assertIn("修复建议", html_text)
         self.assertIn("保持目标页面可见", html_text)
+        self.assertIn("优化低端机采样", html_text)
         self.assertIn("系统 HTTP/HTTPS 代理", html_text)
 
 
