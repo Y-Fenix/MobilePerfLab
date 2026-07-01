@@ -848,6 +848,64 @@ def sampling_cadence_summary(samples: list[PerfSample], expected_interval: float
     }
 
 
+def build_recent_window_health(
+    samples: list[PerfSample],
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+    window_size: int = 8,
+) -> dict[str, object]:
+    size = max(int(window_size or 0), 1)
+    window = list(samples[-size:])
+    total = len(window)
+    if total <= 0:
+        return {
+            "state": "waiting",
+            "label": "窗口：等待数据",
+            "sample_count": 0,
+            "issue_samples": 0,
+            "fallback_samples": 0,
+            "slow_samples": 0,
+            "detail": "最近窗口暂无样本。",
+        }
+    expected = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
+    slow_threshold = max(expected * 1.25, expected + 0.25)
+    slow_samples = 0
+    for previous, current in zip(window, window[1:]):
+        if float(current.elapsed) - float(previous.elapsed) > slow_threshold:
+            slow_samples += 1
+    slow_samples += sum(1 for sample in window if "采样耗时" in sample.note)
+    slow_samples = min(slow_samples, total)
+    issue_samples = sum(1 for sample in window if sample_quality_tag(sample) == "issue")
+    fallback_samples = sum(1 for sample in window if "设备级网络兜底" in sample.note)
+    issue_ratio = issue_samples / total
+    fallback_ratio = fallback_samples / total
+    slow_ratio = slow_samples / total
+    if issue_ratio >= 0.5 or slow_ratio >= 0.5:
+        state = "bad"
+        label = "窗口：节拍失稳" if slow_ratio >= issue_ratio else "窗口：采集异常"
+    elif fallback_ratio >= 0.5:
+        state = "caution"
+        label = "窗口：网络兜底"
+    elif issue_samples or slow_samples or fallback_samples:
+        state = "caution"
+        label = "窗口：谨慎参考"
+    else:
+        state = "good"
+        label = "窗口：稳定"
+    detail = (
+        f"最近 {total} 个样本：慢采样 {slow_samples}，"
+        f"异常 {issue_samples}，网络兜底 {fallback_samples}。"
+    )
+    return {
+        "state": state,
+        "label": label,
+        "sample_count": total,
+        "issue_samples": issue_samples,
+        "fallback_samples": fallback_samples,
+        "slow_samples": slow_samples,
+        "detail": detail,
+    }
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -1446,6 +1504,7 @@ class LiveQualityTracker:
         self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
         self.network_source = "等待数据"
         self._last_elapsed: float | None = None
+        self._recent_samples: list[PerfSample] = []
         self._health_analyzer = MetricHealthAnalyzer()
         self.last_metric_health: dict[str, MetricHealth] = {}
 
@@ -1458,6 +1517,7 @@ class LiveQualityTracker:
         self.slow_sample_count = 0
         self.network_source = "等待数据"
         self._last_elapsed = None
+        self._recent_samples.clear()
         self.last_metric_health = {}
 
     def set_expected_interval(self, expected_interval: float) -> None:
@@ -1466,6 +1526,8 @@ class LiveQualityTracker:
     def update(self, sample: PerfSample) -> str:
         self.sample_count += 1
         note = sample.note or ""
+        self._recent_samples.append(sample)
+        self._recent_samples = self._recent_samples[-8:]
         self.last_metric_health = self._health_analyzer.analyze(sample)
         has_issue = self._has_quality_issue(note)
         if has_issue:
@@ -1489,9 +1551,11 @@ class LiveQualityTracker:
         gate = self.quality_gate()
         metric_summary = live_metric_availability_summary(self.last_metric_health)
         display_label = "低端机保守" if self.low_end_display_mode() else "标准稳定"
+        recent_window = self.recent_window_health()
         return (
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
+            f"{recent_window.get('label', '窗口：等待数据')} · "
             f"展示：{display_label} · "
             f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
@@ -1501,6 +1565,9 @@ class LiveQualityTracker:
 
     def low_end_display_mode(self) -> bool:
         return self.slow_sample_count >= 2 or self.issue_count >= 2
+
+    def recent_window_health(self) -> dict[str, object]:
+        return build_recent_window_health(self._recent_samples, expected_interval=self.expected_interval)
 
     def quality_gate(self) -> SessionQualityGate:
         return session_quality_gate(
@@ -4985,6 +5052,7 @@ class SessionRecorder:
                 "network_fallback_percent": 0.0,
                 "issues": [],
             }
+            quality["recent_window"] = build_recent_window_health([], expected_interval=self.expected_interval)
             quality["display_strategy"] = build_display_strategy([], quality)
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
@@ -5076,6 +5144,7 @@ class SessionRecorder:
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
             "issues": issues,
         }
+        quality["recent_window"] = build_recent_window_health(self.samples, expected_interval=self.expected_interval)
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
@@ -5214,6 +5283,9 @@ class SessionRecorder:
         cadence = quality.get("cadence", {})
         if not isinstance(cadence, dict):
             cadence = {}
+        recent_window = quality.get("recent_window", {})
+        if not isinstance(recent_window, dict):
+            recent_window = {}
         display_strategy = quality.get("display_strategy", {})
         if not isinstance(display_strategy, dict):
             display_strategy = {}
@@ -5233,6 +5305,11 @@ class SessionRecorder:
                     "采样节拍",
                     f"{cadence.get('label', '无数据')} / 慢间隔 {cadence.get('slow_percent', 0.0)}%",
                     str(cadence.get("detail", "暂无采样节拍结论。")),
+                ),
+                (
+                    "最近窗口",
+                    str(recent_window.get("label", "窗口：等待数据")),
+                    str(recent_window.get("detail", "最近窗口暂无样本。")),
                 ),
                 (
                     "展示策略",

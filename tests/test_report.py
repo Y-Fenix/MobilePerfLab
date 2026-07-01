@@ -368,6 +368,24 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(quality["cadence"]["slow_intervals"], 0)
         self.assertEqual(quality["display_strategy"]["mode"], "standard")
 
+    def test_quality_summary_includes_recent_window_health(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0, cpu_percent=20.0, memory_mb=521.0))
+        recorder.append(PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, cpu_percent=86.0, memory_mb=522.0, note="Android FPS 当前无帧增量"))
+        recorder.append(PerfSample(timestamp=6.5, elapsed=6.5, fps=54.0, cpu_percent=22.0, memory_mb=523.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["quality"]["recent_window"]["state"], "bad")
+        self.assertEqual(payload["quality"]["recent_window"]["label"], "窗口：节拍失稳")
+        self.assertIn("最近窗口", html_text)
+        self.assertIn("窗口：节拍失稳", html_text)
+
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

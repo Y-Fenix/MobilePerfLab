@@ -5,6 +5,7 @@ from mobileperflab import (
     MetricHealthAnalyzer,
     MetricStabilizer,
     PerfSample,
+    build_recent_window_health,
     session_quality_gate,
     sampling_cadence_summary,
     append_sampling_latency_note,
@@ -330,6 +331,30 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("高可信", text)
         self.assertIn("慢采样 0", text)
         self.assertFalse(tracker.low_end_display_mode())
+
+    def test_recent_window_health_identifies_slow_low_end_window(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0),
+            PerfSample(timestamp=2.8, elapsed=2.8, fps=54.0),
+            PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, note="Android FPS 当前无帧增量"),
+            PerfSample(timestamp=6.5, elapsed=6.5, fps=52.0),
+        ]
+
+        health = build_recent_window_health(samples, expected_interval=1.0, window_size=4)
+
+        self.assertEqual(health["state"], "bad")
+        self.assertEqual(health["label"], "窗口：节拍失稳")
+        self.assertEqual(health["slow_samples"], 3)
+        self.assertIn("最近 4 个样本", health["detail"])
+
+    def test_status_text_includes_recent_window_health(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
+        tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=54.0))
+        text = tracker.update(PerfSample(timestamp=6.5, elapsed=6.5, fps=53.0))
+
+        self.assertIn("窗口：节拍失稳", text)
 
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)
