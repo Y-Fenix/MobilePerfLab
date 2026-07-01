@@ -261,6 +261,48 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertEqual(adapter._process_pids(self.device, "com.example.game"), [101, 202])
 
+    def test_process_pids_reads_proc_cmdline_when_ps_process_name_is_truncated(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "pidof com.example.game": "",
+                "pgrep -f com.example.game": "",
+                "ps -A -o PID=,NAME=": "",
+                "ps -A": "\n".join(
+                    [
+                        "USER           PID  PPID     VSZ    RSS WCHAN            ADDR S NAME",
+                        "u0_a234        101   888 123456  34567 0                   0 S game",
+                        "u0_a999        303   888 123456  34567 0                   0 S other",
+                    ]
+                ),
+                "cat /proc/101/cmdline": "com.example.game\x00",
+                "cat /proc/303/cmdline": "com.example.other\x00",
+            }
+        )
+
+        self.assertEqual(adapter._process_pids(self.device, "com.example.game"), [101])
+        self.assertIn("cat /proc/101/cmdline", adapter.calls)
+
+    def test_collection_diagnostics_reports_proc_cmdline_pid_source(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "",
+                "pgrep -f com.example.game": "",
+                "ps -A -o PID=,NAME=": "",
+                "ps -A": "u0_a234        101   888 123456  34567 0 0 S game\n",
+                "cat /proc/101/cmdline": "com.example.game\x00",
+                "cat /proc/101/status": "Uid:\t10234\t10234\t10234\t10234\n",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 120\nJanky frames: 6\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "4096",
+                "cat /proc/uid_stat/10234/tcp_snd": "2048",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=100.0)
+
+        self.assertEqual(diagnostics.pid_source, "/proc cmdline")
+        self.assertEqual(diagnostics.pids, [101])
+
     def test_netstats_parser_reads_named_uid_bucket_values(self) -> None:
         output = """
         Bucket{uid=10234 tag=0x0 set=DEFAULT metered=false defaultNetwork=true}:

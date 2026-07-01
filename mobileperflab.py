@@ -2860,7 +2860,6 @@ class AndroidAdapter(BaseAdapter):
             ("pidof", f"pidof {shlex.quote(app_id)}", self._parse_pid_list, 2.0),
             ("pgrep", f"pgrep -f {shlex.quote(app_id)}", self._parse_pid_list, 2.0),
             ("ps -A -o PID=,NAME=", "ps -A -o PID=,NAME=", lambda output: self._parse_ps_pids(output, app_id), 3.0),
-            ("ps -A", "ps -A", lambda output: self._parse_ps_table_pids(output, app_id), 4.0),
         ]
         for source, command, parser, timeout in commands:
             output = self._shell(device.serial, command, timeout=timeout)
@@ -2869,6 +2868,17 @@ class AndroidAdapter(BaseAdapter):
                 self._pid_list_cache[key] = pids
                 self._pid_cache[key] = pids[0]
                 return pids, source
+        ps_output = self._shell(device.serial, "ps -A", timeout=4.0)
+        pids = self._parse_ps_table_pids(ps_output, app_id)
+        if pids:
+            self._pid_list_cache[key] = pids
+            self._pid_cache[key] = pids[0]
+            return pids, "ps -A"
+        pids = self._process_pids_from_proc_cmdline(device, ps_output, app_id)
+        if pids:
+            self._pid_list_cache[key] = pids
+            self._pid_cache[key] = pids[0]
+            return pids, "/proc cmdline"
         return [], "missing"
 
     def _diagnose_app_uid(self, device: DeviceInfo, app_id: str, pids: list[int] | None = None) -> tuple[int | None, str]:
@@ -3122,6 +3132,8 @@ class AndroidAdapter(BaseAdapter):
         if not pids:
             output = self._shell(device.serial, "ps -A", timeout=4.0)
             pids = self._parse_ps_table_pids(output, app_id)
+            if not pids:
+                pids = self._process_pids_from_proc_cmdline(device, output, app_id)
         if pids:
             self._pid_list_cache[key] = pids
             self._pid_cache[key] = pids[0]
@@ -3173,6 +3185,38 @@ class AndroidAdapter(BaseAdapter):
                 continue
             process_name = parts[-1]
             if process_name != app_id and not process_name.startswith(f"{app_id}:"):
+                continue
+            pid = int(parts[1])
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            pids.append(pid)
+        return pids
+
+    def _process_pids_from_proc_cmdline(self, device: DeviceInfo, ps_output: str, app_id: str) -> list[int]:
+        pids: list[int] = []
+        seen: set[int] = set()
+        for pid in self._ps_table_pid_candidates(ps_output):
+            if pid in seen:
+                continue
+            cmdline = self._shell(device.serial, f"cat /proc/{pid}/cmdline", timeout=2.0)
+            process_name = cmdline.replace("\x00", " ").strip().split(" ", 1)[0]
+            if not self._process_name_matches_app(process_name, app_id):
+                continue
+            seen.add(pid)
+            pids.append(pid)
+        return pids
+
+    @staticmethod
+    def _ps_table_pid_candidates(output: str) -> list[int]:
+        pids: list[int] = []
+        seen: set[int] = set()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("USER", "PID")):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or not parts[1].isdigit():
                 continue
             pid = int(parts[1])
             if pid <= 0 or pid in seen:
