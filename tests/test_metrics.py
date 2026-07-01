@@ -219,7 +219,7 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
 
         self.assertEqual(health["cpu_percent"].state, "missing")
         self.assertEqual(health["battery_percent"].state, "missing")
-        self.assertEqual(health["temperature_c"].state, "missing")
+        self.assertEqual(health["temperature_c"].state, "ok")
         self.assertEqual(health["power_w"].state, "missing")
 
 
@@ -250,6 +250,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("网络来源：设备级兜底", text)
         self.assertIn("异常样本 1/2", text)
         self.assertIn("兜底 1/2", text)
+
+    def test_summarizes_live_metric_availability_for_low_end_devices(self) -> None:
+        tracker = LiveQualityTracker()
+
+        text = tracker.update(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=5.0,
+                memory_mb=512.0,
+                temperature_c=36.8,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数；Android 电量/温度/功耗 采集失败：power denied",
+            )
+        )
+
+        self.assertIn("可用：内存/温度", text)
+        self.assertIn("不可用：FPS/CPU/Power/下行/上行", text)
 
     def test_summarizes_session_confidence_foreground_and_slow_sampling(self) -> None:
         tracker = LiveQualityTracker()

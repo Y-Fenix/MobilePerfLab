@@ -1288,8 +1288,10 @@ class MetricHealthAnalyzer:
             return "CPU 当前无进程增量" in note or "CPU 采集失败" in note or "CPU/内存" in note and "需要启动" in note
         if metric == "memory_mb":
             return "未匹配到目标 PID" in note or "未找到运行中的" in note or "内存 采集失败" in note
-        if metric in ("battery_percent", "temperature_c"):
+        if metric == "battery_percent":
             return "电量/温度/功耗 采集失败" in note
+        if metric == "temperature_c":
+            return "温度 采集失败" in note
         if metric in ("rx_kbps", "tx_kbps"):
             if "设备级网络兜底" in note:
                 return False
@@ -1318,6 +1320,41 @@ class MetricHealthAnalyzer:
         return note or "暂未采集到数据"
 
 
+def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
+    labels = {
+        "fps": "FPS",
+        "cpu_percent": "CPU",
+        "memory_mb": "内存",
+        "temperature_c": "温度",
+        "power_w": "Power",
+        "rx_kbps": "下行",
+        "tx_kbps": "上行",
+    }
+    primary_metrics = ("fps", "cpu_percent", "memory_mb", "temperature_c", "power_w", "rx_kbps", "tx_kbps")
+    available: list[str] = []
+    unavailable: list[str] = []
+    pending: list[str] = []
+    for metric in primary_metrics:
+        status = health.get(metric)
+        if status is None:
+            continue
+        label = labels.get(metric, metric)
+        if status.state == "ok":
+            available.append(label)
+        elif status.state == "missing":
+            unavailable.append(label)
+        else:
+            pending.append(label)
+    parts: list[str] = []
+    if available:
+        parts.append(f"可用：{'/'.join(available)}")
+    if unavailable:
+        parts.append(f"不可用：{'/'.join(unavailable)}")
+    if pending:
+        parts.append(f"待验证：{'/'.join(pending)}")
+    return " · ".join(parts) if parts else "指标等待数据"
+
+
 class LiveQualityTracker:
     def __init__(self) -> None:
         self.sample_count = 0
@@ -1328,6 +1365,8 @@ class LiveQualityTracker:
         self.slow_sample_count = 0
         self.network_source = "等待数据"
         self._last_elapsed: float | None = None
+        self._health_analyzer = MetricHealthAnalyzer()
+        self.last_metric_health: dict[str, MetricHealth] = {}
 
     def reset(self) -> None:
         self.sample_count = 0
@@ -1338,10 +1377,12 @@ class LiveQualityTracker:
         self.slow_sample_count = 0
         self.network_source = "等待数据"
         self._last_elapsed = None
+        self.last_metric_health = {}
 
     def update(self, sample: PerfSample) -> str:
         self.sample_count += 1
         note = sample.note or ""
+        self.last_metric_health = self._health_analyzer.analyze(sample)
         has_issue = self._has_quality_issue(note)
         if has_issue:
             self.issue_count += 1
@@ -1362,9 +1403,11 @@ class LiveQualityTracker:
         issue_percent = self.issue_count / total * 100.0
         fallback_percent = self.network_fallback_count / total * 100.0
         gate = self.quality_gate()
+        metric_summary = live_metric_availability_summary(self.last_metric_health)
         return (
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
+            f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
             f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%) · "
             f"前台 {self.foreground_issue_count} · 慢采样 {self.slow_sample_count}"
