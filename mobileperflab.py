@@ -930,9 +930,18 @@ def build_validation_checklist(
 def build_quality_recommendations(
     validation_checklist: list[dict[str, str]],
     weak_network: dict[str, object] | None = None,
+    collection_diagnostics: dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
     """Turn failed validation items into operator-facing next steps."""
     recommendations_by_key = {
+        "pid": {
+            "title": "恢复 PID 识别",
+            "action": "确认目标 App 正在运行并停留在前台，重新选择当前前台应用后执行采集自检；必要时重启 App 后再开始采集。",
+        },
+        "uid": {
+            "title": "恢复 UID 识别",
+            "action": "确认包名填写正确，检查 dumpsys package、/proc/<pid>/status 或 pm list packages -U 是否可读；UID 缺失时上下行无法按目标 App 归因。",
+        },
         "fps": {
             "title": "恢复 FPS 链路",
             "action": "保持目标页面可见并产生真实动画或滚动，执行采集自检，检查 gfxinfo/SurfaceFlinger 来源是否可用；静止页面请换成持续刷新的场景复测。",
@@ -964,28 +973,60 @@ def build_quality_recommendations(
     }
     severity_rank = {"fail": 0, "warning": 1, "waiting": 2}
     recommendations: list[dict[str, str]] = []
+
+    def upsert_recommendation(key: str, severity: str, reason: str) -> None:
+        template = recommendations_by_key.get(key)
+        if template is None:
+            return
+        for row in recommendations:
+            if row.get("key") == key:
+                previous_reason = str(row.get("reason", ""))
+                if reason and reason not in previous_reason:
+                    row["reason"] = f"{previous_reason} {reason}".strip()
+                if severity_rank.get(severity, 9) < severity_rank.get(str(row.get("severity", "")), 9):
+                    row["severity"] = severity
+                return
+        recommendations.append(
+            {
+                "key": key,
+                "severity": severity,
+                "title": template["title"],
+                "reason": reason,
+                "action": template["action"],
+            }
+        )
+
     for item in validation_checklist:
         key = str(item.get("key", ""))
         state = str(item.get("state", ""))
         if state == "pass":
-            continue
-        template = recommendations_by_key.get(key)
-        if template is None:
             continue
         detail = str(item.get("detail", ""))
         if key == "weak_network" and weak_network is not None:
             risk_message = str(weak_network.get("risk_message", ""))
             if risk_message and risk_message not in detail:
                 detail = f"{detail} {risk_message}".strip()
-        recommendations.append(
-            {
-                "key": key,
-                "severity": state,
-                "title": template["title"],
-                "reason": detail,
-                "action": template["action"],
-            }
-        )
+        upsert_recommendation(key, state, detail)
+
+    if collection_diagnostics is not None:
+        pid_source = str(collection_diagnostics.get("pid_source", ""))
+        uid_source = str(collection_diagnostics.get("uid_source", ""))
+        fps_source = str(collection_diagnostics.get("fps_source", ""))
+        network_source = str(collection_diagnostics.get("network_source", ""))
+        if pid_source == "missing":
+            upsert_recommendation("pid", "fail", "Android 自检：pid_source=missing，目标进程未匹配。")
+        if uid_source == "missing":
+            upsert_recommendation("uid", "fail", "Android 自检：uid_source=missing，目标 App UID 未匹配。")
+        if fps_source == "missing":
+            upsert_recommendation("fps", "fail", "Android 自检：fps_source=missing，gfxinfo/framestats/SurfaceFlinger 均不可用。")
+        elif fps_source:
+            upsert_recommendation("fps", "waiting", f"Android 自检：fps_source={fps_source}。")
+        if network_source == "missing":
+            upsert_recommendation("network", "fail", "Android 自检：network_source=missing，per-UID 与设备级网络计数均不可读。")
+        elif network_source == "device":
+            upsert_recommendation("network", "warning", "Android 自检：network_source=device，只能使用设备级网络兜底。")
+        elif network_source and network_source != "per-UID":
+            upsert_recommendation("network", "warning", f"Android 自检：network_source={network_source}。")
     recommendations.sort(key=lambda row: (severity_rank.get(str(row.get("severity", "")), 9), str(row.get("key", ""))))
     return recommendations
 
@@ -4774,7 +4815,16 @@ class SessionRecorder:
                 writer.writerow(row)
         quality = self.quality_summary()
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality, weak_network)
-        quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"], weak_network)
+        collection_diagnostics_payload = (
+            android_collection_diagnostics_payload(self.collection_diagnostics)
+            if self.collection_diagnostics is not None
+            else None
+        )
+        quality["recommendations"] = build_quality_recommendations(
+            quality["validation_checklist"],
+            weak_network,
+            collection_diagnostics_payload,
+        )
         display_samples = build_display_samples(self.samples)
         payload = {
             "app": APP_NAME,
@@ -4788,8 +4838,8 @@ class SessionRecorder:
             "samples": [asdict(sample) for sample in self.samples],
             "display_samples": display_samples,
         }
-        if self.collection_diagnostics is not None:
-            payload["collection_diagnostics"] = android_collection_diagnostics_payload(self.collection_diagnostics)
+        if collection_diagnostics_payload is not None:
+            payload["collection_diagnostics"] = collection_diagnostics_payload
         if weak_network is not None:
             payload["weak_network"] = weak_network
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

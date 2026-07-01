@@ -166,6 +166,52 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("Android 采集链路需关注", html_text)
         self.assertIn("设备级兜底", html_text)
 
+    def test_recommendations_include_android_collection_diagnostic_sources(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="warning",
+                summary="Android 采集链路需关注",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "缺失", "未匹配到目标 PID"),
+                    ("UID", "缺失", "未匹配到目标 UID"),
+                    ("FPS", "缺失", "gfxinfo/SurfaceFlinger 均不可用"),
+                    ("网络", "缺失", "per-UID 与设备级计数均不可读"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="missing",
+                pids=[],
+                uid_source="missing",
+                uid=None,
+                fps_source="missing",
+                network_source="missing",
+            )
+        )
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, memory_mb=520.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+
+        self.assertIn("fps", recommendations)
+        self.assertIn("network", recommendations)
+        self.assertIn("pid", recommendations)
+        self.assertIn("uid", recommendations)
+        self.assertIn("fps_source=missing", recommendations["fps"]["reason"])
+        self.assertIn("network_source=missing", recommendations["network"]["reason"])
+        self.assertIn("pid_source=missing", recommendations["pid"]["reason"])
+        self.assertIn("uid_source=missing", recommendations["uid"]["reason"])
+        self.assertIn("重新选择当前前台应用", recommendations["pid"]["action"])
+        self.assertIn("dumpsys package", recommendations["uid"]["action"])
+        self.assertIn("fps_source=missing", html_text)
+        self.assertIn("network_source=missing", html_text)
+
     def test_export_bundle_keeps_raw_samples_and_adds_display_smoothed_samples(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
