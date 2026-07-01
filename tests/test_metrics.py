@@ -159,6 +159,22 @@ class MetricStabilizerTest(unittest.TestCase):
 
         self.assertLess(low_end_range, normal_range * 0.8)
 
+    def test_conservative_display_mode_dampens_low_end_fps_and_cpu_swings(self) -> None:
+        normal = MetricStabilizer()
+        conservative = MetricStabilizer()
+        first = PerfSample(timestamp=1.0, elapsed=1.0, fps=58.0, cpu_percent=18.0)
+        normal.smooth_sample(first)
+        conservative.smooth_sample(first, conservative=True)
+
+        raw = PerfSample(timestamp=2.0, elapsed=2.0, fps=24.0, cpu_percent=92.0)
+        normal_display = normal.smooth_sample(raw)
+        conservative_display = conservative.smooth_sample(raw, conservative=True)
+
+        self.assertEqual(raw.fps, 24.0)
+        self.assertEqual(raw.cpu_percent, 92.0)
+        self.assertGreater(conservative_display.fps, normal_display.fps + 2.0)
+        self.assertLess(conservative_display.cpu_percent, normal_display.cpu_percent - 2.0)
+
 
 class MetricHealthAnalyzerTest(unittest.TestCase):
     def test_marks_missing_android_metrics_from_note(self) -> None:
@@ -302,6 +318,18 @@ class LiveQualityTrackerTest(unittest.TestCase):
 
         self.assertIn("不可信", text)
         self.assertIn("慢采样 2", text)
+        self.assertTrue(tracker.low_end_display_mode())
+        self.assertIn("展示：低端机保守", text)
+
+    def test_respects_custom_expected_interval_before_marking_slow_sampling(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0))
+        text = tracker.update(PerfSample(timestamp=5.1, elapsed=5.1, fps=57.0))
+
+        self.assertIn("高可信", text)
+        self.assertIn("慢采样 0", text)
+        self.assertFalse(tracker.low_end_display_mode())
 
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)

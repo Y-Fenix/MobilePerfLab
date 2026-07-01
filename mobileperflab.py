@@ -1200,11 +1200,39 @@ def build_metric_availability(
     return rows
 
 
-def build_display_samples(samples: list[PerfSample]) -> list[dict[str, object]]:
+def build_display_strategy(
+    samples: list[PerfSample],
+    quality: dict[str, object] | None = None,
+) -> dict[str, object]:
+    total = len(samples)
+    issue_count = sum(1 for sample in samples if sample_quality_tag(sample) == "issue")
+    noted_slow_count = sum(1 for sample in samples if "采样耗时" in sample.note)
+    cadence = quality.get("cadence", {}) if isinstance(quality, dict) else sampling_cadence_summary(samples)
+    if not isinstance(cadence, dict):
+        cadence = {}
+    cadence_slow_count = int(cadence.get("slow_intervals", 0) or 0)
+    slow_count = max(noted_slow_count, cadence_slow_count)
+    mode = "conservative" if slow_count >= 2 or issue_count >= 2 else "standard"
+    label = "低端机保守展示" if mode == "conservative" else "标准稳定展示"
+    if mode == "conservative":
+        detail = "检测到慢采样或采集异常，实时/报告稳定曲线会更保守；CSV/JSON 原始 samples 不变。"
+    else:
+        detail = "使用标准展示层平滑；CSV/JSON 原始 samples 不变。"
+    return {
+        "mode": mode,
+        "label": label,
+        "sample_count": total,
+        "issue_samples": issue_count,
+        "slow_samples": slow_count,
+        "detail": detail,
+    }
+
+
+def build_display_samples(samples: list[PerfSample], conservative: bool = False) -> list[dict[str, object]]:
     stabilizer = MetricStabilizer()
     display_rows: list[dict[str, object]] = []
     for sample in samples:
-        display = stabilizer.smooth_sample(sample)
+        display = stabilizer.smooth_sample(sample, conservative=conservative)
         row = asdict(display)
         row["qualityTag"] = sample_quality_tag(sample)
         display_rows.append(row)
@@ -1408,13 +1436,14 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
 
 
 class LiveQualityTracker:
-    def __init__(self) -> None:
+    def __init__(self, expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> None:
         self.sample_count = 0
         self.issue_count = 0
         self.network_fallback_count = 0
         self.network_missing_count = 0
         self.foreground_issue_count = 0
         self.slow_sample_count = 0
+        self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
         self.network_source = "等待数据"
         self._last_elapsed: float | None = None
         self._health_analyzer = MetricHealthAnalyzer()
@@ -1430,6 +1459,9 @@ class LiveQualityTracker:
         self.network_source = "等待数据"
         self._last_elapsed = None
         self.last_metric_health = {}
+
+    def set_expected_interval(self, expected_interval: float) -> None:
+        self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
 
     def update(self, sample: PerfSample) -> str:
         self.sample_count += 1
@@ -1456,14 +1488,19 @@ class LiveQualityTracker:
         fallback_percent = self.network_fallback_count / total * 100.0
         gate = self.quality_gate()
         metric_summary = live_metric_availability_summary(self.last_metric_health)
+        display_label = "低端机保守" if self.low_end_display_mode() else "标准稳定"
         return (
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
+            f"展示：{display_label} · "
             f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
             f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%) · "
             f"前台 {self.foreground_issue_count} · 慢采样 {self.slow_sample_count}"
         )
+
+    def low_end_display_mode(self) -> bool:
+        return self.slow_sample_count >= 2 or self.issue_count >= 2
 
     def quality_gate(self) -> SessionQualityGate:
         return session_quality_gate(
@@ -1483,7 +1520,7 @@ class LiveQualityTracker:
         if previous is None:
             return False
         interval = float(elapsed) - previous
-        threshold = max(DEFAULT_INTERVAL_SECONDS * 1.25, DEFAULT_INTERVAL_SECONDS + 0.25)
+        threshold = max(self.expected_interval * 1.25, self.expected_interval + 0.25)
         return interval > threshold
 
     @staticmethod
@@ -1555,21 +1592,27 @@ class MetricStabilizer:
         self._raw_values.clear()
         self._volatility.clear()
 
-    def smooth_sample(self, sample: PerfSample) -> PerfSample:
+    def smooth_sample(self, sample: PerfSample, conservative: bool = False) -> PerfSample:
         payload = asdict(sample)
         for metric in self.ALPHA_BY_METRIC:
-            payload[metric] = self._smooth(metric, float(payload.get(metric, 0.0) or 0.0), sample.timestamp, sample.note)
+            payload[metric] = self._smooth(
+                metric,
+                float(payload.get(metric, 0.0) or 0.0),
+                sample.timestamp,
+                sample.note,
+                conservative=conservative,
+            )
         return PerfSample(**payload)
 
-    def _smooth(self, metric: str, value: float, timestamp: float, note: str = "") -> float:
+    def _smooth(self, metric: str, value: float, timestamp: float, note: str = "", conservative: bool = False) -> float:
         previous = self._values.get(metric)
         previous_timestamp = self._timestamps.get(metric, timestamp)
         elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
         historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
-            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(metric, note)
+            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(metric, note, conservative)
             if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
-                held = previous * self._quality_hold_decay(metric, note)
+                held = previous * self._quality_hold_decay(metric, note, conservative)
                 self._values[metric] = held
                 self._remember_raw_volatility(metric, value)
                 return held
@@ -1579,15 +1622,15 @@ class MetricStabilizer:
             self._remember_raw_volatility(metric, value)
             return value
         alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
-        alpha *= self._quality_alpha_factor(metric, note)
+        alpha *= self._quality_alpha_factor(metric, note, conservative)
         alpha = self._time_adjusted_alpha(alpha, elapsed_delta)
         blended = previous + alpha * (value - previous)
         delta_ratio = abs(value - previous) / max(abs(previous), 1.0)
         if delta_ratio > 0.35:
-            keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
+            keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7) * self._conservative_spike_keep_factor(metric, conservative)
             blended = blended * (1.0 - keep) + value * keep
-        blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta)
-        blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility)
+        blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta, conservative)
+        blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility, conservative)
         self._values[metric] = blended
         self._timestamps[metric] = timestamp
         self._remember_raw_volatility(metric, value)
@@ -1606,12 +1649,20 @@ class MetricStabilizer:
             return alpha
         return 1.0 - (1.0 - alpha) ** max(elapsed_delta, 0.25)
 
-    def _limit_display_step(self, metric: str, previous: float, value: float, note: str = "", elapsed_delta: float = 1.0) -> float:
+    def _limit_display_step(
+        self,
+        metric: str,
+        previous: float,
+        value: float,
+        note: str = "",
+        elapsed_delta: float = 1.0,
+        conservative: bool = False,
+    ) -> float:
         limits = self.MAX_STEP_RATIO_BY_METRIC.get(metric)
         if not limits or previous <= 0 or value <= 0:
             return value
         down_ratio, up_ratio = limits
-        factor = self._quality_step_factor(metric, note)
+        factor = self._quality_step_factor(metric, note, conservative)
         factor *= self._time_step_factor(elapsed_delta)
         down_ratio *= factor
         up_ratio *= factor
@@ -1625,14 +1676,25 @@ class MetricStabilizer:
             return 1.0
         return min(1.0 + (elapsed_delta - 1.0) * 0.45, 2.4)
 
-    def _dampen_when_volatile(self, metric: str, previous: float, value: float, volatility: float) -> float:
+    def _dampen_when_volatile(self, metric: str, previous: float, value: float, volatility: float, conservative: bool = False) -> float:
         sensitivity = self.VOLATILITY_SENSITIVITY_BY_METRIC.get(metric, 0.0)
         if sensitivity <= 0 or previous <= 0 or value <= 0:
             return value
+        if conservative:
+            sensitivity *= 1.35
+            volatility = max(volatility, 0.18)
         if volatility <= 0.08:
             return value
         keep_previous = min(volatility * sensitivity, 0.45)
         return previous * keep_previous + value * (1.0 - keep_previous)
+
+    @staticmethod
+    def _conservative_spike_keep_factor(metric: str, conservative: bool) -> float:
+        if not conservative:
+            return 1.0
+        if metric in ("fps", "cpu_percent", "power_w"):
+            return 0.55
+        return 0.85
 
     def _remember_raw_volatility(self, metric: str, value: float) -> None:
         previous = self._raw_values.get(metric)
@@ -1659,8 +1721,10 @@ class MetricStabilizer:
         )
         return min(sum(1 for token in tokens if token in note) / 3.0, 1.0)
 
-    def _quality_hold_extension(self, metric: str, note: str) -> float:
+    def _quality_hold_extension(self, metric: str, note: str, conservative: bool = False) -> float:
         weight = self._quality_weight(note)
+        if conservative:
+            weight = max(weight, 0.5)
         if weight <= 0:
             return 0.0
         if metric == "fps":
@@ -1669,16 +1733,20 @@ class MetricStabilizer:
             return 2.0 * weight
         return 0.0
 
-    def _quality_hold_decay(self, metric: str, note: str) -> float:
+    def _quality_hold_decay(self, metric: str, note: str, conservative: bool = False) -> float:
         weight = self._quality_weight(note)
+        if conservative:
+            weight = max(weight, 0.5)
         if metric == "fps" and weight > 0:
             return 0.9 - 0.08 * (1.0 - weight)
         if metric == "cpu_percent" and weight > 0:
             return 0.86
         return 0.82
 
-    def _quality_alpha_factor(self, metric: str, note: str) -> float:
+    def _quality_alpha_factor(self, metric: str, note: str, conservative: bool = False) -> float:
         weight = self._quality_weight(note)
+        if conservative:
+            weight = max(weight, 0.5)
         if weight <= 0:
             return 1.0
         if metric in ("fps", "cpu_percent", "power_w"):
@@ -1687,8 +1755,10 @@ class MetricStabilizer:
             return 1.0 - 0.25 * weight
         return 1.0
 
-    def _quality_step_factor(self, metric: str, note: str) -> float:
+    def _quality_step_factor(self, metric: str, note: str, conservative: bool = False) -> float:
         weight = self._quality_weight(note)
+        if conservative:
+            weight = max(weight, 0.5)
         if weight <= 0:
             return 1.0
         if metric in ("fps", "cpu_percent", "power_w"):
@@ -4836,7 +4906,7 @@ class DemoAdapter(BaseAdapter):
 
 
 class SessionRecorder:
-    def __init__(self) -> None:
+    def __init__(self, expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> None:
         self.samples: list[PerfSample] = []
         self.markers: list[dict[str, float | str]] = []
         self.logs: list[str] = []
@@ -4844,6 +4914,7 @@ class SessionRecorder:
         self.device: DeviceInfo | None = None
         self.app_id = ""
         self.collection_diagnostics: AndroidCollectionDiagnostics | None = None
+        self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
 
     def reset(self, device: DeviceInfo, app_id: str) -> None:
         self.samples.clear()
@@ -4871,6 +4942,9 @@ class SessionRecorder:
 
     def set_collection_diagnostics(self, diagnostics: AndroidCollectionDiagnostics) -> None:
         self.collection_diagnostics = diagnostics
+
+    def set_expected_interval(self, expected_interval: float) -> None:
+        self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
 
     def summary(self) -> dict[str, float | str]:
         if not self.samples:
@@ -4905,12 +4979,13 @@ class SessionRecorder:
                 "noted_samples": 0,
                 "noted_percent": 0.0,
                 "quality_gate": asdict(session_quality_gate(0, 0, 0, 0, 0)),
-                "cadence": sampling_cadence_summary([]),
+                "cadence": sampling_cadence_summary([], expected_interval=self.expected_interval),
                 "network_source": "无数据",
                 "network_fallback_samples": 0,
                 "network_fallback_percent": 0.0,
                 "issues": [],
             }
+            quality["display_strategy"] = build_display_strategy([], quality)
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             quality["metric_availability"] = build_metric_availability([], quality)
@@ -4919,7 +4994,7 @@ class SessionRecorder:
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
         issue_count = sum(1 for sample in self.samples if sample_quality_tag(sample) == "issue")
         foreground_count = sum(1 for sample in self.samples if "目标应用不在前台" in sample.note)
-        cadence = sampling_cadence_summary(self.samples)
+        cadence = sampling_cadence_summary(self.samples, expected_interval=self.expected_interval)
         cadence_slow_count = int(cadence.get("slow_intervals", 0) or 0)
         noted_slow_count = sum(1 for sample in self.samples if "采样耗时" in sample.note)
         slow_count = max(noted_slow_count, cadence_slow_count)
@@ -5001,6 +5076,7 @@ class SessionRecorder:
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
             "issues": issues,
         }
+        quality["display_strategy"] = build_display_strategy(self.samples, quality)
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         quality["metric_availability"] = build_metric_availability(self.samples, quality)
@@ -5057,7 +5133,10 @@ class SessionRecorder:
             quality,
             collection_diagnostics_payload,
         )
-        display_samples = build_display_samples(self.samples)
+        quality["display_strategy"] = build_display_strategy(self.samples, quality)
+        display_strategy = quality["display_strategy"]
+        conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
+        display_samples = build_display_samples(self.samples, conservative=conservative_display)
         payload = {
             "app": APP_NAME,
             "version": APP_VERSION,
@@ -5135,6 +5214,9 @@ class SessionRecorder:
         cadence = quality.get("cadence", {})
         if not isinstance(cadence, dict):
             cadence = {}
+        display_strategy = quality.get("display_strategy", {})
+        if not isinstance(display_strategy, dict):
+            display_strategy = {}
         quality_cards = "".join(
             "<article class='quality-card'>"
             f"<span>{html.escape(label)}</span>"
@@ -5151,6 +5233,11 @@ class SessionRecorder:
                     "采样节拍",
                     f"{cadence.get('label', '无数据')} / 慢间隔 {cadence.get('slow_percent', 0.0)}%",
                     str(cadence.get("detail", "暂无采样节拍结论。")),
+                ),
+                (
+                    "展示策略",
+                    str(display_strategy.get("label", "标准稳定展示")),
+                    str(display_strategy.get("detail", "稳定展示曲线不改变原始采样。")),
                 ),
                 ("样本数", str(quality.get("sample_count", 0)), "本次报告中的原始采样点数量。"),
                 ("带说明样本", f"{quality.get('noted_samples', 0)} / {quality.get('noted_percent', 0)}%", "出现采集说明、异常或兜底提示的样本。"),
@@ -7396,6 +7483,8 @@ class App:
             interval = max(float(self.interval_var.get()), 0.2)
         except ValueError:
             interval = DEFAULT_INTERVAL_SECONDS
+        self.recorder.set_expected_interval(interval)
+        self.live_quality.set_expected_interval(interval)
         self.recorder.reset(device, app_id)
         self.recorder.log(f"开始采集：{device.display_name} / {app_id}")
         self.last_notes.clear()
@@ -7504,10 +7593,11 @@ class App:
         self.recorder.append(sample)
         self.last_app_rx_kbps = max(float(sample.rx_kbps or 0.0), 0.0)
         self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
-        display_sample = self.stabilizer.smooth_sample(sample) if self.smoothing_var.get() else sample
         quality_tag = sample_quality_tag(sample)
         self._update_metric_health(sample)
         self.quality_var.set(f"采集质量：{self.live_quality.update(sample)}")
+        conservative_display = self.live_quality.low_end_display_mode()
+        display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample
         self._refresh_quality_mode()
         self.cards["fps"].set_value(display_sample.fps, "越高越流畅")
         self.cards["jank_percent"].set_value(display_sample.jank_percent, "越低越稳")

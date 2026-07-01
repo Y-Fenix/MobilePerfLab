@@ -319,6 +319,55 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("原始值", html_text)
         self.assertIn("稳定展示", html_text)
 
+    def test_export_bundle_marks_low_end_conservative_display_strategy(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
+        recorder.append(
+            PerfSample(
+                timestamp=2.7,
+                elapsed=2.7,
+                fps=24.0,
+                cpu_percent=92.0,
+                memory_mb=521.0,
+                note="采样耗时 1.60s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=4.5,
+                elapsed=4.5,
+                fps=26.0,
+                cpu_percent=88.0,
+                memory_mb=522.0,
+                note="采样耗时 1.70s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["samples"][1]["fps"], 24.0)
+        self.assertGreater(payload["display_samples"][1]["fps"], payload["samples"][1]["fps"])
+        self.assertLess(payload["display_samples"][1]["cpu_percent"], payload["samples"][1]["cpu_percent"])
+        self.assertEqual(payload["quality"]["display_strategy"]["mode"], "conservative")
+        self.assertIn("低端机保守展示", html_text)
+
+    def test_quality_summary_respects_custom_expected_interval_for_low_end_runs(self) -> None:
+        recorder = SessionRecorder(expected_interval=2.0)
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0, cpu_percent=20.0, memory_mb=521.0))
+        recorder.append(PerfSample(timestamp=5.1, elapsed=5.1, fps=57.0, cpu_percent=19.0, memory_mb=522.0))
+
+        quality = recorder.quality_summary()
+
+        self.assertEqual(quality["cadence"]["state"], "good")
+        self.assertEqual(quality["cadence"]["slow_intervals"], 0)
+        self.assertEqual(quality["display_strategy"]["mode"], "standard")
+
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
