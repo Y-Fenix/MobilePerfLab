@@ -299,7 +299,7 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["test_readiness"]["state"], "blocked")
         self.assertIn("选择 Android 设备", result["action"])
 
-    def test_blocks_weak_network_for_ios_device_in_android_proxy_mode(self) -> None:
+    def test_guides_ios_device_to_manual_wifi_proxy_mode(self) -> None:
         diagnostics = build_weak_network_diagnostics(
             proxy_running=True,
             endpoint="192.168.1.2:18888",
@@ -314,10 +314,13 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
             diagnostics=diagnostics,
         )
 
-        self.assertEqual(result["state"], "unsupported_device")
-        self.assertEqual(result["label"], "当前弱网模式不支持该设备")
+        self.assertEqual(diagnostics.summary, "iOS 需要手动配置 Wi-Fi 代理")
+        self.assertIn(("iOS 设备", "已选择", "iPhone"), diagnostics.rows)
+        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写 192.168.1.2:18888"), diagnostics.rows)
+        self.assertEqual(result["state"], "ios_manual_proxy")
+        self.assertEqual(result["label"], "iOS 手动代理待确认")
         self.assertEqual(result["test_readiness"]["state"], "blocked")
-        self.assertIn("Android", result["action"])
+        self.assertIn("Wi-Fi HTTP 代理", result["action"])
 
     def test_warns_when_proxy_is_confirmed_but_port_is_unreachable(self) -> None:
         device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")

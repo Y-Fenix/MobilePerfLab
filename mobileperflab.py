@@ -419,6 +419,16 @@ def build_weak_network_diagnostics(
         summary = "未选择 Android 设备" if proxy_running else "弱网代理未就绪"
         return WeakNetworkDiagnostics("warning", summary, rows)
 
+    if device.platform == "iOS":
+        rows.append(("iOS 设备", "已选择", device.name or device.serial))
+        if not proxy_running:
+            rows.append(("iOS 代理", "未检查", "启动代理后，在 iPhone Wi-Fi 中手动填写 HTTP 代理"))
+            rows.append(("流量命中", "未检查", "触发业务请求后观察代理真实流量"))
+            return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
+        rows.append(("iOS 代理", "手动配置", f"在 iPhone Wi-Fi HTTP 代理中填写 {endpoint}"))
+        rows.append(("流量命中", "待验证", "配置后触发 HTTP/HTTPS 请求，观察代理真实流量曲线"))
+        return WeakNetworkDiagnostics("warning", "iOS 需要手动配置 Wi-Fi 代理", rows)
+
     rows.append(("Android 设备", "不支持", f"当前选择 {device.platform}，系统 HTTP 代理模式仅支持 Android 自动写入"))
     rows.append(("设备代理", "未检查", "请选择 Android 设备后刷新状态"))
     rows.append(("端口连通", "未检查", "Android 代理读回一致后检测"))
@@ -608,6 +618,7 @@ def build_weak_network_effectiveness(
                     diagnostic_rows.append((str(row.get("name", "")), str(row.get("state", "")), str(row.get("detail", ""))))
     port_unreachable = "端口不可达" in diagnostic_summary or any(state == "不可达" for _name, state, _detail in diagnostic_rows)
     no_android_device = "未选择 Android 设备" in diagnostic_summary or any(name == "Android 设备" and state == "未选择" for name, state, _detail in diagnostic_rows)
+    ios_manual_proxy = "iOS 需要手动配置" in diagnostic_summary or any(name == "iOS 代理" and state == "手动配置" for name, state, _detail in diagnostic_rows)
     unsupported_device = "不支持该设备" in diagnostic_summary or any(name == "Android 设备" and state == "不支持" for name, state, _detail in diagnostic_rows)
     proxy_unconfirmed = "代理未确认" in diagnostic_summary or any(name == "设备代理" and state in {"不一致", "未检查"} for name, state, _detail in diagnostic_rows)
     if not running or traffic_state == "off":
@@ -617,6 +628,14 @@ def build_weak_network_effectiveness(
             score=0,
             detail="弱网代理未启动，当前没有弱网生效证据。",
             action="点击启动代理，并应用到 Android 后刷新状态。",
+        )
+    if ios_manual_proxy:
+        return _weak_network_effectiveness_result(
+            state="ios_manual_proxy",
+            label="iOS 手动代理待确认",
+            score=40,
+            detail="iOS 已选择，但当前桌面工具不能自动写入 iPhone Wi-Fi HTTP 代理，需要手动配置后用真实流量确认命中。",
+            action="在 iPhone 设置 > Wi-Fi > 当前网络 > Wi-Fi HTTP 代理选择手动，填写本机弱网代理地址和端口，然后触发 HTTP/HTTPS 请求。",
         )
     if unsupported_device:
         return _weak_network_effectiveness_result(
