@@ -1089,6 +1089,10 @@ def next_low_end_interval_label(expected_interval: float) -> str:
     return f"{recommended_sampling_interval(expected_interval):.1f}s"
 
 
+def recommended_sampling_interval_button_text(expected_interval: float) -> str:
+    return f"推荐 {next_low_end_interval_label(expected_interval)}"
+
+
 def live_sampling_action_label(
     recent_window: dict[str, object],
     low_end_display_mode: bool = False,
@@ -6712,6 +6716,7 @@ class App:
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
         self.interval_var = tk.StringVar(value="1.0")
+        self.recommended_interval_var = tk.StringVar(value=recommended_sampling_interval_button_text(1.0))
         self.status_var = tk.StringVar(value="就绪")
         self.session_var = tk.StringVar(value="未开始")
         self.device_var = tk.StringVar(value="未选择设备")
@@ -6889,7 +6894,13 @@ class App:
         ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
         interval.grid(row=0, column=1, sticky="e")
-        ttk.Button(settings, text="推荐间隔", style="Tool.TButton", command=self.apply_recommended_sampling_interval).grid(
+        interval.bind("<<ComboboxSelected>>", lambda _event: self.refresh_recommended_sampling_interval_label())
+        ttk.Button(
+            settings,
+            textvariable=self.recommended_interval_var,
+            style="Tool.TButton",
+            command=self.apply_recommended_sampling_interval,
+        ).grid(
             row=1,
             column=0,
             columnspan=2,
@@ -6911,6 +6922,14 @@ class App:
             pady=(12, 0),
         )
         ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+    def refresh_recommended_sampling_interval_label(self) -> None:
+        try:
+            current = float(self.interval_var.get())
+        except (ValueError, AttributeError):
+            current = DEFAULT_INTERVAL_SECONDS
+        if hasattr(self, "recommended_interval_var"):
+            self.recommended_interval_var.set(recommended_sampling_interval_button_text(current))
 
     def _set_graph_scrollbar_state(self) -> None:
         if not hasattr(self, "graph_scrollbar"):
@@ -6942,6 +6961,7 @@ class App:
         sampler = getattr(self, "sampler", None)
         if sampler is not None and hasattr(sampler, "set_interval"):
             sampler.set_interval(recommended)
+        self.refresh_recommended_sampling_interval_label()
         if hasattr(self, "append_log"):
             self.append_log(f"推荐采样间隔已应用：{recommended_text}s。")
 

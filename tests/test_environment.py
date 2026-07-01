@@ -11,6 +11,7 @@ from mobileperflab import (
     graph_display_series,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
+    recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
 )
@@ -132,6 +133,7 @@ class QualityModeLabelTest(unittest.TestCase):
 
         app = object.__new__(App)
         app.interval_var = FakeVar("1.0")
+        app.recommended_interval_var = FakeVar(recommended_sampling_interval_button_text(1.0))
         app.recorder = FakeIntervalTarget()
         app.live_quality = FakeIntervalTarget()
         app.logs: list[str] = []
@@ -140,6 +142,7 @@ class QualityModeLabelTest(unittest.TestCase):
         App.apply_recommended_sampling_interval(app)
 
         self.assertEqual(app.interval_var.get(), "1.5")
+        self.assertEqual(app.recommended_interval_var.get(), "推荐 2.0s")
         self.assertEqual(app.recorder.expected_interval, 1.5)
         self.assertEqual(app.live_quality.expected_interval, 1.5)
         self.assertIn("推荐采样间隔", app.logs[-1])

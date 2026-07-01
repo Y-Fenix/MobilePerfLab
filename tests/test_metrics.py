@@ -9,6 +9,7 @@ from mobileperflab import (
     build_recent_window_health,
     live_sampling_action_label,
     recommended_sampling_interval,
+    recommended_sampling_interval_button_text,
     session_quality_gate,
     sampling_cadence_summary,
     append_sampling_latency_note,
@@ -413,6 +414,11 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(recommended_sampling_interval(1.5), 2.0)
         self.assertEqual(recommended_sampling_interval(2.0), 2.0)
         self.assertIn(f"{recommended_sampling_interval(1.0):.1f}", SAMPLING_INTERVAL_OPTIONS)
+
+    def test_recommended_sampling_interval_button_text_shows_next_target(self) -> None:
+        self.assertEqual(recommended_sampling_interval_button_text(1.0), "推荐 1.5s")
+        self.assertEqual(recommended_sampling_interval_button_text(1.5), "推荐 2.0s")
+        self.assertEqual(recommended_sampling_interval_button_text(2.0), "推荐 2.0s")
 
     def test_status_text_includes_live_sampling_action(self) -> None:
         tracker = LiveQualityTracker()
