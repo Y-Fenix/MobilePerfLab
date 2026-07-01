@@ -160,8 +160,53 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         App._refresh_proxy_traffic(app)
 
         self.assertIn("端口不可达", app.weak_live_summary_var.value)
-        self.assertEqual(app.weak_readiness_var.value, "先修弱网链路")
-        self.assertEqual(app.weak_traffic_vars["readiness"].value, "先修弱网链路")
+        self.assertIn("先修弱网链路", app.weak_readiness_var.value)
+        self.assertIn("防火墙", app.weak_readiness_var.value)
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
+
+    def test_refresh_proxy_traffic_shows_readiness_action_for_proxy_bypass(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot()
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {"readiness": FakeVar()}
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 120.0
+        app.last_app_tx_kbps = 8.0
+        app.last_weak_diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertIn("先修弱网链路", app.weak_readiness_var.value)
+        self.assertIn("QUIC/UDP", app.weak_readiness_var.value)
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
 
 
 class AndroidProxyVerificationTest(unittest.TestCase):
@@ -290,6 +335,7 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["label"], "疑似绕过代理")
         self.assertEqual(result["test_readiness"]["state"], "blocked")
         self.assertEqual(result["test_readiness"]["label"], "先修弱网链路")
+        self.assertIn("QUIC/UDP", result["test_readiness"]["action"])
         self.assertLess(result["score"], 60)
         self.assertIn("App 有流量但代理未捕获", result["detail"])
         self.assertIn("QUIC/UDP", result["action"])
@@ -337,6 +383,7 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["state"], "waiting")
         self.assertEqual(result["test_readiness"]["state"], "attention")
         self.assertEqual(result["test_readiness"]["label"], "先触发业务请求")
+        self.assertIn("HTTP/HTTPS", result["test_readiness"]["action"])
 
 
 class WeakNetworkProxyHealthTest(unittest.TestCase):

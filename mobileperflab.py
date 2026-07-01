@@ -540,13 +540,15 @@ def _weak_network_effectiveness_result(
     detail: str,
     action: str,
 ) -> dict[str, object]:
+    readiness = weak_network_test_readiness(state)
+    readiness["action"] = action
     return {
         "state": state,
         "label": label,
         "score": score,
         "detail": detail,
         "action": action,
-        "test_readiness": weak_network_test_readiness(state),
+        "test_readiness": readiness,
     }
 
 
@@ -5742,6 +5744,7 @@ class SessionRecorder:
                     f"<tr><th>下一步</th><td>{html.escape(str(weak_effectiveness.get('action', '')))}</td></tr>",
                     f"<tr><th>测试就绪</th><td>{html.escape(str(weak_readiness.get('label', '未知')))}</td></tr>",
                     f"<tr><th>就绪说明</th><td>{html.escape(str(weak_readiness.get('detail', '')))}</td></tr>",
+                    f"<tr><th>就绪动作</th><td>{html.escape(str(weak_readiness.get('action', '')))}</td></tr>",
                     f"<tr><th>弱网配置</th><td>{html.escape(format_weak_network_config(weak_config))}</td></tr>",
                     f"<tr><th>流量状态</th><td>{html.escape(str(weak_network.get('traffic_state_label', '未知')))}</td></tr>",
                     f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",
@@ -7694,11 +7697,14 @@ class App:
         )
         readiness = effectiveness.get("test_readiness", {})
         readiness_label = "未知"
+        readiness_action = ""
         if isinstance(readiness, dict):
             readiness_label = str(readiness.get("label", "未知"))
-        values["readiness"] = readiness_label
+            readiness_action = str(readiness.get("action", ""))
+        readiness_text = f"{readiness_label} · {readiness_action}" if readiness_action else readiness_label
+        values["readiness"] = readiness_text
         if hasattr(self, "weak_readiness_var"):
-            self.weak_readiness_var.set(readiness_label)
+            self.weak_readiness_var.set(readiness_text)
         weak_traffic_vars = getattr(self, "weak_traffic_vars", {})
         for key, text in values.items():
             variable = weak_traffic_vars.get(key)

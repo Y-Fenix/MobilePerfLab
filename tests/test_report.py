@@ -566,6 +566,7 @@ class ReportExportTest(unittest.TestCase):
                     "state": "ready",
                     "label": "可以开始测试",
                     "detail": "弱网链路和真实流量均已确认。",
+                    "action": "继续执行业务场景并观察代理真实流量曲线。",
                 },
             },
         }
@@ -590,6 +591,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("已命中目标流量", html_text)
         self.assertIn("弱网命中结论", html_text)
         self.assertIn("弱网已生效", html_text)
+        self.assertIn("就绪动作", html_text)
+        self.assertIn("继续执行业务场景", html_text)
         self.assertIn("测试就绪", html_text)
         self.assertIn("可以开始测试", html_text)
         self.assertIn("设备代理", html_text)
