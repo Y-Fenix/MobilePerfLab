@@ -636,6 +636,30 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertAlmostEqual(rx2, 2.0)
         self.assertAlmostEqual(tx2, 1.0)
 
+    def test_network_kbps_keeps_zero_uid_stat_as_target_idle_instead_of_device_fallback(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "userId=10234",
+                "cat /proc/uid_stat/10234/tcp_rcv": "\n---NEXT---\n".join(["0", "0"]),
+                "cat /proc/uid_stat/10234/tcp_snd": "\n---NEXT---\n".join(["0", "0"]),
+                "cat /proc/net/dev": "\n---NEXT---\n".join(
+                    [
+                        "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+                        "Inter-| Receive | Transmit\n wlan0: 120480 0 0 0 0 0 0 0 210240 0 0 0 0 0 0 0",
+                    ]
+                ),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0]):
+            rx1, tx1 = adapter._network_kbps(self.device, "com.example.game", 10.0)
+            rx2, tx2 = adapter._network_kbps(self.device, "com.example.game", 11.0)
+
+        self.assertEqual((rx1, tx1), (0.0, 0.0))
+        self.assertEqual((rx2, tx2), (0.0, 0.0))
+        self.assertEqual(adapter._network_note_cache[("serial-1", "com.example.game")], "")
+        self.assertNotIn("cat /proc/net/dev", adapter.calls)
+
     def test_network_kbps_reads_uid_equals_from_dumpsys_package(self) -> None:
         adapter = FakeAndroidAdapter(
             {
@@ -759,6 +783,15 @@ class AndroidAdapterTest(unittest.TestCase):
         """
 
         self.assertEqual(AndroidAdapter._parse_qtaguid_stats(output, 10234), (4000, 2000))
+
+    def test_qtaguid_parser_reports_matching_zero_uid_rows_as_readable(self) -> None:
+        output = """
+        idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes rx_packets tx_bytes tx_packets
+        2 wlan0 0x0 10234 0 0 0 0 0
+        3 wlan0 0x0 10000 0 9999 9 9999 9
+        """
+
+        self.assertEqual(AndroidAdapter._parse_qtaguid_stats_with_match(output, 10234), (0, 0, True))
 
     def test_marks_sample_when_target_app_leaves_foreground(self) -> None:
         adapter = FakeAndroidAdapter({})
@@ -1013,6 +1046,26 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.uid_source, "dumpsys package")
         self.assertEqual(diagnostics.fps_source, "gfxinfo counters")
         self.assertEqual(diagnostics.network_source, "per-UID")
+
+    def test_android_collection_diagnostics_treats_zero_uid_stat_as_per_uid_available(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "0",
+                "cat /proc/uid_stat/10234/tcp_snd": "0",
+                "cat /proc/net/dev": "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+        formatted = format_android_collection_diagnostics(diagnostics)
+
+        self.assertEqual(diagnostics.network_source, "per-UID")
+        self.assertIn("网络: per-UID", formatted)
+        self.assertNotIn("cat /proc/net/dev", adapter.calls)
 
     def test_android_collection_diagnostics_explains_fallbacks_and_missing_channels(self) -> None:
         adapter = FakeAndroidAdapter(

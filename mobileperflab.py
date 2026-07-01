@@ -3225,14 +3225,8 @@ class AndroidAdapter(BaseAdapter):
         if not app_id:
             return "missing"
         if uid is not None:
-            rx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_rcv", timeout=2.0).strip()
-            tx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_snd", timeout=2.0).strip()
-            if re.search(r"\d+", rx_text) and re.search(r"\d+", tx_text):
-                return "per-UID"
-            output = self._shell(device.serial, "cat /proc/net/xt_qtaguid/stats", timeout=4.0)
-            if self._parse_qtaguid_stats(output, uid) != (0, 0):
-                return "per-UID"
-            if self._net_totals_from_netstats(device, uid) != (0, 0):
+            _rx_total, _tx_total, per_uid_readable = self._per_uid_net_totals(device, uid)
+            if per_uid_readable:
                 return "per-UID"
         if self._device_net_totals(device) != (0, 0):
             return "device"
@@ -3697,17 +3691,30 @@ class AndroidAdapter(BaseAdapter):
         uid = self._app_uid(device, app_id) if app_id else None
         if uid is None:
             return 0, 0
+        rx_total, tx_total, _readable = self._per_uid_net_totals(device, uid)
+        return rx_total, tx_total
+
+    def _per_uid_net_totals(self, device: DeviceInfo, uid: int) -> tuple[int, int, bool]:
+        uid_stat_totals = self._uid_stat_totals(device, uid)
+        if uid_stat_totals is not None:
+            rx_total, tx_total = uid_stat_totals
+            return rx_total, tx_total, True
+        output = self._shell(device.serial, "cat /proc/net/xt_qtaguid/stats", timeout=4.0)
+        rx_total, tx_total, matched_uid = self._parse_qtaguid_stats_with_match(output, uid)
+        if matched_uid:
+            return rx_total, tx_total, True
+        rx_total, tx_total = self._net_totals_from_netstats(device, uid)
+        if rx_total or tx_total:
+            return rx_total, tx_total, True
+        return 0, 0, False
+
+    def _uid_stat_totals(self, device: DeviceInfo, uid: int) -> tuple[int, int] | None:
         rx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_rcv", timeout=2.0).strip()
         tx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_snd", timeout=2.0).strip()
         try:
             return int(re.findall(r"\d+", rx_text)[0]), int(re.findall(r"\d+", tx_text)[0])
         except Exception:
-            pass
-        output = self._shell(device.serial, "cat /proc/net/xt_qtaguid/stats", timeout=4.0)
-        rx_total, tx_total = self._parse_qtaguid_stats(output, uid)
-        if rx_total or tx_total:
-            return rx_total, tx_total
-        return self._net_totals_from_netstats(device, uid)
+            return None
 
     def _net_totals_from_netstats(self, device: DeviceInfo, uid: int) -> tuple[int, int]:
         output = self._shell(device.serial, "dumpsys netstats detail", timeout=6.0)
@@ -3715,8 +3722,14 @@ class AndroidAdapter(BaseAdapter):
 
     @staticmethod
     def _parse_qtaguid_stats(output: str, uid: int) -> tuple[int, int]:
+        rx_total, tx_total, _matched_uid = AndroidAdapter._parse_qtaguid_stats_with_match(output, uid)
+        return rx_total, tx_total
+
+    @staticmethod
+    def _parse_qtaguid_stats_with_match(output: str, uid: int) -> tuple[int, int, bool]:
         rx_total = 0
         tx_total = 0
+        matched_uid = False
         for line in output.splitlines():
             parts = line.split()
             if len(parts) < 8 or not parts[0].isdigit():
@@ -3724,11 +3737,12 @@ class AndroidAdapter(BaseAdapter):
             try:
                 if int(parts[3]) != uid:
                     continue
+                matched_uid = True
                 rx_total += int(parts[5])
                 tx_total += int(parts[7])
             except Exception:
                 continue
-        return rx_total, tx_total
+        return rx_total, tx_total, matched_uid
 
     @classmethod
     def _parse_netstats_detail_for_uid(cls, output: str, uid: int) -> tuple[int, int]:
@@ -3825,7 +3839,22 @@ class AndroidAdapter(BaseAdapter):
     def _network_kbps(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
         key = (device.serial, app_id)
         self._network_note_cache[key] = ""
-        rx_total, tx_total = self._net_totals(device, app_id)
+        uid = self._app_uid(device, app_id) if app_id else None
+        if uid is not None:
+            rx_total, tx_total, per_uid_readable = self._per_uid_net_totals(device, uid)
+        else:
+            rx_total, tx_total, per_uid_readable = 0, 0, False
+        if per_uid_readable:
+            read_time = time.time()
+            previous = self._net_cache.get(key)
+            self._net_cache[key] = (read_time, rx_total, tx_total)
+            if not previous:
+                return 0.0, 0.0
+            prev_time, prev_rx, prev_tx = previous
+            delta = max(read_time - prev_time, 0.1)
+            rx_kbps = max(rx_total - prev_rx, 0) / 1024.0 / delta
+            tx_kbps = max(tx_total - prev_tx, 0) / 1024.0 / delta
+            return rx_kbps, tx_kbps
         if rx_total <= 0 and tx_total <= 0:
             device_rx, device_tx = self._device_net_totals(device)
             read_time = time.time()
@@ -3843,16 +3872,7 @@ class AndroidAdapter(BaseAdapter):
                     self._network_note_cache[key] = "Android 网络使用设备级网络兜底，非目标 App 独占流量。"
                     return rx_kbps, tx_kbps
             return 0.0, 0.0
-        read_time = time.time()
-        previous = self._net_cache.get(key)
-        self._net_cache[key] = (read_time, rx_total, tx_total)
-        if not previous:
-            return 0.0, 0.0
-        prev_time, prev_rx, prev_tx = previous
-        delta = max(read_time - prev_time, 0.1)
-        rx_kbps = max(rx_total - prev_rx, 0) / 1024.0 / delta
-        tx_kbps = max(tx_total - prev_tx, 0) / 1024.0 / delta
-        return rx_kbps, tx_kbps
+        return 0.0, 0.0
 
     def _fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
         if not app_id:
