@@ -323,6 +323,21 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("2/8 连接", text)
         self.assertIn("丢弃 1", text)
 
+    def test_formats_running_proxy_without_real_traffic_as_waiting(self) -> None:
+        text = format_live_proxy_summary(True, "192.168.1.2:18888", ProxyTrafficSnapshot())
+
+        self.assertIn("弱网 ON", text)
+        self.assertIn("等待目标流量", text)
+
+    def test_formats_running_proxy_with_connections_as_traffic_hit(self) -> None:
+        text = format_live_proxy_summary(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(total_connections=1, down_bytes=2048, up_bytes=1024),
+        )
+
+        self.assertIn("已命中目标流量", text)
+
     def test_formats_disabled_live_proxy_summary(self) -> None:
         text = format_live_proxy_summary(False, "<host>:<port>", ProxyTrafficSnapshot())
 
@@ -352,6 +367,13 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["history"][0]["elapsed"], 0.0)
         self.assertEqual(payload["history"][1]["elapsed"], 1.5)
         self.assertIn("↓8.0 KB/s", payload["summary"])
+        self.assertEqual(payload["traffic_state"], "hit")
+
+    def test_builds_report_payload_with_waiting_proxy_traffic_state(self) -> None:
+        payload = build_weak_network_report_payload(True, "127.0.0.1:18888", ProxyTrafficSnapshot(), [])
+
+        self.assertEqual(payload["traffic_state"], "waiting")
+        self.assertIn("等待目标流量", payload["summary"])
 
 
 class ProxyTrafficHistoryTest(unittest.TestCase):

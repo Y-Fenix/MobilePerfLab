@@ -442,12 +442,22 @@ def format_proxy_traffic_snapshot(snapshot: ProxyTrafficSnapshot) -> dict[str, s
     }
 
 
+def proxy_traffic_state(running: bool, snapshot: ProxyTrafficSnapshot) -> tuple[str, str]:
+    if not running:
+        return "off", "未启动"
+    if snapshot.total_connections <= 0 and snapshot.up_bytes <= 0 and snapshot.down_bytes <= 0:
+        return "waiting", "等待目标流量"
+    return "hit", "已命中目标流量"
+
+
 def format_live_proxy_summary(running: bool, endpoint: str, snapshot: ProxyTrafficSnapshot) -> str:
     if not running:
         return "弱网 OFF · 未启动"
     values = format_proxy_traffic_snapshot(snapshot)
+    _state, traffic_label = proxy_traffic_state(running, snapshot)
     return (
         f"弱网 ON · {endpoint} · "
+        f"{traffic_label} · "
         f"↓{values['down_rate']} ↑{values['up_rate']} · "
         f"{snapshot.active_connections}/{snapshot.total_connections} 连接 · "
         f"丢弃 {snapshot.dropped_connections}"
@@ -472,9 +482,12 @@ def build_weak_network_report_payload(
                     "up_kbps": round(up_kbps, 3),
                 }
             )
+    traffic_state, traffic_state_label = proxy_traffic_state(running, snapshot)
     return {
         "running": running,
         "endpoint": endpoint,
+        "traffic_state": traffic_state,
+        "traffic_state_label": traffic_state_label,
         "summary": format_live_proxy_summary(running, endpoint, snapshot),
         "snapshot": asdict(snapshot),
         "snapshot_display": format_proxy_traffic_snapshot(snapshot),
