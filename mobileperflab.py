@@ -20,6 +20,7 @@ import random
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,18 @@ APP_VERSION = "0.1.0"
 SAMPLE_LIMIT = 7200
 DEFAULT_INTERVAL_SECONDS = 1.0
 CHART_VIEW_SECONDS = 30 * 60
+PROXY_BUFFER_SIZE = 16 * 1024
+WEAK_NETWORK_PROFILES: dict[str, tuple[int, int, float, float, float]] = {
+    "不限速": (0, 0, 0.0, 0.0, 0.0),
+    "4G 良好": (40, 10, 0.0, 12_000.0, 4_000.0),
+    "3G 普通": (120, 40, 0.5, 1_600.0, 768.0),
+    "弱网": (300, 120, 2.0, 512.0, 256.0),
+    "极弱网": (800, 300, 6.0, 128.0, 64.0),
+    "电梯": (1000, 450, 10.0, 96.0, 48.0),
+    "地铁": (500, 250, 4.0, 384.0, 128.0),
+    "高速": (220, 120, 2.0, 1024.0, 384.0),
+    "隧道": (1500, 600, 15.0, 64.0, 32.0),
+}
 
 
 def runtime_root() -> Path:
@@ -193,6 +206,511 @@ class PerfSample:
     note: str = ""
 
 
+def sample_quality_tag(sample: PerfSample) -> str:
+    note = sample.note or ""
+    if "设备级网络兜底" in note:
+        return "fallback"
+    if LiveQualityTracker._has_quality_issue(note):
+        return "issue"
+    return "ok"
+
+
+@dataclass(frozen=True)
+class MetricHealth:
+    state: str
+    label: str
+    detail: str
+
+
+class MetricHealthAnalyzer:
+    METRICS = (
+        "fps",
+        "jank_percent",
+        "cpu_percent",
+        "memory_mb",
+        "battery_percent",
+        "temperature_c",
+        "power_w",
+        "rx_kbps",
+        "tx_kbps",
+    )
+
+    LABELS = {
+        "ok": "正常",
+        "waiting": "等待",
+        "idle": "无流量",
+        "missing": "异常",
+    }
+
+    def analyze(self, sample: PerfSample) -> dict[str, MetricHealth]:
+        note = sample.note or ""
+        values = asdict(sample)
+        return {metric: self._metric_health(metric, float(values.get(metric, 0.0) or 0.0), sample.elapsed, note) for metric in self.METRICS}
+
+    def _metric_health(self, metric: str, value: float, elapsed: float, note: str) -> MetricHealth:
+        if self._note_marks_missing(metric, note):
+            return self._health("missing", self._missing_detail(metric, note))
+        if metric in ("rx_kbps", "tx_kbps"):
+            if value > 0:
+                return self._health("ok", "正在采集应用网络速率")
+            if elapsed < 3.0:
+                return self._health("waiting", "等待第二次网络采样")
+            return self._health("idle", "当前没有应用网络流量")
+        if value > 0:
+            return self._health("ok", "指标正常采集中")
+        if elapsed < 3.0:
+            return self._health("waiting", "等待采样窗口稳定")
+        return self._health("missing", self._missing_detail(metric, note))
+
+    @classmethod
+    def _health(cls, state: str, detail: str) -> MetricHealth:
+        return MetricHealth(state, cls.LABELS.get(state, state), detail)
+
+    @staticmethod
+    def _note_marks_missing(metric: str, note: str) -> bool:
+        if not note:
+            return False
+        if metric in ("fps", "jank_percent"):
+            return "FPS 未采集" in note or "FPS 当前无帧增量" in note or "FPS 采集失败" in note
+        if metric == "cpu_percent":
+            return "CPU 当前无进程增量" in note or "CPU/内存" in note and "需要启动" in note
+        if metric == "memory_mb":
+            return "未匹配到目标 PID" in note or "未找到运行中的" in note
+        if metric in ("rx_kbps", "tx_kbps"):
+            if "设备级网络兜底" in note:
+                return False
+            network_tokens = ("网络未匹配", "无法按应用统计", "网络采集失败", "网络采集不可用")
+            return any(token in note for token in network_tokens)
+        if metric == "power_w":
+            return "功耗" in note and ("失败" in note or "不可用" in note)
+        return False
+
+    @staticmethod
+    def _missing_detail(metric: str, note: str) -> str:
+        if metric in ("fps", "jank_percent"):
+            return "未拿到帧数据，请保持目标页面可见"
+        if metric == "cpu_percent":
+            return "未拿到进程 CPU 增量"
+        if metric == "memory_mb":
+            return "未匹配到目标进程内存"
+        if metric == "battery_percent":
+            return "未拿到电量信息"
+        if metric == "temperature_c":
+            return "未拿到温度信息"
+        if metric == "power_w":
+            return "未拿到电流/电压，功耗不可估算"
+        if metric in ("rx_kbps", "tx_kbps"):
+            return "未拿到应用 UID 网络统计"
+        return note or "暂未采集到数据"
+
+
+class LiveQualityTracker:
+    def __init__(self) -> None:
+        self.sample_count = 0
+        self.issue_count = 0
+        self.network_fallback_count = 0
+        self.network_missing_count = 0
+        self.network_source = "等待数据"
+
+    def reset(self) -> None:
+        self.sample_count = 0
+        self.issue_count = 0
+        self.network_fallback_count = 0
+        self.network_missing_count = 0
+        self.network_source = "等待数据"
+
+    def update(self, sample: PerfSample) -> str:
+        self.sample_count += 1
+        note = sample.note or ""
+        has_issue = self._has_quality_issue(note)
+        if has_issue:
+            self.issue_count += 1
+        if "设备级网络兜底" in note:
+            self.network_fallback_count += 1
+        if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
+            self.network_missing_count += 1
+        self.network_source = self._network_source(sample, note)
+        return self.status_text()
+
+    def status_text(self) -> str:
+        total = max(self.sample_count, 1)
+        issue_percent = self.issue_count / total * 100.0
+        fallback_percent = self.network_fallback_count / total * 100.0
+        return (
+            f"网络来源：{self.network_source} · "
+            f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
+            f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%)"
+        )
+
+    @staticmethod
+    def _has_quality_issue(note: str) -> bool:
+        if not note:
+            return False
+        if "设备级网络兜底" in note and "；" not in note:
+            return False
+        tokens = (
+            "未采集",
+            "无帧增量",
+            "无进程增量",
+            "未匹配",
+            "无法按应用统计",
+            "采集失败",
+            "采集不可用",
+            "未找到运行中的",
+        )
+        return any(token in note for token in tokens)
+
+    @staticmethod
+    def _network_source(sample: PerfSample, note: str) -> str:
+        if "设备级网络兜底" in note:
+            return "设备级兜底"
+        if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
+            return "per-UID 不可用"
+        if sample.rx_kbps > 0 or sample.tx_kbps > 0:
+            return "目标 App per-UID"
+        if sample.elapsed < 3.0:
+            return "等待网络采样"
+        return "无流量"
+
+
+class MetricStabilizer:
+    """Display-only smoothing; raw samples stay unchanged for reports."""
+
+    ALPHA_BY_METRIC = {
+        "fps": 0.42,
+        "jank_percent": 0.5,
+        "cpu_percent": 0.34,
+        "memory_mb": 0.25,
+        "battery_percent": 0.2,
+        "temperature_c": 0.2,
+        "power_w": 0.3,
+        "rx_kbps": 0.48,
+        "tx_kbps": 0.48,
+    }
+    ZERO_HOLD_SECONDS = {
+        "fps": 3.0,
+        "cpu_percent": 3.0,
+    }
+    SPIKE_KEEP_BY_METRIC = {
+        "fps": 0.55,
+        "jank_percent": 0.75,
+        "cpu_percent": 0.7,
+        "memory_mb": 0.9,
+        "battery_percent": 1.0,
+        "temperature_c": 0.9,
+        "power_w": 0.7,
+        "rx_kbps": 0.9,
+        "tx_kbps": 0.9,
+    }
+
+    def __init__(self) -> None:
+        self._values: dict[str, float] = {}
+        self._timestamps: dict[str, float] = {}
+
+    def reset(self) -> None:
+        self._values.clear()
+        self._timestamps.clear()
+
+    def smooth_sample(self, sample: PerfSample) -> PerfSample:
+        payload = asdict(sample)
+        for metric in self.ALPHA_BY_METRIC:
+            payload[metric] = self._smooth(metric, float(payload.get(metric, 0.0) or 0.0), sample.timestamp)
+        return PerfSample(**payload)
+
+    def _smooth(self, metric: str, value: float, timestamp: float) -> float:
+        previous = self._values.get(metric)
+        if value <= 0 and previous and previous > 0:
+            previous_timestamp = self._timestamps.get(metric, timestamp)
+            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0)
+            if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
+                held = previous * 0.82
+                self._values[metric] = held
+                return held
+        if previous is None or previous <= 0 or value <= 0:
+            self._values[metric] = value
+            self._timestamps[metric] = timestamp
+            return value
+        alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
+        blended = previous + alpha * (value - previous)
+        delta_ratio = abs(value - previous) / max(abs(previous), 1.0)
+        if delta_ratio > 0.35:
+            keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
+            blended = blended * (1.0 - keep) + value * keep
+        self._values[metric] = blended
+        self._timestamps[metric] = timestamp
+        return max(blended, 0.0)
+
+
+class WeakNetworkProxy:
+    def __init__(self, log_callback) -> None:
+        self.log_callback = log_callback
+        self.host = "0.0.0.0"
+        self.port = 18888
+        self.enabled = False
+        self.latency_ms = 0
+        self.jitter_ms = 0
+        self.loss_percent = 0.0
+        self.down_kbps = 0.0
+        self.up_kbps = 0.0
+        self._server_socket: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+
+    def configure(
+        self,
+        port: int,
+        latency_ms: int,
+        jitter_ms: int,
+        loss_percent: float,
+        down_kbps: float,
+        up_kbps: float,
+    ) -> None:
+        with self._lock:
+            self.port = max(1024, min(int(port), 65535))
+            self.latency_ms = max(0, int(latency_ms))
+            self.jitter_ms = max(0, int(jitter_ms))
+            self.loss_percent = max(0.0, min(float(loss_percent), 100.0))
+            self.down_kbps = max(0.0, float(down_kbps))
+            self.up_kbps = max(0.0, float(up_kbps))
+
+    def start(self) -> None:
+        if self.is_running():
+            self.enabled = True
+            return
+        self._stop_event.clear()
+        self.enabled = True
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((self.host, self.port))
+        server.listen(128)
+        server.settimeout(0.5)
+        self._server_socket = server
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+        self.log_callback(f"弱网代理已启动：{self.local_endpoint()}")
+
+    def stop(self) -> None:
+        was_running = self.is_running()
+        self.enabled = False
+        self._stop_event.set()
+        server = self._server_socket
+        self._server_socket = None
+        if server:
+            try:
+                server.close()
+            except OSError:
+                pass
+        if was_running:
+            self.log_callback("弱网代理已停止。")
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive() and self._server_socket)
+
+    def local_endpoint(self) -> str:
+        return f"{self._host_lan_ip()}:{self.port}"
+
+    @staticmethod
+    def _host_lan_ip() -> str:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+        except OSError:
+            return "127.0.0.1"
+        finally:
+            sock.close()
+
+    def _serve(self) -> None:
+        while not self._stop_event.is_set():
+            server = self._server_socket
+            if not server:
+                break
+            try:
+                client, address = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle_client, args=(client, address), daemon=True).start()
+
+    def _handle_client(self, client: socket.socket, address: tuple[str, int]) -> None:
+        client.settimeout(12)
+        remote: socket.socket | None = None
+        try:
+            header = self._recv_header(client)
+            if not header:
+                return
+            first_line = header.split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+            parts = first_line.split()
+            if len(parts) < 2:
+                return
+            method = parts[0].upper()
+            target = parts[1]
+            if self._should_drop_connection():
+                self.log_callback(f"弱网丢弃连接：{address[0]} -> {target}")
+                return
+            if method == "CONNECT":
+                host, port = self._split_host_port(target, 443)
+                remote = socket.create_connection((host, port), timeout=12)
+                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            else:
+                host, port = self._host_from_http_header(target, header)
+                if not host:
+                    return
+                remote = socket.create_connection((host, port), timeout=12)
+                remote.sendall(self._rewrite_http_request(header, target))
+            remote.settimeout(12)
+            self._pipe_bidirectional(client, remote)
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                self.log_callback(f"弱网代理连接失败：{self._short_error(str(exc))}")
+        finally:
+            for sock in (client, remote):
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _short_error(text: str) -> str:
+        text = text.strip().replace("\n", " ")
+        return text[:120] if text else "未知错误"
+
+    @staticmethod
+    def _recv_header(sock: socket.socket) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        while total < 64 * 1024:
+            data = sock.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+            total += len(data)
+            if b"\r\n\r\n" in data or b"\n\n" in data:
+                break
+        return b"".join(chunks)
+
+    @staticmethod
+    def _split_host_port(value: str, default_port: int) -> tuple[str, int]:
+        if value.startswith("[") and "]" in value:
+            host, _, rest = value[1:].partition("]")
+            port_text = rest[1:] if rest.startswith(":") else ""
+            return host, int(port_text or default_port)
+        if ":" in value:
+            host, port_text = value.rsplit(":", 1)
+            if port_text.isdigit():
+                return host, int(port_text)
+        return value, default_port
+
+    def _host_from_http_header(self, target: str, header: bytes) -> tuple[str, int]:
+        if target.startswith("http://") or target.startswith("https://"):
+            parsed = urllib.parse.urlparse(target)
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            return parsed.hostname or "", port
+        match = re.search(rb"(?im)^Host:\s*([^\r\n]+)", header)
+        if not match:
+            return "", 80
+        host_value = match.group(1).decode("iso-8859-1", errors="replace").strip()
+        return self._split_host_port(host_value, 80)
+
+    @staticmethod
+    def _rewrite_http_request(header: bytes, target: str) -> bytes:
+        if not (target.startswith("http://") or target.startswith("https://")):
+            return header
+        parsed = urllib.parse.urlparse(target)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+        first, sep, rest = header.partition(b"\r\n")
+        parts = first.decode("iso-8859-1", errors="replace").split()
+        if len(parts) >= 3:
+            first = f"{parts[0]} {path} {parts[2]}".encode("iso-8859-1")
+        return first + sep + rest
+
+    def _pipe_bidirectional(self, client: socket.socket, remote: socket.socket) -> None:
+        done = threading.Event()
+        up = threading.Thread(target=self._pipe, args=(client, remote, "up", done), daemon=True)
+        down = threading.Thread(target=self._pipe, args=(remote, client, "down", done), daemon=True)
+        up.start()
+        down.start()
+        while not done.is_set() and not self._stop_event.is_set():
+            done.wait(0.2)
+
+    def _pipe(self, source: socket.socket, target: socket.socket, direction: str, done: threading.Event) -> None:
+        try:
+            while not done.is_set() and not self._stop_event.is_set():
+                data = source.recv(PROXY_BUFFER_SIZE)
+                if not data:
+                    break
+                self._shape_before_send(direction, len(data))
+                target.sendall(data)
+        except OSError:
+            pass
+        finally:
+            done.set()
+            try:
+                target.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def _snapshot(self) -> tuple[bool, int, int, float, float, float]:
+        with self._lock:
+            return (
+                self.enabled,
+                self.latency_ms,
+                self.jitter_ms,
+                self.loss_percent,
+                self.down_kbps,
+                self.up_kbps,
+            )
+
+    def _should_drop_connection(self) -> bool:
+        enabled, _latency, _jitter, loss, _down, _up = self._snapshot()
+        return enabled and loss > 0 and random.random() < loss / 100.0
+
+    def _shape_before_send(self, direction: str, size: int) -> None:
+        enabled, latency, jitter, _loss, down, up = self._snapshot()
+        if not enabled:
+            return
+        delay = latency / 1000.0
+        if jitter:
+            delay += random.uniform(0.0, jitter / 1000.0)
+        rate = up if direction == "up" else down
+        if rate > 0:
+            delay += size / max(rate * 1024.0, 1.0)
+        if delay > 0:
+            time.sleep(min(delay, 5.0))
+
+
+class WeakProxyDeviceRegistry:
+    def __init__(self) -> None:
+        self._devices: dict[str, tuple[DeviceInfo, str]] = {}
+
+    def mark_applied(self, device: DeviceInfo, proxy: str) -> None:
+        if device.platform == "Android":
+            self._devices[device.serial] = (device, proxy)
+
+    def mark_cleared(self, device: DeviceInfo) -> None:
+        self._devices.pop(device.serial, None)
+
+    def cleanup(self, android_adapter: object) -> list[str]:
+        cleared: list[str] = []
+        for serial, (device, _proxy) in list(self._devices.items()):
+            try:
+                ok, _detail = android_adapter.clear_http_proxy(device)  # type: ignore[attr-defined]
+            except Exception:
+                ok = False
+            if ok:
+                cleared.append(serial)
+                self._devices.pop(serial, None)
+        return cleared
+
+    def active_devices(self) -> list[DeviceInfo]:
+        return [device for device, _proxy in self._devices.values()]
+
+
 class BaseAdapter:
     platform_name = "Base"
 
@@ -234,10 +752,14 @@ class AndroidAdapter(BaseAdapter):
         self._surface_frame_cache: dict[tuple[str, str], tuple[float, int]] = {}
         self._surface_cache: dict[tuple[str, str], str] = {}
         self._net_cache: dict[tuple[str, str], tuple[float, int, int]] = {}
+        self._device_net_cache: dict[tuple[str, str], tuple[float, int, int]] = {}
+        self._network_note_cache: dict[tuple[str, str], str] = {}
         self._uid_cache: dict[tuple[str, str], int] = {}
         self._pid_cache: dict[tuple[str, str], int] = {}
-        self._cpu_proc_cache: dict[tuple[str, str], tuple[float, int]] = {}
+        self._pid_list_cache: dict[tuple[str, str], list[int]] = {}
+        self._cpu_proc_cache: dict[tuple[str, str], tuple[float, dict[int, int]]] = {}
         self._clk_tck_cache: dict[str, int] = {}
+        self._sample_count: dict[tuple[str, str], int] = {}
 
     def is_available(self) -> bool:
         return self.adb_path is not None
@@ -251,6 +773,36 @@ class AndroidAdapter(BaseAdapter):
         if not self.adb_path:
             return 1, "adb not found"
         return run_command([self.adb_path, "-s", serial, *shell_args], timeout=timeout)
+
+    def set_http_proxy(self, device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+        proxy = f"{host}:{int(port)}"
+        code, output = self._adb(
+            device.serial,
+            ["shell", "settings", "put", "global", "http_proxy", proxy],
+            timeout=5.0,
+        )
+        if code != 0:
+            return False, output or "settings put global http_proxy failed"
+        return True, proxy
+
+    def clear_http_proxy(self, device: DeviceInfo) -> tuple[bool, str]:
+        commands = [
+            ["shell", "settings", "put", "global", "http_proxy", ":0"],
+            ["shell", "settings", "delete", "global", "http_proxy"],
+            ["shell", "settings", "delete", "global", "global_http_proxy_host"],
+            ["shell", "settings", "delete", "global", "global_http_proxy_port"],
+        ]
+        last_output = ""
+        ok = True
+        for command in commands:
+            code, output = self._adb(device.serial, command, timeout=4.0)
+            last_output = output or last_output
+            if code not in (0, 255):
+                ok = False
+        return ok, last_output
+
+    def current_http_proxy(self, device: DeviceInfo) -> str:
+        return self._shell(device.serial, "settings get global http_proxy", timeout=3.0).strip()
 
     def _shell(self, serial: str, command: str, timeout: float = 8.0) -> str:
         code, output = self._adb(serial, ["shell", command], timeout=timeout)
@@ -290,13 +842,51 @@ class AndroidAdapter(BaseAdapter):
         return sorted(set(apps))
 
     def foreground_app(self, device: DeviceInfo) -> str:
-        output = self._shell(device.serial, "dumpsys window", timeout=6.0)
+        for command, timeout in (
+            ("dumpsys window", 6.0),
+            ("dumpsys activity activities", 7.0),
+            ("cmd activity get-foreground-activities", 5.0),
+        ):
+            output = self._shell(device.serial, command, timeout=timeout)
+            app_id = self._parse_foreground_app(output)
+            if app_id:
+                return app_id
+        return ""
+
+    @classmethod
+    def _parse_foreground_app(cls, output: str) -> str:
+        preferred_tokens = (
+            "mCurrentFocus",
+            "mFocusedApp",
+            "topResumedActivity",
+            "mResumedActivity",
+            "ResumedActivity",
+            "ACTIVITY",
+        )
         for line in output.splitlines():
-            if "mCurrentFocus" not in line and "mFocusedApp" not in line and "topResumedActivity" not in line:
+            if not any(token in line for token in preferred_tokens):
                 continue
-            match = re.search(r"([a-zA-Z][\w.]+)/(?:[a-zA-Z0-9_.$]+)", line)
-            if match:
-                return match.group(1)
+            app_id = cls._package_from_activity_line(line)
+            if app_id:
+                return app_id
+        return cls._package_from_activity_line(output)
+
+    @staticmethod
+    def _package_from_activity_line(text: str) -> str:
+        patterns = (
+            r"\bu\d+\s+([a-zA-Z][\w.]+)/[A-Za-z0-9_.$]+",
+            r"\b([a-zA-Z][\w.]+)/(?:[A-Za-z0-9_.$]+)",
+            r"Splash Screen\s+([a-zA-Z][\w.]+)",
+            r"\bpackageName=([a-zA-Z][\w.]+)",
+            r"\bcmp=([a-zA-Z][\w.]+)/[A-Za-z0-9_.$]+",
+        )
+        ignored_prefixes = ("android.", "com.android.", "com.google.android.")
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                package = match.group(1)
+                if "." not in package or package.startswith(ignored_prefixes):
+                    continue
+                return package
         return ""
 
     def start_session(self, device: DeviceInfo, app_id: str) -> None:
@@ -308,8 +898,12 @@ class AndroidAdapter(BaseAdapter):
         self._surface_frame_cache.pop(key, None)
         self._surface_cache.pop(key, None)
         self._net_cache.pop(key, None)
+        self._device_net_cache.pop(key, None)
+        self._network_note_cache.pop(key, None)
         self._pid_cache.pop(key, None)
+        self._pid_list_cache.pop(key, None)
         self._cpu_proc_cache.pop(key, None)
+        self._sample_count.pop(key, None)
         surface = self._surface_name(device, app_id) if app_id else ""
         if surface:
             self._shell(device.serial, f"dumpsys SurfaceFlinger --latency-clear {shlex.quote(surface)}", timeout=3.0)
@@ -336,28 +930,49 @@ class AndroidAdapter(BaseAdapter):
         return best
 
     def _process_pid(self, device: DeviceInfo, app_id: str) -> int | None:
+        pids = self._process_pids(device, app_id)
+        return pids[0] if pids else None
+
+    def _process_pids(self, device: DeviceInfo, app_id: str) -> list[int]:
         key = (device.serial, app_id)
-        cached = self._pid_cache.get(key)
+        cached = self._pid_list_cache.get(key)
         if cached:
             return cached
         output = self._shell(device.serial, f"pidof {shlex.quote(app_id)}", timeout=2.0)
-        match = re.search(r"\d+", output)
-        if not match:
-            return None
-        pid = int(match.group(0))
-        self._pid_cache[key] = pid
-        return pid
+        pids = self._parse_pid_list(output)
+        if not pids:
+            output = self._shell(device.serial, f"pgrep -f {shlex.quote(app_id)}", timeout=2.0)
+            pids = self._parse_pid_list(output)
+        if pids:
+            self._pid_list_cache[key] = pids
+            self._pid_cache[key] = pids[0]
+        return pids
+
+    @staticmethod
+    def _parse_pid_list(output: str) -> list[int]:
+        pids: list[int] = []
+        seen: set[int] = set()
+        for value in re.findall(r"\b\d+\b", output):
+            pid = int(value)
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            pids.append(pid)
+        return pids
 
     def _cpu_percent_from_proc(self, device: DeviceInfo, app_id: str) -> float | None:
-        pid = self._process_pid(device, app_id)
-        if not pid:
+        pids = self._process_pids(device, app_id)
+        if not pids:
             return None
-        stat = self._shell(device.serial, f"cat /proc/{pid}/stat", timeout=2.0)
-        try:
-            after_name = stat.rsplit(") ", 1)[1].split()
-            process_jiffies = int(after_name[11]) + int(after_name[12])
-        except Exception:
+        process_jiffies: dict[int, int] = {}
+        for pid in pids:
+            stat = self._shell(device.serial, f"cat /proc/{pid}/stat", timeout=2.0)
+            jiffies = self._jiffies_from_proc_stat(stat)
+            if jiffies is not None:
+                process_jiffies[pid] = jiffies
+        if not process_jiffies:
             self._pid_cache.pop((device.serial, app_id), None)
+            self._pid_list_cache.pop((device.serial, app_id), None)
             return None
         clk_tck = self._clock_ticks_per_second(device)
         if clk_tck <= 0:
@@ -368,10 +983,23 @@ class AndroidAdapter(BaseAdapter):
         self._cpu_proc_cache[key] = (now, process_jiffies)
         if not previous:
             return None
-        previous_time, previous_jiffies = previous
+        previous_time, previous_jiffies_by_pid = previous
         elapsed = max(now - previous_time, 0.1)
-        delta_jiffies = max(process_jiffies - previous_jiffies, 0)
+        delta_jiffies = 0
+        for pid, jiffies in process_jiffies.items():
+            previous_jiffies = previous_jiffies_by_pid.get(pid)
+            if previous_jiffies is None:
+                continue
+            delta_jiffies += max(jiffies - previous_jiffies, 0)
         return min((delta_jiffies / clk_tck) / elapsed * 100.0, 1000.0)
+
+    @staticmethod
+    def _jiffies_from_proc_stat(stat: str) -> int | None:
+        try:
+            after_name = stat.rsplit(") ", 1)[1].split()
+            return int(after_name[11]) + int(after_name[12])
+        except Exception:
+            return None
 
     def _clock_ticks_per_second(self, device: DeviceInfo) -> int:
         cached = self._clk_tck_cache.get(device.serial)
@@ -449,37 +1077,127 @@ class AndroidAdapter(BaseAdapter):
         except Exception:
             pass
         output = self._shell(device.serial, "cat /proc/net/xt_qtaguid/stats", timeout=4.0)
-        rx_total = 0
-        tx_total = 0
-        matched = False
-        for line in output.splitlines():
-            parts = line.split()
-            if len(parts) < 8 or not parts[0].isdigit():
-                continue
-            try:
-                if int(parts[3]) == uid:
-                    matched = True
-                    rx_total += int(parts[5])
-                    tx_total += int(parts[7])
-            except Exception:
-                continue
-        if matched:
+        rx_total, tx_total = self._parse_qtaguid_stats(output, uid)
+        if rx_total or tx_total:
             return rx_total, tx_total
         return self._net_totals_from_netstats(device, uid)
 
     def _net_totals_from_netstats(self, device: DeviceInfo, uid: int) -> tuple[int, int]:
         output = self._shell(device.serial, "dumpsys netstats detail", timeout=6.0)
-        match = re.search(rf"^\s*{uid}\s+(\d+)\s+\d+\s+(\d+)\s+\d+\s*$", output, re.MULTILINE)
-        if not match:
-            return 0, 0
-        try:
-            return int(match.group(1)), int(match.group(2))
-        except Exception:
-            return 0, 0
+        return self._parse_netstats_detail_for_uid(output, uid)
+
+    @staticmethod
+    def _parse_qtaguid_stats(output: str, uid: int) -> tuple[int, int]:
+        rx_total = 0
+        tx_total = 0
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) < 8 or not parts[0].isdigit():
+                continue
+            try:
+                if int(parts[3]) != uid:
+                    continue
+                rx_total += int(parts[5])
+                tx_total += int(parts[7])
+            except Exception:
+                continue
+        return rx_total, tx_total
+
+    @classmethod
+    def _parse_netstats_detail_for_uid(cls, output: str, uid: int) -> tuple[int, int]:
+        rx_total = 0
+        tx_total = 0
+        active_uid = False
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            uid_match = re.search(r"\buid[=:\s]+(-?\d+)", line)
+            if uid_match:
+                active_uid = int(uid_match.group(1)) == uid
+            elif "Bucket{" in line or "uid=" in line:
+                active_uid = False
+            if str(uid) in line and not active_uid:
+                numbers = [int(value) for value in re.findall(r"\b\d+\b", line)]
+                active_uid = uid in numbers
+            if not active_uid:
+                continue
+            named = cls._rx_tx_from_named_bytes(line)
+            if named:
+                rx, tx = named
+                rx_total += rx
+                tx_total += tx
+                continue
+            positional = cls._rx_tx_from_positional_netstats(line, uid)
+            if positional:
+                rx, tx = positional
+                rx_total += rx
+                tx_total += tx
+        return rx_total, tx_total
+
+    @staticmethod
+    def _rx_tx_from_named_bytes(line: str) -> tuple[int, int] | None:
+        rx_match = re.search(r"\brxBytes[=:\s]+(\d+)", line)
+        tx_match = re.search(r"\btxBytes[=:\s]+(\d+)", line)
+        if rx_match and tx_match:
+            return int(rx_match.group(1)), int(tx_match.group(1))
+        return None
+
+    @staticmethod
+    def _rx_tx_from_positional_netstats(line: str, uid: int) -> tuple[int, int] | None:
+        numbers = [int(value) for value in re.findall(r"\b\d+\b", line)]
+        if uid not in numbers:
+            return None
+        uid_index = numbers.index(uid)
+        tail = numbers[uid_index + 1 :]
+        if len(tail) >= 4:
+            return tail[0], tail[2]
+        if len(tail) >= 2:
+            return tail[0], tail[1]
+        return None
+
+    def _device_net_totals(self, device: DeviceInfo) -> tuple[int, int]:
+        output = self._shell(device.serial, "cat /proc/net/dev", timeout=2.0)
+        return self._parse_proc_net_dev(output)
+
+    @staticmethod
+    def _parse_proc_net_dev(output: str) -> tuple[int, int]:
+        rx_total = 0
+        tx_total = 0
+        ignored = ("lo", "dummy", "ifb", "sit", "ip6tnl")
+        for raw_line in output.splitlines():
+            if ":" not in raw_line:
+                continue
+            name, payload = raw_line.split(":", 1)
+            iface = name.strip()
+            if not iface or iface.startswith(ignored):
+                continue
+            parts = payload.split()
+            if len(parts) < 16:
+                continue
+            try:
+                rx_total += int(parts[0])
+                tx_total += int(parts[8])
+            except Exception:
+                continue
+        return rx_total, tx_total
 
     def _network_kbps(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
         key = (device.serial, app_id)
+        self._network_note_cache[key] = ""
         rx_total, tx_total = self._net_totals(device, app_id)
+        if rx_total <= 0 and tx_total <= 0:
+            device_rx, device_tx = self._device_net_totals(device)
+            previous_device = self._device_net_cache.get(key)
+            self._device_net_cache[key] = (now, device_rx, device_tx)
+            if previous_device:
+                prev_time, prev_rx, prev_tx = previous_device
+                delta = max(now - prev_time, 0.1)
+                rx_kbps = max(device_rx - prev_rx, 0) / 1024.0 / delta
+                tx_kbps = max(device_tx - prev_tx, 0) / 1024.0 / delta
+                if rx_kbps > 0 or tx_kbps > 0:
+                    self._network_note_cache[key] = "Android 网络使用设备级网络兜底，非目标 App 独占流量。"
+                    return rx_kbps, tx_kbps
         previous = self._net_cache.get(key)
         self._net_cache[key] = (now, rx_total, tx_total)
         if not previous:
@@ -778,22 +1496,65 @@ class AndroidAdapter(BaseAdapter):
 
     def collect_sample(self, device: DeviceInfo, app_id: str, start_time: float) -> PerfSample:
         current = time.time()
+        key = (device.serial, app_id)
+        sample_count = self._sample_count.get(key, 0) + 1
+        self._sample_count[key] = sample_count
         fps, jank_percent = self._fps_and_jank(device, app_id, current)
         battery, temperature, power = self._battery(device)
         rx, tx = self._network_kbps(device, app_id, current)
+        cpu = self._cpu_percent(device, app_id)
+        memory = self._memory_mb(device, app_id)
+        note = self._android_sample_note(device, app_id, sample_count, fps, cpu, memory, rx, tx)
+        network_note = self._network_note_cache.get(key, "")
+        if network_note:
+            note = f"{note}；{network_note}" if note else network_note
         return PerfSample(
             timestamp=current,
             elapsed=current - start_time,
             fps=fps,
             jank_percent=jank_percent,
-            cpu_percent=self._cpu_percent(device, app_id),
-            memory_mb=self._memory_mb(device, app_id),
+            cpu_percent=cpu,
+            memory_mb=memory,
             battery_percent=battery,
             temperature_c=temperature,
             power_w=power,
             rx_kbps=rx,
             tx_kbps=tx,
+            note=note,
         )
+
+    def _android_sample_note(
+        self,
+        device: DeviceInfo,
+        app_id: str,
+        sample_count: int,
+        fps: float,
+        cpu: float,
+        memory: float,
+        rx: float,
+        tx: float,
+    ) -> str:
+        if sample_count < 3 or not app_id:
+            return ""
+        notes: list[str] = []
+        pid = self._pid_cache.get((device.serial, app_id))
+        if pid is None and (cpu <= 0 or memory <= 0):
+            notes.append("Android 未匹配到目标 PID，请确认 App 正在前台运行。")
+        if fps <= 0:
+            surface = self._surface_cache.get((device.serial, app_id), "")
+            if not surface:
+                notes.append("Android FPS 未采集到 Surface，请在目标页面停留 2-3 秒后重试，或确认目标 App 有可见界面。")
+            else:
+                notes.append(f"Android FPS 当前无帧增量，Surface={surface}。低端机/静止页面可能需要更长采样窗口。")
+        if cpu <= 0 and pid is not None:
+            notes.append("Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。")
+        if rx <= 0 and tx <= 0:
+            uid = self._uid_cache.get((device.serial, app_id))
+            if uid is None:
+                notes.append("Android 网络未匹配到 App UID，无法按应用统计上下行。")
+            else:
+                notes.append("Android 网络当前无流量或系统未开放 per-UID 统计；请触发网络请求后观察。")
+        return "；".join(notes[:3])
 
     def capture_screenshot(self, device: DeviceInfo, target: Path) -> Path | None:
         if not self.adb_path:
@@ -2220,6 +2981,67 @@ class SessionRecorder:
             "avg_tx_kbps": avg("tx_kbps"),
         }
 
+    def quality_summary(self) -> dict[str, object]:
+        total = len(self.samples)
+        if total <= 0:
+            return {
+                "sample_count": 0,
+                "noted_samples": 0,
+                "noted_percent": 0.0,
+                "network_source": "无数据",
+                "network_fallback_samples": 0,
+                "network_fallback_percent": 0.0,
+                "issues": [],
+            }
+        noted_samples = [sample for sample in self.samples if sample.note]
+        fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
+        missing_tokens = {
+            "FPS 未采集": ("FPS 未采集", "帧率数据缺失，通常与 Surface 识别、页面静止或系统输出受限有关。"),
+            "FPS 当前无帧增量": ("FPS 无帧增量", "采样窗口内没有新增帧，低端机或静止页面可能更常见。"),
+            "CPU 当前无进程增量": ("CPU 无进程增量", "CPU 进程计数未变化，可能是采样间隔过短或 /proc 读取受限。"),
+            "网络未匹配": ("网络未匹配 UID", "未拿到目标 App UID，无法确认 per-UID 上下行。"),
+            "无法按应用统计": ("网络无法按应用统计", "系统未开放目标 App per-UID 网络统计。"),
+            "网络采集失败": ("网络采集失败", "网络采集通道返回错误。"),
+            "未匹配到目标 PID": ("PID 未匹配", "目标进程未匹配，CPU/内存/FPS 可能不可信。"),
+        }
+        issues: list[dict[str, object]] = []
+        for token, (label, detail) in missing_tokens.items():
+            count = sum(1 for sample in self.samples if token in sample.note)
+            if count:
+                issues.append(
+                    {
+                        "label": label,
+                        "count": count,
+                        "percent": round(count / total * 100.0, 1),
+                        "detail": detail,
+                    }
+                )
+        if fallback_samples:
+            issues.append(
+                {
+                    "label": "设备级网络兜底",
+                    "count": len(fallback_samples),
+                    "percent": round(len(fallback_samples) / total * 100.0, 1),
+                    "detail": "上下行来自设备总流量，不是目标 App 独占流量。",
+                }
+            )
+        network_source = "目标 App per-UID"
+        if fallback_samples and len(fallback_samples) == total:
+            network_source = "设备级网络兜底"
+        elif fallback_samples:
+            network_source = "per-UID + 设备级兜底"
+        elif any("网络未匹配" in sample.note or "无法按应用统计" in sample.note for sample in self.samples):
+            network_source = "per-UID 不可用"
+        return {
+            "sample_count": total,
+            "noted_samples": len(noted_samples),
+            "noted_percent": round(len(noted_samples) / total * 100.0, 1),
+            "network_source": network_source,
+            "network_fallback_samples": len(fallback_samples),
+            "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
+            "issues": issues,
+        }
+
     def export_bundle(self, folder: Path) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
         device_label = safe_name(self.device.name if self.device else "device")
@@ -2256,6 +3078,7 @@ class SessionRecorder:
             "device": asdict(self.device) if self.device else None,
             "target_app": self.app_id,
             "summary": self.summary(),
+            "quality": self.quality_summary(),
             "markers": self.markers,
             "samples": [asdict(sample) for sample in self.samples],
         }
@@ -2265,6 +3088,7 @@ class SessionRecorder:
 
     def _render_html(self, payload: dict) -> str:
         summary = payload.get("summary", {})
+        quality = payload.get("quality", {})
         summary_labels = {
             "device": "设备",
             "app_id": "目标应用",
@@ -2311,6 +3135,24 @@ class SessionRecorder:
             f"<tr><td>{index}</td><td>{html.escape(str(marker.get('elapsed', '')))}s</td><td>{html.escape(str(marker.get('label', '')))}</td></tr>"
             for index, marker in enumerate(self.markers, start=1)
         ) or "<tr><td colspan='3'>暂无标记</td></tr>"
+        quality_cards = "".join(
+            "<article class='quality-card'>"
+            f"<span>{html.escape(label)}</span>"
+            f"<strong>{html.escape(value)}</strong>"
+            f"<p>{html.escape(detail)}</p>"
+            "</article>"
+            for label, value, detail in [
+                ("样本数", str(quality.get("sample_count", 0)), "本次报告中的原始采样点数量。"),
+                ("带说明样本", f"{quality.get('noted_samples', 0)} / {quality.get('noted_percent', 0)}%", "出现采集说明、异常或兜底提示的样本。"),
+                ("网络来源", str(quality.get("network_source", "无数据")), "优先目标 App per-UID；不可用时可能使用设备级兜底。"),
+                ("网络兜底", f"{quality.get('network_fallback_samples', 0)} / {quality.get('network_fallback_percent', 0)}%", "设备级网络兜底不是目标 App 独占流量。"),
+            ]
+        )
+        issue_rows = "".join(
+            f"<tr><td>{html.escape(str(issue.get('label', '')))}</td><td>{html.escape(str(issue.get('count', 0)))}</td><td>{html.escape(str(issue.get('percent', 0)))}%</td><td>{html.escape(str(issue.get('detail', '')))}</td></tr>"
+            for issue in quality.get("issues", [])
+            if isinstance(issue, dict)
+        ) or "<tr><td colspan='4'>未发现明显采集异常或兜底说明</td></tr>"
         chart_cards = "".join(
             f"<section class='chart-card' data-metric='{key}'><div class='chart-head'><div><h3>{title}</h3><p>{desc}</p></div><div class='chart-stat' id='stat-{key}'>--</div></div><div class='chart-scroll'><canvas id='chart-{key}'></canvas></div></section>"
             for key, title, desc in [
@@ -2334,7 +3176,12 @@ class SessionRecorder:
             {"key": "rx_kbps", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
             {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
         ]
-        data = json.dumps([asdict(sample) for sample in self.samples], ensure_ascii=False).replace("</", "<\\/")
+        report_samples = []
+        for sample in self.samples:
+            row = asdict(sample)
+            row["qualityTag"] = sample_quality_tag(sample)
+            report_samples.append(row)
+        data = json.dumps(report_samples, ensure_ascii=False).replace("</", "<\\/")
         markers = json.dumps(self.markers, ensure_ascii=False).replace("</", "<\\/")
         charts = json.dumps(chart_config, ensure_ascii=False).replace("</", "<\\/")
         html_text = """<!doctype html>
@@ -2360,6 +3207,19 @@ class SessionRecorder:
     .kpi span { display: block; color: #64748b; font-size: 13px; }
     .kpi strong { display: inline-block; margin-top: 8px; font-size: 24px; line-height: 1; }
     .kpi em { margin-left: 5px; color: #64748b; font-style: normal; }
+    .quality-grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 12px; }
+    .quality-card { padding: 14px 16px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
+    .quality-card span { display: block; color: #64748b; font-size: 13px; }
+    .quality-card strong { display: block; margin-top: 7px; font-size: 19px; }
+    .quality-card p { min-height: 34px; }
+    .issue-table th, .issue-table td { width: auto; }
+    .issue-table th:nth-child(2), .issue-table td:nth-child(2) { width: 100px; }
+    .issue-table th:nth-child(3), .issue-table td:nth-child(3) { width: 100px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px 18px; margin: 10px 0 14px; color: #475569; font-size: 13px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 7px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; background: #2563eb; display: inline-block; }
+    .legend-ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #f59e0b; display: inline-block; }
+    .legend-triangle { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 11px solid #ef4444; display: inline-block; }
     .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .chart-card { min-width: 0; padding: 16px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
     .chart-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 10px; }
@@ -2372,6 +3232,7 @@ class SessionRecorder:
     .hint { color: #64748b; font-size: 13px; }
     @media (max-width: 1100px) {
       .kpi-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+      .quality-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
       .chart-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -2385,8 +3246,16 @@ class SessionRecorder:
     <h2>摘要</h2>
     <div class="kpi-grid">__KPI_CARDS__</div>
     <table style="margin-top: 16px;">__SUMMARY_ROWS__</table>
+    <h2>采集质量</h2>
+    <div class="quality-grid">__QUALITY_CARDS__</div>
+    <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
     <h2>曲线</h2>
     <div class="hint">每张图使用独立单位和坐标轴；虚线为参考阈值，标记会显示为竖线。</div>
+    <div class="legend" aria-label="曲线标识">
+      <span class="legend-item"><span class="legend-dot"></span>正常样本</span>
+      <span class="legend-item"><span class="legend-ring"></span>设备级网络兜底</span>
+      <span class="legend-item"><span class="legend-triangle"></span>采集异常样本</span>
+    </div>
     <div class="chart-grid">__CHART_CARDS__</div>
     <h2>标记</h2>
     <table class="marker-table"><tr><th>序号</th><th>Elapsed</th><th>Label</th></tr>__MARKER_ROWS__</table>
@@ -2504,6 +3373,38 @@ class SessionRecorder:
       ctx.textBaseline = 'middle';
       ctx.fillText(layout.label, layout.labelX + 7, layout.labelY + layout.boxH / 2);
       ctx.textBaseline = 'alphabetic';
+    }
+
+    function sampleQualityTag(sample) {
+      const note = String(sample.note || '');
+      if (sample.qualityTag) return sample.qualityTag;
+      if (note.includes('设备级网络兜底')) return 'fallback';
+      const issueTokens = ['未采集', '无帧增量', '无进程增量', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的'];
+      return issueTokens.some(token => note.includes(token)) ? 'issue' : 'ok';
+    }
+
+    function drawQualityMarker(ctx, x, y, tag) {
+      if (tag === 'fallback') {
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, 5.2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+      if (tag === 'issue') {
+        ctx.save();
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 6);
+        ctx.lineTo(x - 5.5, y + 5);
+        ctx.lineTo(x + 5.5, y + 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
     }
 
     function drawChart(config) {
@@ -2657,6 +3558,13 @@ class SessionRecorder:
             ctx.fill();
           });
         }
+        samples.forEach(sample => {
+          const tag = sampleQualityTag(sample);
+          if (tag === 'ok') return;
+          const x = xFor(sample.elapsed);
+          const y = yFor(sample[config.key]);
+          drawQualityMarker(ctx, x, y, tag);
+        });
       }
 
       for (const layout of markerLayouts) {
@@ -2693,6 +3601,8 @@ class SessionRecorder:
             .replace("__APP_ID__", html.escape(str(summary.get("app_id", ""))))
             .replace("__KPI_CARDS__", kpi_cards)
             .replace("__SUMMARY_ROWS__", rows)
+            .replace("__QUALITY_CARDS__", quality_cards)
+            .replace("__ISSUE_ROWS__", issue_rows)
             .replace("__CHART_CARDS__", chart_cards)
             .replace("__MARKER_ROWS__", marker_rows)
             .replace("__DATA__", data)
@@ -2781,7 +3691,7 @@ class GraphPanel(ttk.Frame):
         self.unit = unit
         self.color = color
         self.max_points = max_points
-        self.points: list[tuple[float, float]] = []
+        self.points: list[tuple[float, float, str]] = []
         self.view_start = 0.0
         self.view_seconds = 10.0
         self.header = ttk.Frame(self, style="Panel.TFrame")
@@ -2793,8 +3703,8 @@ class GraphPanel(ttk.Frame):
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
 
-    def append(self, elapsed: float, value: float) -> None:
-        self.points.append((max(0.0, float(elapsed)), float(value)))
+    def append(self, elapsed: float, value: float, quality: str = "ok") -> None:
+        self.points.append((max(0.0, float(elapsed)), float(value), quality))
         self.points = self.points[-self.max_points :]
         self.value_var.set(self._format(value))
         self.redraw()
@@ -2830,11 +3740,11 @@ class GraphPanel(ttk.Frame):
             return f"{hours}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
 
-    def _visible_points(self, view_start: float, view_end: float) -> list[tuple[float, float]]:
-        visible: list[tuple[float, float]] = []
-        previous: tuple[float, float] | None = None
+    def _visible_points(self, view_start: float, view_end: float) -> list[tuple[float, float, str]]:
+        visible: list[tuple[float, float, str]] = []
+        previous: tuple[float, float, str] | None = None
         for point in self.points:
-            elapsed, _value = point
+            elapsed, _value, _quality = point
             if elapsed < view_start:
                 previous = point
                 continue
@@ -2860,7 +3770,7 @@ class GraphPanel(ttk.Frame):
         text_color = "#7A8594"
         for index in range(5):
             y = pad_top + index * plot_h / 4
-        canvas.create_line(pad_left, y, width - pad_right, y, fill=grid_color)
+            canvas.create_line(pad_left, y, width - pad_right, y, fill=grid_color)
         canvas.create_text(pad_left - 4, pad_top, anchor="e", text="max", fill=text_color, font=("Helvetica", 9))
         canvas.create_text(pad_left - 4, pad_top + plot_h, anchor="e", text="0", fill=text_color, font=("Helvetica", 9))
         view_start = self.view_start
@@ -2880,21 +3790,29 @@ class GraphPanel(ttk.Frame):
                 font=("Helvetica", 12),
             )
             return
-        values = [value for elapsed, value in visible_points if view_start <= elapsed <= view_end] or [value for _elapsed, value in visible_points]
+        values = [value for elapsed, value, _quality in visible_points if view_start <= elapsed <= view_end] or [value for _elapsed, value, _quality in visible_points]
         max_value = max(max(values), 1.0)
         if self.metric == "fps":
             max_value = max(max_value, 60.0)
         points: list[float] = []
         last_visible: tuple[float, float] | None = None
-        for elapsed, value in visible_points:
+        quality_points: list[tuple[float, float, str]] = []
+        for elapsed, value, quality in visible_points:
             x = pad_left + ((elapsed - view_start) / view_seconds) * plot_w
             y = pad_top + plot_h - min(value / max_value, 1.0) * plot_h
             points.extend([x, y])
             if view_start <= elapsed <= view_end:
                 last_visible = (x, y)
+                if quality != "ok":
+                    quality_points.append((x, y, quality))
         shadow = points.copy()
         canvas.create_line(*shadow, fill="#DCEBFF", width=5, smooth=True)
         canvas.create_line(*points, fill=self.color, width=2.2, smooth=True)
+        for x, y, quality in quality_points:
+            if quality == "fallback":
+                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2)
+            elif quality == "issue":
+                canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill="#EF4444", outline="#FFFFFF")
         last_x, last_y = last_visible or (points[-2], points[-1])
         canvas.create_oval(last_x - 4, last_y - 4, last_x + 4, last_y + 4, fill=self.color, outline="#FFFFFF", width=2)
 
@@ -2927,6 +3845,11 @@ class App:
         self.graph_view_start = 0.0
         self.graph_view_seconds = 10.0
         self.graph_follow_latest = True
+        self.stabilizer = MetricStabilizer()
+        self.health_analyzer = MetricHealthAnalyzer()
+        self.live_quality = LiveQualityTracker()
+        self.weak_proxy = WeakNetworkProxy(self._threadsafe_log)
+        self.weak_registry = WeakProxyDeviceRegistry()
 
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
@@ -2937,9 +3860,21 @@ class App:
         self.app_hint_var = tk.StringVar(value="选择设备后可刷新应用列表或读取前台应用。")
         self.capability_var = tk.StringVar(value="")
         self.marker_var = tk.StringVar(value="关键操作")
+        self.quality_var = tk.StringVar(value="采集质量：等待数据")
+        self.smoothing_var = tk.BooleanVar(value=True)
+        self.weak_profile_var = tk.StringVar(value="弱网")
+        self.weak_port_var = tk.StringVar(value="18888")
+        self.weak_latency_var = tk.StringVar(value="300")
+        self.weak_jitter_var = tk.StringVar(value="120")
+        self.weak_loss_var = tk.StringVar(value="2")
+        self.weak_down_var = tk.StringVar(value="512")
+        self.weak_up_var = tk.StringVar(value="256")
+        self.weak_status_var = tk.StringVar(value="弱网代理未启动")
+        self.metric_health_vars: dict[str, tk.StringVar] = {}
 
         self._configure_styles()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_devices()
         self.root.after(250, self._drain_events)
         self.root.after(1000, self._tick)
@@ -2958,6 +3893,9 @@ class App:
         width = self.root.winfo_screenwidth()
         height = self.root.winfo_screenheight()
         self.root.geometry(f"{width}x{height}+0+0")
+
+    def _threadsafe_log(self, text: str) -> None:
+        self.events.put(("log", text))
 
     def _configure_styles(self) -> None:
         style = ttk.Style()
@@ -2978,6 +3916,8 @@ class App:
         style.configure("MetricValue.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 20, "bold"))
         style.configure("GraphValue.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 13, "bold"))
         style.configure("Muted.TLabel", background="#FFFFFF", foreground="#748091", font=("Helvetica", 10))
+        style.configure("Health.TLabel", background="#FFFFFF", foreground="#243044", font=("Helvetica", 10, "bold"))
+        style.configure("Quality.TLabel", background="#FFFFFF", foreground="#334155", font=("Helvetica", 11, "bold"))
         style.configure("SidebarTitle.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 13, "bold"))
         style.configure("Status.TLabel", background="#172235", foreground="#EAF2FF", font=("Helvetica", 11))
         style.configure("Primary.TButton", padding=(14, 8), font=("Helvetica", 12, "bold"))
@@ -2998,7 +3938,14 @@ class App:
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
         self._build_sidebar(body)
-        self._build_dashboard(body)
+        self.workspace_tabs = ttk.Notebook(body)
+        self.workspace_tabs.grid(row=0, column=1, sticky="nsew")
+        self.performance_tab = ttk.Frame(self.workspace_tabs, style="Root.TFrame")
+        self.network_tab = ttk.Frame(self.workspace_tabs, style="Root.TFrame")
+        self.workspace_tabs.add(self.performance_tab, text="性能采集")
+        self.workspace_tabs.add(self.network_tab, text="弱网工具")
+        self._build_dashboard(self.performance_tab)
+        self._build_network_workspace(self.network_tab)
 
     def _build_header(self, master: tk.Widget) -> None:
         header = ttk.Frame(master, style="Top.TFrame", padding=(18, 14, 18, 14))
@@ -3075,27 +4022,173 @@ class App:
         ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         interval = ttk.Combobox(settings, textvariable=self.interval_var, values=("0.5", "1.0", "2.0"), width=6, state="readonly")
         interval.grid(row=0, column=1, sticky="e")
-        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
+        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
             row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 0),
+        )
+        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
+            row=2,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(12, 0),
         )
-        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+    def _build_weak_network_panel(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="Panel.TFrame", padding=(10, 10))
+        panel.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        panel.columnconfigure(1, weight=1)
+        ttk.Label(panel, text="弱网工具", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        profile = ttk.Combobox(
+            panel,
+            textvariable=self.weak_profile_var,
+            values=tuple(WEAK_NETWORK_PROFILES),
+            state="readonly",
+            width=10,
+        )
+        profile.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        profile.bind("<<ComboboxSelected>>", lambda _event: self.apply_weak_profile())
+        fields = [
+            ("端口", self.weak_port_var),
+            ("延迟 ms", self.weak_latency_var),
+            ("抖动 ms", self.weak_jitter_var),
+            ("丢包 %", self.weak_loss_var),
+            ("下行 KB/s", self.weak_down_var),
+            ("上行 KB/s", self.weak_up_var),
+        ]
+        for index, (label, variable) in enumerate(fields, start=2):
+            ttk.Label(panel, text=label, style="Muted.TLabel").grid(row=index, column=0, sticky="w", pady=(4, 0))
+            ttk.Entry(panel, textvariable=variable, width=10).grid(row=index, column=1, sticky="ew", pady=(4, 0))
+        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(actions, text="启动代理", style="Tool.TButton", command=self.start_weak_proxy).pack(side="left")
+        ttk.Button(actions, text="停止", style="Tool.TButton", command=self.stop_weak_proxy).pack(side="left", padx=(8, 0))
+        device_actions = ttk.Frame(panel, style="Panel.TFrame")
+        device_actions.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(device_actions, text="应用到Android", style="Tool.TButton", command=self.apply_android_proxy).pack(side="left")
+        ttk.Button(device_actions, text="清除代理", style="Tool.TButton", command=self.clear_android_proxy).pack(side="left", padx=(8, 0))
+        ttk.Label(panel, textvariable=self.weak_status_var, style="Muted.TLabel", wraplength=250).grid(
+            row=10,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+    def _build_network_workspace(self, master: tk.Widget) -> None:
+        master.columnconfigure(0, weight=1)
+        master.rowconfigure(1, weight=1)
+        hero = ttk.Frame(master, style="Panel.TFrame", padding=(16, 14))
+        hero.grid(row=0, column=0, sticky="ew")
+        ttk.Label(hero, text="弱网工具", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            hero,
+            text="通过本机 HTTP/HTTPS 代理模拟延迟、抖动、丢包和上下行限速；Android 可一键写入或清除系统代理。",
+            style="Muted.TLabel",
+            wraplength=900,
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(hero, textvariable=self.weak_status_var, style="GraphValue.TLabel").grid(row=0, column=1, sticky="e", padx=(16, 0))
+        hero.columnconfigure(0, weight=1)
+
+        content = ttk.Frame(master, style="Root.TFrame")
+        content.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        content.columnconfigure(0, weight=0, minsize=360)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        controls = ttk.Frame(content, style="Panel.TFrame", padding=(16, 14))
+        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="网络预设", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        profile = ttk.Combobox(
+            controls,
+            textvariable=self.weak_profile_var,
+            values=tuple(WEAK_NETWORK_PROFILES),
+            state="readonly",
+        )
+        profile.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 14))
+        profile.bind("<<ComboboxSelected>>", lambda _event: self.apply_weak_profile())
+        fields = [
+            ("代理端口", self.weak_port_var, "本机监听端口"),
+            ("基础延迟 ms", self.weak_latency_var, "请求和响应都会生效"),
+            ("随机抖动 ms", self.weak_jitter_var, "每个数据块增加随机延迟"),
+            ("连接丢弃 %", self.weak_loss_var, "模拟请求失败"),
+            ("下行 KB/s", self.weak_down_var, "0 表示不限速"),
+            ("上行 KB/s", self.weak_up_var, "0 表示不限速"),
+        ]
+        for index, (label, variable, hint) in enumerate(fields, start=2):
+            ttk.Label(controls, text=label, style="Muted.TLabel").grid(row=index, column=0, sticky="w", pady=(7, 0))
+            ttk.Entry(controls, textvariable=variable, width=12).grid(row=index, column=1, sticky="ew", pady=(7, 0))
+            ttk.Label(controls, text=hint, style="Muted.TLabel").grid(row=index, column=2, sticky="w", padx=(8, 0), pady=(7, 0))
+        actions = ttk.Frame(controls, style="Panel.TFrame")
+        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        ttk.Button(actions, text="启动代理", style="Primary.TButton", command=self.start_weak_proxy).pack(side="left")
+        ttk.Button(actions, text="停止代理", style="Tool.TButton", command=self.stop_weak_proxy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="应用到 Android", style="Tool.TButton", command=self.apply_android_proxy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="清除 Android 代理", style="Tool.TButton", command=self.clear_android_proxy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="刷新状态", style="Tool.TButton", command=self.refresh_android_proxy_status).pack(side="left", padx=(8, 0))
+
+        guide = ttk.Frame(content, style="Panel.TFrame", padding=(16, 14))
+        guide.grid(row=0, column=1, sticky="nsew")
+        guide.columnconfigure(0, weight=1)
+        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        text = (
+            "1. 选择一台 Android 设备，并确认手机和电脑在同一网络。\n"
+            "2. 选择弱网预设或手动配置参数。\n"
+            "3. 点击“启动代理”，再点击“应用到 Android”。\n"
+            "4. 在 App 内执行目标场景，同时回到“性能采集”观察 FPS、CPU、网络曲线。\n"
+            "5. 测试结束务必点击“清除 Android 代理”。\n\n"
+            "覆盖范围：当前为系统 HTTP/HTTPS 代理模式，不需要 Root。对 UDP、QUIC、私有代理栈或主动绕过系统代理的 App，后续需要 VPN/tun 模式。"
+        )
+        tk.Message(
+            guide,
+            text=text,
+            width=760,
+            bg="#FFFFFF",
+            fg="#243044",
+            font=("Helvetica", 12),
+            borderwidth=0,
+            justify="left",
+        ).grid(row=1, column=0, sticky="new", pady=(12, 0))
+        self.proxy_preview_text = tk.Text(
+            guide,
+            height=8,
+            wrap="word",
+            borderwidth=1,
+            highlightthickness=0,
+            bg="#F8FAFC",
+            fg="#243044",
+            font=("Menlo", 11),
+        )
+        self.proxy_preview_text.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        self.proxy_preview_text.insert(
+            "1.0",
+            "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
+        )
+        self.proxy_preview_text.configure(state="disabled")
 
     def _build_dashboard(self, master: tk.Widget) -> None:
+        master.columnconfigure(0, weight=1)
+        master.rowconfigure(0, weight=1)
         main = ttk.Frame(master, style="Root.TFrame")
-        main.grid(row=0, column=1, sticky="nsew")
+        main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(3, weight=1)
+        main.rowconfigure(5, weight=1)
         target = ttk.Frame(main, style="Panel.TFrame", padding=(14, 12))
         target.grid(row=0, column=0, sticky="ew")
         ttk.Label(target, textvariable=self.device_var, style="PanelTitle.TLabel").pack(side="left")
         ttk.Label(target, textvariable=self.session_var, style="Muted.TLabel").pack(side="right")
 
+        quality = ttk.Frame(main, style="Panel.TFrame", padding=(12, 9))
+        quality.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(quality, textvariable=self.quality_var, style="Quality.TLabel").pack(side="left")
+
         cards = ttk.Frame(main, style="Root.TFrame")
-        cards.grid(row=1, column=0, sticky="ew", pady=(12, 12))
+        cards.grid(row=2, column=0, sticky="ew", pady=(12, 12))
         for col in range(4):
             cards.columnconfigure(col, weight=1)
         self.cards: dict[str, MetricCard] = {
@@ -3119,12 +4212,14 @@ class App:
                 pady=(0 if row == 0 else 8, 0),
             )
 
+        self._build_metric_health_strip(main, row=3)
+
         self.graph_panel_row_height = 194
         self.graph_row_gap = 10
         self.graph_row_scroll_pixels = self.graph_panel_row_height + self.graph_row_gap
         graph_view_height = self.graph_panel_row_height * 2 + self.graph_row_gap + 22
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=2, column=0, sticky="ew")
+        graph_view.grid(row=4, column=0, sticky="ew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
@@ -3175,7 +4270,7 @@ class App:
         self._bind_graph_mousewheel(graph_view)
 
         bottom = ttk.Frame(main, style="Root.TFrame")
-        bottom.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        bottom.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
         bottom.columnconfigure(1, weight=1)
         bottom.rowconfigure(0, weight=1)
         marker_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
@@ -3199,6 +4294,30 @@ class App:
         )
         self.log_text.pack(fill="both", expand=True, pady=(8, 0))
         self.log_text.configure(state="disabled")
+
+    def _build_metric_health_strip(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
+        panel.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        panel.columnconfigure(1, weight=1)
+        ttk.Label(panel, text="采集健康", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12))
+        grid = ttk.Frame(panel, style="Panel.TFrame")
+        grid.grid(row=0, column=1, sticky="ew")
+        labels = [
+            ("fps", "FPS"),
+            ("jank_percent", "Jank"),
+            ("cpu_percent", "CPU"),
+            ("memory_mb", "内存"),
+            ("battery_percent", "电量"),
+            ("temperature_c", "温度"),
+            ("power_w", "Power"),
+            ("rx_kbps", "下行"),
+            ("tx_kbps", "上行"),
+        ]
+        for col, (metric, label) in enumerate(labels):
+            grid.columnconfigure(col, weight=1)
+            variable = tk.StringVar(value=f"{label}: 等待")
+            self.metric_health_vars[metric] = variable
+            ttk.Label(grid, textvariable=variable, style="Health.TLabel").grid(row=0, column=col, sticky="w", padx=(0 if col == 0 else 10, 0))
 
     def _resize_graph_scroll_window(self, event: tk.Event) -> None:
         if hasattr(self, "graph_canvas") and hasattr(self, "graph_window_id"):
@@ -3324,6 +4443,142 @@ class App:
     def _capability_text(self) -> str:
         return "\n".join([self.android.capability_note(), self.ios.capability_note()])
 
+    def apply_weak_profile(self) -> None:
+        profile = WEAK_NETWORK_PROFILES.get(self.weak_profile_var.get())
+        if not profile:
+            return
+        latency, jitter, loss, down, up = profile
+        self.weak_latency_var.set(str(latency))
+        self.weak_jitter_var.set(str(jitter))
+        self.weak_loss_var.set(str(loss).rstrip("0").rstrip("."))
+        self.weak_down_var.set(f"{down:g}")
+        self.weak_up_var.set(f"{up:g}")
+
+    def _weak_config_values(self) -> tuple[int, int, int, float, float, float] | None:
+        try:
+            return (
+                int(float(self.weak_port_var.get())),
+                int(float(self.weak_latency_var.get())),
+                int(float(self.weak_jitter_var.get())),
+                float(self.weak_loss_var.get()),
+                float(self.weak_down_var.get()),
+                float(self.weak_up_var.get()),
+            )
+        except ValueError:
+            messagebox.showwarning(APP_NAME, "弱网参数必须是数字。")
+            return None
+
+    def start_weak_proxy(self) -> None:
+        values = self._weak_config_values()
+        if values is None:
+            return
+        port, latency, jitter, loss, down, up = values
+        try:
+            restart = self.weak_proxy.is_running() and port != self.weak_proxy.port
+            if restart:
+                self.weak_proxy.stop()
+            self.weak_proxy.configure(port, latency, jitter, loss, down, up)
+            self.weak_proxy.start()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"启动弱网代理失败：{exc}")
+            return
+        self.weak_status_var.set(f"代理运行中：{self.weak_proxy.local_endpoint()}")
+        self._refresh_proxy_preview()
+        self.append_log(
+            f"弱网配置：延迟 {latency}ms，抖动 {jitter}ms，丢包 {loss:g}%，"
+            f"下行 {down:g}KB/s，上行 {up:g}KB/s。"
+        )
+
+    def stop_weak_proxy(self) -> None:
+        self.weak_proxy.stop()
+        self.weak_status_var.set("弱网代理未启动")
+        self._refresh_proxy_preview()
+
+    def _refresh_proxy_preview(self) -> None:
+        if not hasattr(self, "proxy_preview_text"):
+            return
+        endpoint = self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>"
+        text = (
+            f"当前代理地址：{endpoint}\n"
+            f"Android 写入命令：settings put global http_proxy {endpoint}\n"
+            "Android 清理命令：settings put global http_proxy :0\n\n"
+            "提示：应用弱网前请确认 Android 设备能访问电脑所在局域网 IP。"
+        )
+        self.proxy_preview_text.configure(state="normal")
+        self.proxy_preview_text.delete("1.0", tk.END)
+        self.proxy_preview_text.insert("1.0", text)
+        self.proxy_preview_text.configure(state="disabled")
+
+    def _selected_android_device(self) -> DeviceInfo | None:
+        device = self.selected_device
+        if not device or device.platform != "Android":
+            messagebox.showinfo(APP_NAME, "请先选择 Android 设备。")
+            return None
+        return device
+
+    def apply_android_proxy(self) -> None:
+        device = self._selected_android_device()
+        if not device:
+            return
+        if not self.weak_proxy.is_running():
+            self.start_weak_proxy()
+        host, port_text = self.weak_proxy.local_endpoint().rsplit(":", 1)
+        ok, detail = self.android.set_http_proxy(device, host, int(port_text))
+        if ok:
+            self.append_log(f"已给 Android 设备设置弱网代理：{detail}")
+            self.weak_registry.mark_applied(device, detail)
+            self.weak_status_var.set(f"已应用到 {device.name}：{detail}")
+            if hasattr(self, "workspace_tabs"):
+                self.workspace_tabs.select(self.network_tab)
+        else:
+            messagebox.showerror(APP_NAME, f"设置 Android 代理失败：{detail}")
+
+    def clear_android_proxy(self) -> None:
+        device = self._selected_android_device()
+        if not device:
+            return
+        ok, detail = self.android.clear_http_proxy(device)
+        if ok:
+            self.append_log(f"已清除 Android 设备代理：{device.name}")
+            self.weak_registry.mark_cleared(device)
+            self.weak_status_var.set("已清除 Android 代理")
+        else:
+            messagebox.showwarning(APP_NAME, f"清除 Android 代理可能未完全成功：{detail}")
+
+    def refresh_android_proxy_status(self) -> None:
+        device = self._selected_android_device()
+        if not device:
+            return
+        proxy = self.android.current_http_proxy(device)
+        if proxy and proxy not in ("null", ":0"):
+            self.weak_status_var.set(f"{device.name} 当前代理：{proxy}")
+            self.append_log(f"Android 当前代理：{proxy}")
+        else:
+            self.weak_status_var.set(f"{device.name} 当前未设置系统代理")
+            self.append_log("Android 当前未设置系统代理。")
+
+    def _cleanup_weak_proxy_devices(self) -> None:
+        cleared = self.weak_registry.cleanup(self.android)
+        if cleared:
+            self.append_log(f"退出前已清理 Android 代理：{', '.join(cleared)}")
+
+    def on_close(self) -> None:
+        try:
+            if self.sampler:
+                self.sampler.stop()
+                self.sampler = None
+        except Exception:
+            pass
+        try:
+            self._cleanup_weak_proxy_devices()
+        except Exception as exc:
+            self.append_log(f"退出前清理 Android 代理失败：{exc}")
+        try:
+            self.weak_proxy.stop()
+        except Exception:
+            pass
+        self.root.destroy()
+
     def start_ios_service(self) -> None:
         script = BASE_DIR / "启动iOS采集服务.command"
         if not script.exists():
@@ -3436,13 +4691,17 @@ class App:
         self.recorder.log(f"开始采集：{device.display_name} / {app_id}")
         self.last_notes.clear()
         self._reset_metrics()
+        self.stabilizer.reset()
         self.sampler = SamplerThread(adapter, device, app_id, interval, self.events)
         self.sampler.start()
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.status_var.set("采集中")
         self.session_var.set("00:00 · 0 samples")
-        self.append_log("采集已启动。")
+        smoothing = "开启" if self.smoothing_var.get() else "关闭"
+        self.append_log(f"采集已启动。稳定曲线：{smoothing}（报告仍保存原始采样）。")
+        if device.platform == "Android":
+            self.append_log("Android 采集已启用多路前台识别和多进程 CPU 汇总。")
 
     def stop_sampling(self) -> None:
         if not self.sampler:
@@ -3459,11 +4718,30 @@ class App:
         self.graph_view_start = 0.0
         self.graph_view_seconds = 10.0
         self.graph_follow_latest = True
+        self.stabilizer.reset()
+        self.live_quality.reset()
+        self.quality_var.set("采集质量：等待数据")
         for graph in self.graphs.values():
             graph.reset()
         for card in self.cards.values():
             card.set_value(0.0, "等待数据")
+        self._reset_metric_health()
         self._refresh_graph_time_axis()
+
+    def _reset_metric_health(self) -> None:
+        labels = {
+            "fps": "FPS",
+            "jank_percent": "Jank",
+            "cpu_percent": "CPU",
+            "memory_mb": "内存",
+            "battery_percent": "电量",
+            "temperature_c": "温度",
+            "power_w": "Power",
+            "rx_kbps": "下行",
+            "tx_kbps": "上行",
+        }
+        for metric, variable in self.metric_health_vars.items():
+            variable.set(f"{labels.get(metric, metric)}: 等待")
 
     def _drain_events(self) -> None:
         try:
@@ -3484,25 +4762,55 @@ class App:
 
     def _handle_sample(self, sample: PerfSample) -> None:
         self.recorder.append(sample)
-        self.cards["fps"].set_value(sample.fps, "越高越流畅")
-        self.cards["jank_percent"].set_value(sample.jank_percent, "越低越稳")
-        self.cards["cpu_percent"].set_value(sample.cpu_percent, "进程占用")
-        self.cards["memory_mb"].set_value(sample.memory_mb, "PSS/Total")
-        self.cards["temperature_c"].set_value(sample.temperature_c, "电池温度")
-        self.cards["power_w"].set_value(sample.power_w, "估算功耗")
-        self.cards["rx_kbps"].set_value(sample.rx_kbps, "接收速率")
-        self.cards["tx_kbps"].set_value(sample.tx_kbps, "发送速率")
-        self.graphs["fps"].append(sample.elapsed, sample.fps)
-        self.graphs["jank_percent"].append(sample.elapsed, sample.jank_percent)
-        self.graphs["cpu_percent"].append(sample.elapsed, sample.cpu_percent)
-        self.graphs["memory_mb"].append(sample.elapsed, sample.memory_mb)
-        self.graphs["temperature_c"].append(sample.elapsed, sample.temperature_c)
-        self.graphs["power_w"].append(sample.elapsed, sample.power_w)
-        self.graphs["rx_kbps"].append(sample.elapsed, sample.rx_kbps)
-        self.graphs["tx_kbps"].append(sample.elapsed, sample.tx_kbps)
+        display_sample = self.stabilizer.smooth_sample(sample) if self.smoothing_var.get() else sample
+        quality_tag = sample_quality_tag(sample)
+        self._update_metric_health(sample)
+        self.quality_var.set(f"采集质量：{self.live_quality.update(sample)}")
+        self.cards["fps"].set_value(display_sample.fps, "越高越流畅")
+        self.cards["jank_percent"].set_value(display_sample.jank_percent, "越低越稳")
+        self.cards["cpu_percent"].set_value(display_sample.cpu_percent, "进程占用")
+        self.cards["memory_mb"].set_value(display_sample.memory_mb, "PSS/Total")
+        self.cards["temperature_c"].set_value(display_sample.temperature_c, "电池温度")
+        self.cards["power_w"].set_value(display_sample.power_w, "估算功耗")
+        self.cards["rx_kbps"].set_value(display_sample.rx_kbps, "接收速率")
+        self.cards["tx_kbps"].set_value(display_sample.tx_kbps, "发送速率")
+        self.graphs["fps"].append(display_sample.elapsed, display_sample.fps, quality_tag)
+        self.graphs["jank_percent"].append(display_sample.elapsed, display_sample.jank_percent, quality_tag)
+        self.graphs["cpu_percent"].append(display_sample.elapsed, display_sample.cpu_percent, quality_tag)
+        self.graphs["memory_mb"].append(display_sample.elapsed, display_sample.memory_mb, quality_tag)
+        self.graphs["temperature_c"].append(display_sample.elapsed, display_sample.temperature_c, quality_tag)
+        self.graphs["power_w"].append(display_sample.elapsed, display_sample.power_w, quality_tag)
+        self.graphs["rx_kbps"].append(display_sample.elapsed, display_sample.rx_kbps, quality_tag)
+        self.graphs["tx_kbps"].append(display_sample.elapsed, display_sample.tx_kbps, quality_tag)
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
+
+    def _update_metric_health(self, sample: PerfSample) -> None:
+        labels = {
+            "fps": "FPS",
+            "jank_percent": "Jank",
+            "cpu_percent": "CPU",
+            "memory_mb": "内存",
+            "battery_percent": "电量",
+            "temperature_c": "温度",
+            "power_w": "Power",
+            "rx_kbps": "下行",
+            "tx_kbps": "上行",
+        }
+        prefixes = {
+            "ok": "●",
+            "waiting": "○",
+            "idle": "○",
+            "missing": "!",
+        }
+        health = self.health_analyzer.analyze(sample)
+        for metric, status in health.items():
+            variable = self.metric_health_vars.get(metric)
+            if not variable:
+                continue
+            prefix = prefixes.get(status.state, "○")
+            variable.set(f"{prefix} {labels.get(metric, metric)}: {status.label}")
 
     def _tick(self) -> None:
         if self.sampler and self.recorder.start_time:
