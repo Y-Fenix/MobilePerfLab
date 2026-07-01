@@ -233,6 +233,29 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(adapter._pid_cache[(self.device.serial, "com.example.game")], 202)
         self.assertEqual(adapter._cpu_proc_cache[(self.device.serial, "com.example.game")][1], {202: 40})
 
+    def test_cpu_percent_refreshes_pid_list_to_include_new_render_process(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "pidof com.example.game": "\n---NEXT---\n".join(["101", "101 202"]),
+                "getconf CLK_TCK": "100",
+                "cat /proc/101/stat": "\n---NEXT---\n".join(
+                    [
+                        stat_line(101, "main", 10, 5),
+                        stat_line(101, "main", 30, 15),
+                    ]
+                ),
+                "cat /proc/202/stat": stat_line(202, "render", 35, 10),
+                "dumpsys cpuinfo com.example.game": "  28% 101/com.example.game: 18% user + 10% kernel\n  16% 202/com.example.game:render: 10% user + 6% kernel",
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[100.0, 101.0]):
+            self.assertIsNone(adapter._cpu_percent_from_proc(self.device, "com.example.game"))
+            self.assertAlmostEqual(adapter._cpu_percent(self.device, "com.example.game"), 44.0)
+
+        self.assertEqual(adapter._pid_cache[(self.device.serial, "com.example.game")], 101)
+        self.assertEqual(adapter._pid_list_cache[(self.device.serial, "com.example.game")], [101, 202])
+
     def test_cpu_percent_falls_back_to_top_when_cpuinfo_is_empty(self) -> None:
         adapter = FakeAndroidAdapter(
             {

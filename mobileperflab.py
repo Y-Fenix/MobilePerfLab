@@ -3222,6 +3222,16 @@ class AndroidAdapter(BaseAdapter):
             self._pid_cache[key] = pids[0]
         return pids
 
+    def _refresh_cached_process_pids(self, device: DeviceInfo, app_id: str) -> list[int]:
+        key = (device.serial, app_id)
+        output = self._shell(device.serial, f"pidof {shlex.quote(app_id)}", timeout=2.0)
+        pids = self._parse_pid_list(output)
+        if pids:
+            self._pid_list_cache[key] = pids
+            self._pid_cache[key] = pids[0]
+            return pids
+        return self._pid_list_cache.get(key, [])
+
     @staticmethod
     def _parse_pid_list(output: str) -> list[int]:
         pids: list[int] = []
@@ -3309,9 +3319,13 @@ class AndroidAdapter(BaseAdapter):
         return pids
 
     def _cpu_percent_from_proc(self, device: DeviceInfo, app_id: str) -> float | None:
+        key = (device.serial, app_id)
+        had_pid_cache = key in self._pid_list_cache
         pids = self._process_pids(device, app_id)
         if not pids:
             return None
+        if had_pid_cache:
+            pids = self._refresh_cached_process_pids(device, app_id) or pids
         process_jiffies: dict[int, int] = {}
         for pid in pids:
             stat = self._shell(device.serial, f"cat /proc/{pid}/stat", timeout=2.0)
@@ -3319,7 +3333,6 @@ class AndroidAdapter(BaseAdapter):
             if jiffies is not None:
                 process_jiffies[pid] = jiffies
         if not process_jiffies:
-            key = (device.serial, app_id)
             self._pid_cache.pop(key, None)
             self._pid_list_cache.pop(key, None)
             pids = self._process_pids(device, app_id)
@@ -3343,6 +3356,8 @@ class AndroidAdapter(BaseAdapter):
             return None
         previous_time, previous_jiffies_by_pid = previous
         elapsed = max(now - previous_time, 0.1)
+        if any(pid not in previous_jiffies_by_pid for pid in process_jiffies):
+            return None
         delta_jiffies = 0
         for pid, jiffies in process_jiffies.items():
             previous_jiffies = previous_jiffies_by_pid.get(pid)
