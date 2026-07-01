@@ -412,10 +412,18 @@ def build_weak_network_diagnostics(
         rows.append(("端口连通", "未检查", "代理读回一致后检测"))
         return WeakNetworkDiagnostics("warning", "Android 代理未确认", rows)
 
-    rows.append(("Android 设备", "未选择", "请选择 Android 设备"))
-    rows.append(("设备代理", "未检查", "选择设备后刷新状态"))
-    rows.append(("端口连通", "未检查", "启动代理并选择设备后检测"))
-    return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
+    if device is None:
+        rows.append(("Android 设备", "未选择", "请选择 Android 设备"))
+        rows.append(("设备代理", "未检查", "选择设备后刷新状态"))
+        rows.append(("端口连通", "未检查", "启动代理并选择设备后检测"))
+        summary = "未选择 Android 设备" if proxy_running else "弱网代理未就绪"
+        return WeakNetworkDiagnostics("warning", summary, rows)
+
+    rows.append(("Android 设备", "不支持", f"当前选择 {device.platform}，系统 HTTP 代理模式仅支持 Android 自动写入"))
+    rows.append(("设备代理", "未检查", "请选择 Android 设备后刷新状态"))
+    rows.append(("端口连通", "未检查", "Android 代理读回一致后检测"))
+    summary = "当前弱网模式不支持该设备" if proxy_running else "弱网代理未就绪"
+    return WeakNetworkDiagnostics("warning", summary, rows)
 
 
 def format_bytes(value: int) -> str:
@@ -599,6 +607,8 @@ def build_weak_network_effectiveness(
                 if isinstance(row, dict):
                     diagnostic_rows.append((str(row.get("name", "")), str(row.get("state", "")), str(row.get("detail", ""))))
     port_unreachable = "端口不可达" in diagnostic_summary or any(state == "不可达" for _name, state, _detail in diagnostic_rows)
+    no_android_device = "未选择 Android 设备" in diagnostic_summary or any(name == "Android 设备" and state == "未选择" for name, state, _detail in diagnostic_rows)
+    unsupported_device = "不支持该设备" in diagnostic_summary or any(name == "Android 设备" and state == "不支持" for name, state, _detail in diagnostic_rows)
     proxy_unconfirmed = "代理未确认" in diagnostic_summary or any(name == "设备代理" and state in {"不一致", "未检查"} for name, state, _detail in diagnostic_rows)
     if not running or traffic_state == "off":
         return _weak_network_effectiveness_result(
@@ -607,6 +617,22 @@ def build_weak_network_effectiveness(
             score=0,
             detail="弱网代理未启动，当前没有弱网生效证据。",
             action="点击启动代理，并应用到 Android 后刷新状态。",
+        )
+    if unsupported_device:
+        return _weak_network_effectiveness_result(
+            state="unsupported_device",
+            label="当前弱网模式不支持该设备",
+            score=20,
+            detail="当前弱网工具使用系统 HTTP/HTTPS 代理自动写入链路，暂只支持 Android 自动配置。",
+            action="请选择 Android 设备；iOS 需手动配置 Wi-Fi HTTP 代理或后续 VPN/tun 模式支持。",
+        )
+    if no_android_device:
+        return _weak_network_effectiveness_result(
+            state="no_android_device",
+            label="未选择 Android 设备",
+            score=20,
+            detail="弱网代理已启动，但没有 Android 设备用于写入和验证系统代理。",
+            action="在设备列表选择 Android 设备，点击应用到 Android，再刷新状态。",
         )
     if port_unreachable:
         return _weak_network_effectiveness_result(

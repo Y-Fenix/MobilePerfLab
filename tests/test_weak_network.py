@@ -279,6 +279,46 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
             ],
         )
 
+    def test_blocks_weak_network_when_running_without_android_device(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=None,
+            current_proxy="",
+            proxy_reachable=None,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(result["state"], "no_android_device")
+        self.assertEqual(result["label"], "未选择 Android 设备")
+        self.assertEqual(result["test_readiness"]["state"], "blocked")
+        self.assertIn("选择 Android 设备", result["action"])
+
+    def test_blocks_weak_network_for_ios_device_in_android_proxy_mode(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready"),
+            current_proxy="",
+            proxy_reachable=None,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(result["state"], "unsupported_device")
+        self.assertEqual(result["label"], "当前弱网模式不支持该设备")
+        self.assertEqual(result["test_readiness"]["state"], "blocked")
+        self.assertIn("Android", result["action"])
+
     def test_warns_when_proxy_is_confirmed_but_port_is_unreachable(self) -> None:
         device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")
 
