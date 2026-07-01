@@ -514,6 +514,8 @@ class LiveQualityTracker:
         self.issue_count = 0
         self.network_fallback_count = 0
         self.network_missing_count = 0
+        self.foreground_issue_count = 0
+        self.slow_sample_count = 0
         self.network_source = "等待数据"
 
     def reset(self) -> None:
@@ -521,6 +523,8 @@ class LiveQualityTracker:
         self.issue_count = 0
         self.network_fallback_count = 0
         self.network_missing_count = 0
+        self.foreground_issue_count = 0
+        self.slow_sample_count = 0
         self.network_source = "等待数据"
 
     def update(self, sample: PerfSample) -> str:
@@ -533,6 +537,10 @@ class LiveQualityTracker:
             self.network_fallback_count += 1
         if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
             self.network_missing_count += 1
+        if "目标应用不在前台" in note:
+            self.foreground_issue_count += 1
+        if "采样耗时" in note:
+            self.slow_sample_count += 1
         self.network_source = self._network_source(sample, note)
         return self.status_text()
 
@@ -540,10 +548,13 @@ class LiveQualityTracker:
         total = max(self.sample_count, 1)
         issue_percent = self.issue_count / total * 100.0
         fallback_percent = self.network_fallback_count / total * 100.0
+        confidence_percent = max(0.0, (self.sample_count - self.issue_count - self.network_fallback_count) / total * 100.0)
         return (
+            f"可信度 {confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
-            f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%)"
+            f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%) · "
+            f"前台 {self.foreground_issue_count} · 慢采样 {self.slow_sample_count}"
         )
 
     @staticmethod
@@ -4364,6 +4375,7 @@ class App:
         self.marker_var = tk.StringVar(value="关键操作")
         self.quality_var = tk.StringVar(value="采集质量：等待数据")
         self.smoothing_var = tk.BooleanVar(value=True)
+        self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")
         self.weak_profile_var = tk.StringVar(value="弱网")
         self.weak_port_var = tk.StringVar(value="18888")
         self.weak_latency_var = tk.StringVar(value="300")
@@ -4749,7 +4761,9 @@ class App:
 
         quality = ttk.Frame(main, style="Panel.TFrame", padding=(12, 9))
         quality.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        quality.columnconfigure(0, weight=1)
         ttk.Label(quality, textvariable=self.quality_var, style="Quality.TLabel").pack(side="left")
+        ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
 
         cards = ttk.Frame(main, style="Root.TFrame")
         cards.grid(row=2, column=0, sticky="ew", pady=(12, 12))
@@ -5374,6 +5388,7 @@ class App:
         self.live_quality.reset()
         self.last_quality_event_tag = "ok"
         self.quality_var.set("采集质量：等待数据")
+        self._refresh_quality_mode()
         self._clear_quality_events()
         for graph in self.graphs.values():
             graph.reset()
@@ -5420,6 +5435,7 @@ class App:
         quality_tag = sample_quality_tag(sample)
         self._update_metric_health(sample)
         self.quality_var.set(f"采集质量：{self.live_quality.update(sample)}")
+        self._refresh_quality_mode()
         self.cards["fps"].set_value(display_sample.fps, "越高越流畅")
         self.cards["jank_percent"].set_value(display_sample.jank_percent, "越低越稳")
         self.cards["cpu_percent"].set_value(display_sample.cpu_percent, "进程占用")
@@ -5440,6 +5456,10 @@ class App:
         self._refresh_graph_time_axis()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
         self._append_quality_event(sample)
+
+    def _refresh_quality_mode(self) -> None:
+        mode = "开" if self.smoothing_var.get() else "关"
+        self.quality_mode_var.set(f"稳定曲线：{mode} · 报告：原始采样")
 
     def _clear_quality_events(self) -> None:
         if not hasattr(self, "quality_event_tree"):

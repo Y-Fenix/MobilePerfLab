@@ -148,6 +148,30 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("异常样本 1/2", text)
         self.assertIn("兜底 1/2", text)
 
+    def test_summarizes_session_confidence_foreground_and_slow_sampling(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=0.0,
+                note="目标应用不在前台，当前前台为 com.example.home。",
+            )
+        )
+        text = tracker.update(
+            PerfSample(
+                timestamp=3.0,
+                elapsed=3.0,
+                fps=45.0,
+                note="采样耗时 1.60s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+            )
+        )
+
+        self.assertIn("可信度 33.3%", text)
+        self.assertIn("前台 1", text)
+        self.assertIn("慢采样 1", text)
+
 
 class SampleQualityTagTest(unittest.TestCase):
     def test_classifies_sample_quality_from_note(self) -> None:
