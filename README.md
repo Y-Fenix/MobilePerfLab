@@ -8,17 +8,18 @@ MobilePerfLab 是一款原创桌面移动端性能测试工具，工作流参考
 - Android 应用选择：读取第三方包名列表，或自动识别前台应用。
 - Android 实时采样：FPS/Jank、CPU、内存、电量、温度、估算功耗、网络速率；前台应用识别会组合 `dumpsys window`、`dumpsys activity` 等多路结果，CPU 会汇总同一包名的多个 PID，网络会优先读取 per-UID 统计，失败时使用设备级上下行兜底并在日志中标注。
 - Android 弱网工具：内置本机 HTTP/HTTPS 弱网代理，可一键设置/清除 Android 系统代理，支持延迟、抖动、丢包、上下行限速，并提供电梯、地铁、高速、隧道等场景预设。
+- 弱网链路诊断：工具会读回 Android 当前系统代理，并从设备侧探测本机代理端口；若设备缺少 `nc`，会使用内置 HTTP 健康检查端点兜底，弱网页签会显示本机代理、Android 设备、设备代理和端口连通状态。
 - 弱网安全清理：工具会记录自己写入过代理的 Android 设备，退出时自动尝试清理系统代理；弱网页签也可刷新当前代理状态。
 - 低端机友好曲线：实时窗口默认开启展示层平滑，短暂缺采不会把曲线直接拉到 0；导出的 CSV/JSON/HTML 仍保存原始采样值。
 - 采集健康状态：性能页会标出 FPS、CPU、内存、电量、温度、功耗、上下行网络的“正常 / 等待 / 无流量 / 异常”状态，并实时显示网络来源、异常样本占比和设备级网络兜底占比。
-- 曲线质量标识：实时曲线和 HTML 报告会标出异常样本与设备级网络兜底样本；橙色圆环表示网络数据来自设备级兜底，红色三角表示该采样点存在采集异常说明。
+- 曲线质量标识：实时曲线和 HTML 报告会标出异常样本与设备级网络兜底样本；橙色圆环表示网络数据来自设备级兜底，红色三角表示该采样点存在采集异常说明，浅橙/浅红背景表示连续兜底或异常区间。
 - iOS 设备发现：优先使用 `pymobiledevice3 usbmux` 识别真实在线设备，再用 Xcode `devicectl`/`xctrace` 补充状态。
 - iOS 基础采样：通过 `pymobiledevice3 diagnostics battery` 读取电量、温度、估算功耗。
 - iOS 进程采样：启动 tunnel 后通过 `pymobiledevice3 developer dvt sysmon` 读取 CPU/内存。
 - iOS FPS 采样：启动 tunnel 后通过 `pymobiledevice3 developer dvt graphics` 读取 `CoreAnimationFramesPerSecond`，设备必须能被 `pymobiledevice3 usbmux list` 识别。
 - iOS Jank：当前按 FPS 相对 60 FPS 的掉帧比例估算，用于趋势参考。
 - 演示模式：没有真机时可预览完整 UI、实时曲线、标记和导出流程。
-- 报告导出：一次导出 CSV、JSON、HTML 三份结果；HTML 报告包含采集质量摘要、异常/兜底样本占比和网络数据来源，设备级网络兜底会明确标注“非目标 App 独占流量”。
+- 报告导出：一次导出 CSV、JSON、HTML 三份结果；HTML 报告包含采集质量摘要、异常/兜底样本占比、异常区间摘要和网络数据来源，设备级网络兜底会明确标注“非目标 App 独占流量”。
 
 ## 运行
 
@@ -31,7 +32,7 @@ python3 mobileperflab.py
 ## 测试
 
 ```bash
-python3 -m unittest tests.test_metrics
+python3 -m unittest discover -s tests
 python3 -m py_compile mobileperflab.py
 ```
 
@@ -61,7 +62,15 @@ Android 使用方式：
 2. 切到“弱网工具”页签，选择预设或填写参数。
 3. 点击“启动代理”。
 4. 点击“应用到 Android”，工具会通过 adb 写入系统 HTTP 代理。
-5. 测试结束后点击“清除代理”，避免设备继续走代理。
+5. 查看“链路诊断”，确认“设备代理”为“已确认”，“端口连通”为“可达”。
+6. 测试结束后点击“清除代理”，避免设备继续走代理。
+
+链路诊断含义：
+
+- 本机代理：桌面端弱网代理是否正在监听。
+- Android 设备：当前是否选择了 Android 设备。
+- 设备代理：adb 写入后再读回的 Android 系统代理是否等于当前代理地址。
+- 端口连通：Android 设备是否能连到电脑上的弱网代理端口；工具会先尝试 `toybox nc` / `nc`，再尝试访问 `http://<host>:<port>/__mobileperflab_health`。
 
 当前弱网为本机 HTTP/HTTPS 代理模式，不需要 Root，适合大部分走系统代理的接口请求。若目标 App 使用 UDP、QUIC，或主动绕过系统代理，则需要后续接入 VPN/tun 模式才能完全覆盖。
 
