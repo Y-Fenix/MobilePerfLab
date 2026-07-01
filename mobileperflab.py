@@ -1179,6 +1179,12 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
     }
 
 
+def performance_conclusion_text(status: dict[str, str]) -> str:
+    label = str(status.get("label", "等待更多样本") if isinstance(status, dict) else "等待更多样本")
+    detail = str(status.get("detail", "") if isinstance(status, dict) else "")
+    return f"性能结论：{label} · {detail}" if detail else f"性能结论：{label}"
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -6800,6 +6806,7 @@ class App:
         self.capability_var = tk.StringVar(value="")
         self.marker_var = tk.StringVar(value="关键操作")
         self.quality_summary_var = tk.StringVar(value="等待数据 · 窗口：等待数据 · 继续采集")
+        self.performance_conclusion_var = tk.StringVar(value="性能结论：等待更多样本 · 样本不足，暂不输出性能结论。")
         self.quality_var = tk.StringVar(value="采集质量：等待数据")
         self.smoothing_var = tk.BooleanVar(value=True)
         self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")
@@ -7257,6 +7264,7 @@ class App:
         quality_text = ttk.Frame(quality, style="PanelBody.TFrame")
         quality_text.pack(side="left", fill="x", expand=True)
         ttk.Label(quality_text, textvariable=self.quality_summary_var, style="Quality.TLabel").pack(anchor="w")
+        ttk.Label(quality_text, textvariable=self.performance_conclusion_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         ttk.Label(quality_text, textvariable=self.quality_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         ttk.Label(quality, textvariable=self.weak_live_summary_var, style="Muted.TLabel").pack(side="right", padx=(16, 0))
         ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
@@ -8033,6 +8041,7 @@ class App:
         self.live_quality.reset()
         self.last_quality_event_tag = "ok"
         self.quality_summary_var.set("等待数据 · 窗口：等待数据 · 继续采集")
+        self.performance_conclusion_var.set("性能结论：等待更多样本 · 样本不足，暂不输出性能结论。")
         self.quality_var.set("采集质量：等待数据")
         self._refresh_quality_mode()
         self._clear_quality_events()
@@ -8105,6 +8114,7 @@ class App:
         self.quality_summary_var.set(
             live_recent_window_summary(recent_window, self.live_quality.low_end_display_mode(), self.live_quality.expected_interval)
         )
+        self.performance_conclusion_var.set(performance_conclusion_text(performance_conclusion_status(recent_window)))
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()
         display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample

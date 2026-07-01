@@ -13,6 +13,9 @@ from mobileperflab import (
     graph_scroll_row_step,
     graph_visible_rows_for_height,
     live_recent_window_summary,
+    LiveQualityTracker,
+    MetricStabilizer,
+    PerfSample,
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
@@ -212,6 +215,77 @@ class QualityModeLabelTest(unittest.TestCase):
         )
 
         self.assertEqual(summary, "采集波动 · 窗口：节拍失稳 · 推荐 2.0s")
+
+    def test_handle_sample_updates_live_performance_conclusion(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeMetricHealth:
+            def analyze(self, _sample: PerfSample) -> dict[str, object]:
+                return {}
+
+        class FakeCard:
+            def set_value(self, _value: float, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = FakeMetricHealth()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        App._handle_sample(app, PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
+        App._handle_sample(
+            app,
+            PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, note="Android FPS 当前无帧增量"),
+        )
+
+        self.assertIn("性能结论：先修采集链路", app.performance_conclusion_var.value)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

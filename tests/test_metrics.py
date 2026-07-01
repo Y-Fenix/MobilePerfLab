@@ -10,6 +10,7 @@ from mobileperflab import (
     live_recent_window_summary,
     live_sampling_action_label,
     performance_conclusion_status,
+    performance_conclusion_text,
     recommended_sampling_interval,
     recommended_sampling_interval_button_text,
     session_quality_gate,
@@ -470,6 +471,12 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(status["state"], "actionable")
         self.assertEqual(status["label"], "可分析性能")
         self.assertIn("真实性能波动", status["detail"])
+
+    def test_performance_conclusion_text_formats_realtime_summary(self) -> None:
+        self.assertEqual(
+            performance_conclusion_text({"label": "先修采集链路", "detail": "最近窗口主要是采集波动，不能直接作为性能结论。"}),
+            "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。",
+        )
 
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
