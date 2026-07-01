@@ -39,6 +39,7 @@ APP_NAME = "MobilePerfLab"
 APP_VERSION = "0.1.0"
 SAMPLE_LIMIT = 7200
 DEFAULT_INTERVAL_SECONDS = 1.0
+SAMPLING_INTERVAL_OPTIONS = ("0.5", "1.0", "1.5", "2.0")
 CHART_VIEW_SECONDS = 30 * 60
 PROXY_BUFFER_SIZE = 16 * 1024
 ANDROID_FOREGROUND_CACHE_SECONDS = 2.0
@@ -6872,7 +6873,7 @@ class App:
         settings.grid(row=5, column=0, sticky="ew", pady=(16, 0))
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=("0.5", "1.0", "2.0"), width=6, state="readonly")
+        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
         interval.grid(row=0, column=1, sticky="e")
         ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
             row=1,

@@ -10,6 +10,7 @@ from mobileperflab import (
     graph_display_series,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
+    SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
 )
 
@@ -105,6 +106,10 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(format_quality_mode_label(True, False), "稳定曲线：开 · 报告：原始采样")
         self.assertEqual(format_quality_mode_label(True, True), "稳定曲线：开 · 低端机保守模式")
         self.assertEqual(format_quality_mode_label(False, True), "稳定曲线：关 · 报告：原始采样")
+
+    def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
+        self.assertIn("1.5", SAMPLING_INTERVAL_OPTIONS)
+        self.assertIn("2.0", SAMPLING_INTERVAL_OPTIONS)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
