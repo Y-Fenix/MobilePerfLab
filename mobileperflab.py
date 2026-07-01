@@ -3145,12 +3145,10 @@ class AndroidAdapter(BaseAdapter):
                 continue
             parts = line.split()
             upper_parts = [part.upper() for part in parts]
-            if "PID" in upper_parts and any(part in {"CPU", "%CPU", "[%CPU]"} for part in upper_parts):
+            detected_cpu_index = cls._top_cpu_index(upper_parts)
+            if "PID" in upper_parts and detected_cpu_index is not None:
                 header = upper_parts
-                cpu_index = next(
-                    (index for index, part in enumerate(header) if part in {"CPU", "%CPU", "[%CPU]"}),
-                    None,
-                )
+                cpu_index = detected_cpu_index
                 name_index = cls._top_process_name_index(header)
                 continue
             if not cls._line_mentions_app_process(parts, app_id):
@@ -3162,6 +3160,15 @@ class AndroidAdapter(BaseAdapter):
                 continue
             total += cpu_value
         return min(total, 1000.0)
+
+    @staticmethod
+    def _top_cpu_index(header: list[str]) -> int | None:
+        for index, part in enumerate(header):
+            if part in {"CPU", "%CPU", "[%CPU]"}:
+                return index
+            if part.endswith("[%CPU]"):
+                return index + 1
+        return None
 
     @staticmethod
     def _top_process_name_index(header: list[str]) -> int | None:

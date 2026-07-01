@@ -277,6 +277,27 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertAlmostEqual(adapter._cpu_percent(self.device, "com.example.game"), 21.5)
 
+    def test_cpu_percent_parses_toybox_top_status_cpu_header(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "pidof com.example.game": "",
+                "pgrep -f com.example.game": "",
+                "ps -A -o PID=,NAME=": "",
+                "ps -A": "",
+                "dumpsys cpuinfo com.example.game": "",
+                "top -b -n 1 -o PID,CPU,ARGS": "\n".join(
+                    [
+                        "  PID USER         PR  NI VIRT  RES  SHR S[%CPU] %MEM     TIME+ ARGS",
+                        " 1234 u0_a234      20   0 1.2G 100M  50M S 17.0  2.0   0:01.23 com.example.game",
+                        " 2345 u0_a234      20   0 1.1G  80M  40M S  4.5  1.0   0:00.40 com.example.game:render",
+                        " 3456 u0_a999      20   0 1.0G  70M  30M S 28.0  2.0   0:01.00 com.example.other",
+                    ]
+                ),
+            }
+        )
+
+        self.assertAlmostEqual(adapter._cpu_percent(self.device, "com.example.game"), 21.5)
+
     def test_process_pids_falls_back_to_ps_when_pidof_and_pgrep_are_empty(self) -> None:
         adapter = FakeAndroidAdapter(
             {
