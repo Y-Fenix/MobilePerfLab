@@ -469,6 +469,21 @@ class AndroidAdapterTest(unittest.TestCase):
             "SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#1",
         )
 
+    def test_surface_names_strip_layer_name_prefixes_from_surfaceflinger_dump(self) -> None:
+        lines = [
+            "name=SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#12",
+            "Layer name: SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#12",
+            "+ Layer 0xb400 name=SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#12 parent=0x0",
+            "RequestedLayerState{name=SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#12 parentId=42}",
+        ]
+
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertIn(
+                    "SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#12",
+                    AndroidAdapter._surface_names_from_line(line),
+                )
+
     def test_parse_surface_latency_uses_ready_time_when_present_time_is_zero(self) -> None:
         output = "\n".join(
             [

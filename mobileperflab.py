@@ -3865,9 +3865,12 @@ class AndroidAdapter(BaseAdapter):
         if not line:
             return []
         names: list[str] = []
-        requested_match = re.search(r"RequestedLayerState\{(.+?)(?:\s+parentId=|$)", line)
+        requested_match = re.search(r"RequestedLayerState\{(?:name=)?(.+?)(?:\s+parentId=|$)", line)
         if requested_match:
             names.append(requested_match.group(1).strip())
+        name_match = re.search(r"\bname[:=]\s*(.+?)(?:\s+parent=|\s+parentId=|$)", line)
+        if name_match:
+            names.append(name_match.group(1).strip())
         layer_match = re.search(r"^\s*layer\s+\d+\s+(.+?)(?::\s*$|$)", line)
         if layer_match:
             names.append(layer_match.group(1).strip())
@@ -3893,6 +3896,10 @@ class AndroidAdapter(BaseAdapter):
         name = re.sub(r"\s+fps:\s*[-0-9.]+.*$", "", name)
         name = re.sub(r"\s+screenbounds:.*$", "", name)
         name = re.sub(r"^Surface\(name=", "", name)
+        name = re.sub(r"^Layer\s+name:\s*", "", name)
+        name = re.sub(r"^name=\s*", "", name)
+        name = re.sub(r"^\+\s*Layer\s+\S+\s+name=", "", name)
+        name = re.sub(r"\s+parent(?:Id)?=.*$", "", name)
         name = re.sub(r"\)/@0x[0-9a-fA-F]+.*$", "", name)
         if " - animation-leash " in name:
             return ""
