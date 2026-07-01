@@ -3481,11 +3481,13 @@ class AndroidAdapter(BaseAdapter):
     def _fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
         if not app_id:
             return 0.0, 0.0
-        for collector in (
-            self._gfxinfo_counter_fps_and_jank,
-            self._gfxinfo_framestats_fps_and_jank,
-            self._surface_fps_and_jank,
-        ):
+        key = (device.serial, app_id)
+        counter_result = self._gfxinfo_counter_fps_and_jank(device, app_id, now)
+        if counter_result is not None:
+            return counter_result
+        if key in self._frame_cache:
+            return 0.0, 0.0
+        for collector in (self._gfxinfo_framestats_fps_and_jank, self._surface_fps_and_jank):
             result = collector(device, app_id, now)
             if result is not None:
                 return result

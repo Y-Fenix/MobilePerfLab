@@ -588,6 +588,33 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertIsNone(first)
         self.assertEqual(second, (60.0, 10.0))
 
+    def test_fps_counter_source_does_not_fall_back_to_heavy_collectors_on_no_frame_delta(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys gfxinfo com.example.game": "\n---NEXT---\n".join(
+                    [
+                        "Total frames rendered: 100\nJanky frames: 5",
+                        "Total frames rendered: 100\nJanky frames: 5",
+                    ]
+                ),
+                "dumpsys gfxinfo com.example.game framestats": """
+                ---PROFILEDATA---
+                IntendedVsync,FrameCompleted,Flags
+                1,1000000000,0
+                2,1016666666,0
+                ---PROFILEDATA---
+                """,
+                "dumpsys SurfaceFlinger --list": "SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#1",
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0]):
+            self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 10.0), (0.0, 0.0))
+            self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 11.0), (0.0, 0.0))
+
+        self.assertNotIn("dumpsys gfxinfo com.example.game framestats", adapter.calls)
+        self.assertNotIn("dumpsys SurfaceFlinger --list", adapter.calls)
+
     def test_collect_sample_runs_android_metrics_in_parallel_to_reduce_low_end_drift(self) -> None:
         adapter = SlowMetricAndroidAdapter(sleep_seconds=0.04)
 
