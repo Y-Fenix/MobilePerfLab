@@ -684,6 +684,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["history"][1]["elapsed"], 1.5)
         self.assertIn("↓8.0 KB/s", payload["summary"])
         self.assertEqual(payload["traffic_state"], "hit")
+        self.assertEqual(payload["hit_status"], "已命中目标流量 · 弱网规则有生效证据")
         self.assertEqual(payload["effectiveness"]["state"], "effective")
         self.assertEqual(payload["effectiveness"]["label"], "弱网已生效")
         self.assertEqual(payload["readiness_display"], "可以开始测试 · 继续执行业务场景并观察代理真实流量曲线。")
@@ -692,6 +693,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         payload = build_weak_network_report_payload(True, "127.0.0.1:18888", ProxyTrafficSnapshot(), [])
 
         self.assertEqual(payload["traffic_state"], "waiting")
+        self.assertEqual(payload["hit_status"], "等待目标流量 · 在 App 内触发 HTTP/HTTPS 请求")
         self.assertIn("等待目标流量", payload["summary"])
         self.assertEqual(payload["effectiveness"]["state"], "waiting")
         self.assertIn("先触发业务请求", payload["readiness_display"])
