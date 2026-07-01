@@ -5304,12 +5304,7 @@ class SessionRecorder:
             }
             quality["recent_window"] = build_recent_window_health([], expected_interval=self.expected_interval)
             quality["display_strategy"] = build_display_strategy([], quality)
-            if isinstance(quality["recent_window"], dict):
-                quality["recent_window"]["action"] = live_sampling_action_label(
-                    quality["recent_window"],
-                    isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
-                    self.expected_interval,
-                )
+            self._update_recent_window_guidance(quality)
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             self._add_sampling_action_recommendation(quality)
@@ -5403,12 +5398,7 @@ class SessionRecorder:
         }
         quality["recent_window"] = build_recent_window_health(self.samples, expected_interval=self.expected_interval)
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
-        if isinstance(quality["recent_window"], dict):
-            quality["recent_window"]["action"] = live_sampling_action_label(
-                quality["recent_window"],
-                isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
-                self.expected_interval,
-            )
+        self._update_recent_window_guidance(quality)
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         self._add_sampling_action_recommendation(quality)
@@ -5435,6 +5425,15 @@ class SessionRecorder:
                 "action": f"{action.replace('建议：', '')}曲线；复测后再用原始曲线确认真实性能波动。",
             }
         )
+
+    def _update_recent_window_guidance(self, quality: dict[str, object]) -> None:
+        recent_window = quality.get("recent_window", {})
+        display_strategy = quality.get("display_strategy", {})
+        if not isinstance(recent_window, dict):
+            return
+        conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
+        recent_window["action"] = live_sampling_action_label(recent_window, conservative_display, self.expected_interval)
+        recent_window["summary"] = live_recent_window_summary(recent_window, conservative_display, self.expected_interval)
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -5491,9 +5490,7 @@ class SessionRecorder:
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
         display_strategy = quality["display_strategy"]
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
-        recent_window = quality.get("recent_window", {})
-        if isinstance(recent_window, dict):
-            recent_window["action"] = live_sampling_action_label(recent_window, conservative_display, self.expected_interval)
+        self._update_recent_window_guidance(quality)
         self._add_sampling_action_recommendation(quality)
         display_samples = build_display_samples(self.samples, conservative=conservative_display)
         payload = {
@@ -5598,8 +5595,8 @@ class SessionRecorder:
                 ),
                 (
                     "最近窗口",
-                    str(recent_window.get("label", "窗口：等待数据")),
-                    f"{recent_window.get('trend_label', '趋势：等待数据')}。{recent_window.get('detail', '最近窗口暂无样本。')}",
+                    str(recent_window.get("summary", recent_window.get("label", "窗口：等待数据"))),
+                    f"{recent_window.get('label', '窗口：等待数据')}。{recent_window.get('trend_label', '趋势：等待数据')}。{recent_window.get('detail', '最近窗口暂无样本。')}",
                 ),
                 (
                     "采样建议",
