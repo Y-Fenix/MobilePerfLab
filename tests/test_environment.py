@@ -17,6 +17,7 @@ from mobileperflab import (
     graph_visible_rows_for_height,
     live_recent_window_summary,
     LiveQualityTracker,
+    MetricHealthAnalyzer,
     MetricStabilizer,
     PerfSample,
     recommended_sampling_interval_button_text,
@@ -451,6 +452,84 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertIn("会话可用性：只可参考部分指标", app.performance_conclusion_var.value)
         self.assertIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
+
+    def test_handle_sample_marks_foreground_recovery_as_recovering_not_unavailable(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def set_value(self, _value: float, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=20.0,
+                elapsed=20.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            ),
+        )
+
+        self.assertIn("会话可用性：恢复窗口", app.performance_conclusion_var.value)
+        self.assertIn("等待 FPS/CPU/网络重新建立基线", app.performance_conclusion_var.value)
+        self.assertIn("恢复中：FPS/CPU/下行/上行", app.quality_var.value)
+        self.assertNotIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

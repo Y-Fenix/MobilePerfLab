@@ -7,6 +7,7 @@ from mobileperflab import (
     PerfSample,
     SAMPLING_INTERVAL_OPTIONS,
     build_recent_window_health,
+    live_metric_availability_summary,
     live_recent_window_summary,
     live_session_usability_text,
     live_sampling_action_label,
@@ -261,6 +262,31 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         self.assertEqual(health["battery_percent"].state, "missing")
         self.assertEqual(health["temperature_c"].state, "ok")
         self.assertEqual(health["power_w"].state, "missing")
+
+    def test_marks_foreground_recovery_delta_metrics_as_recovering_not_missing(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=20.0,
+                elapsed=20.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                rx_kbps=0.0,
+                tx_kbps=0.0,
+                memory_mb=512.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            )
+        )
+
+        self.assertEqual(health["fps"].state, "recovering")
+        self.assertEqual(health["cpu_percent"].state, "recovering")
+        self.assertEqual(health["rx_kbps"].state, "recovering")
+        self.assertEqual(health["tx_kbps"].state, "recovering")
+        self.assertEqual(health["fps"].label, "恢复中")
+        self.assertIn("恢复中：FPS/CPU/下行/上行", live_metric_availability_summary(health))
+        self.assertEqual(
+            live_session_usability_text(health),
+            "会话可用性：恢复窗口 · 等待 FPS/CPU/网络重新建立基线",
+        )
 
 
 class LiveQualityTrackerTest(unittest.TestCase):

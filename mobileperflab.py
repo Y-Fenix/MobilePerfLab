@@ -1937,6 +1937,7 @@ class MetricHealthAnalyzer:
     LABELS = {
         "ok": "正常",
         "fallback": "兜底",
+        "recovering": "恢复中",
         "waiting": "等待",
         "idle": "无流量",
         "missing": "异常",
@@ -1948,6 +1949,8 @@ class MetricHealthAnalyzer:
         return {metric: self._metric_health(metric, float(values.get(metric, 0.0) or 0.0), sample.elapsed, note) for metric in self.METRICS}
 
     def _metric_health(self, metric: str, value: float, elapsed: float, note: str) -> MetricHealth:
+        if self._is_foreground_recovery_delta_metric(metric, note):
+            return self._health("recovering", "前台恢复窗口，等待 FPS/CPU/网络重新建立基线")
         if self._note_marks_missing(metric, note):
             return self._health("missing", self._missing_detail(metric, note))
         if metric in ("rx_kbps", "tx_kbps"):
@@ -1967,6 +1970,12 @@ class MetricHealthAnalyzer:
     @classmethod
     def _health(cls, state: str, detail: str) -> MetricHealth:
         return MetricHealth(state, cls.LABELS.get(state, state), detail)
+
+    @staticmethod
+    def _is_foreground_recovery_delta_metric(metric: str, note: str) -> bool:
+        if "恢复窗口内" not in note:
+            return False
+        return metric in ("fps", "jank_percent", "cpu_percent", "rx_kbps", "tx_kbps")
 
     @staticmethod
     def _note_marks_missing(metric: str, note: str) -> bool:
@@ -2023,6 +2032,7 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     primary_metrics = ("fps", "cpu_percent", "memory_mb", "temperature_c", "power_w", "rx_kbps", "tx_kbps")
     available: list[str] = []
     fallback: list[str] = []
+    recovering: list[str] = []
     unavailable: list[str] = []
     pending: list[str] = []
     for metric in primary_metrics:
@@ -2034,6 +2044,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
             available.append(label)
         elif status.state == "fallback":
             fallback.append(label)
+        elif status.state == "recovering":
+            recovering.append(label)
         elif status.state == "missing":
             unavailable.append(label)
         else:
@@ -2043,6 +2055,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
         parts.append(f"可用：{'/'.join(available)}")
     if fallback:
         parts.append(f"兜底：{'/'.join(fallback)}")
+    if recovering:
+        parts.append(f"恢复中：{'/'.join(recovering)}")
     if unavailable:
         parts.append(f"不可用：{'/'.join(unavailable)}")
     if pending:
@@ -2058,11 +2072,17 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
         "tx_kbps": "网络",
     }
     missing: list[str] = []
+    recovering: list[str] = []
     for metric, label in required.items():
         status = health.get(metric)
         state = status.state if status is not None else "waiting"
+        if state == "recovering" and label not in recovering:
+            recovering.append(label)
+            continue
         if state in {"missing", "waiting"} and label not in missing:
             missing.append(label)
+    if recovering and not missing:
+        return f"会话可用性：恢复窗口 · 等待 {'/'.join(recovering)}重新建立基线"
     if missing:
         return f"会话可用性：只可参考部分指标 · {'/'.join(missing)}不可用"
     return "会话可用性：可分析性能"
