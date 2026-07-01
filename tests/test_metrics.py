@@ -144,6 +144,22 @@ class SampleQualityTagTest(unittest.TestCase):
         )
         self.assertEqual(sample_quality_tag(PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)), "ok")
 
+    def test_classifies_foreground_state_quality_from_note(self) -> None:
+        self.assertEqual(
+            sample_quality_tag(PerfSample(timestamp=1.0, elapsed=1.0, note="目标应用不在前台，当前前台为 com.example.home。")),
+            "issue",
+        )
+        self.assertEqual(
+            sample_quality_tag(
+                PerfSample(
+                    timestamp=2.0,
+                    elapsed=2.0,
+                    note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+                )
+            ),
+            "fallback",
+        )
+
 
 class QualityIntervalsTest(unittest.TestCase):
     def test_groups_contiguous_non_ok_points_into_intervals(self) -> None:
@@ -192,6 +208,18 @@ class QualityEventTest(unittest.TestCase):
         )
 
         self.assertEqual(event, ("5.0s", "设备级兜底", "非目标 App 独占流量"))
+
+    def test_builds_realtime_event_for_foreground_recovery_sample(self) -> None:
+        event = quality_event_from_sample(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=7.5,
+                fps=20.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            )
+        )
+
+        self.assertEqual(event, ("7.5s", "前台恢复窗口", "目标应用刚回到前台"))
 
     def test_ignores_ok_sample(self) -> None:
         self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))

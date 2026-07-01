@@ -114,6 +114,32 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertEqual(AndroidAdapter._parse_qtaguid_stats(output, 10234), (4000, 2000))
 
+    def test_marks_sample_when_target_app_leaves_foreground(self) -> None:
+        adapter = FakeAndroidAdapter({})
+
+        note = adapter._foreground_session_note(self.device, "com.example.game", "com.example.home")
+
+        self.assertEqual(note, "目标应用不在前台，当前前台为 com.example.home。")
+
+    def test_marks_short_recovery_window_after_target_returns_foreground(self) -> None:
+        adapter = FakeAndroidAdapter({})
+        key = (self.device.serial, "com.example.game")
+
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.home"),
+            "目标应用不在前台，当前前台为 com.example.home。",
+        )
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
+            "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+        )
+        self.assertEqual(adapter._foreground_recovery_remaining[key], 1)
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
+            "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+        )
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

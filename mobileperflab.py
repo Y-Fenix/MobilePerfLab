@@ -334,6 +334,8 @@ def sample_quality_tag(sample: PerfSample) -> str:
     note = sample.note or ""
     if "设备级网络兜底" in note:
         return "fallback"
+    if "恢复窗口内" in note:
+        return "fallback"
     if LiveQualityTracker._has_quality_issue(note):
         return "issue"
     return "ok"
@@ -376,10 +378,14 @@ def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None
     if tag == "ok":
         return None
     note = sample.note or ""
+    if "恢复窗口内" in note:
+        return format_report_seconds(sample.elapsed), "前台恢复窗口", "目标应用刚回到前台"
     if tag == "fallback":
         detail = "非目标 App 独占流量" if "非目标 App 独占流量" in note else "网络使用设备级兜底"
         return format_report_seconds(sample.elapsed), "设备级兜底", detail
     detail = note.split("；", 1)[0].strip() if note else "采集异常"
+    if "目标应用不在前台" in note:
+        detail = "目标应用不在前台"
     return format_report_seconds(sample.elapsed), "采集异常", detail[:80]
 
 
@@ -516,6 +522,8 @@ class LiveQualityTracker:
             return False
         if "设备级网络兜底" in note and "；" not in note:
             return False
+        if "目标应用刚回到前台" in note:
+            return False
         tokens = (
             "未采集",
             "无帧增量",
@@ -525,6 +533,7 @@ class LiveQualityTracker:
             "采集失败",
             "采集不可用",
             "未找到运行中的",
+            "不在前台",
         )
         return any(token in note for token in tokens)
 
@@ -532,6 +541,8 @@ class LiveQualityTracker:
     def _network_source(sample: PerfSample, note: str) -> str:
         if "设备级网络兜底" in note:
             return "设备级兜底"
+        if "恢复窗口内" in note:
+            return "前台恢复窗口"
         if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
             return "per-UID 不可用"
         if sample.rx_kbps > 0 or sample.tx_kbps > 0:
@@ -1051,6 +1062,8 @@ class AndroidAdapter(BaseAdapter):
         self._cpu_proc_cache: dict[tuple[str, str], tuple[float, dict[int, int]]] = {}
         self._clk_tck_cache: dict[str, int] = {}
         self._sample_count: dict[tuple[str, str], int] = {}
+        self._foreground_missing: set[tuple[str, str]] = set()
+        self._foreground_recovery_remaining: dict[tuple[str, str], int] = {}
 
     def is_available(self) -> bool:
         return self.adb_path is not None
@@ -1222,6 +1235,8 @@ class AndroidAdapter(BaseAdapter):
         self._pid_list_cache.pop(key, None)
         self._cpu_proc_cache.pop(key, None)
         self._sample_count.pop(key, None)
+        self._foreground_missing.discard(key)
+        self._foreground_recovery_remaining.pop(key, None)
         surface = self._surface_name(device, app_id) if app_id else ""
         if surface:
             self._shell(device.serial, f"dumpsys SurfaceFlinger --latency-clear {shlex.quote(surface)}", timeout=3.0)
@@ -1817,12 +1832,16 @@ class AndroidAdapter(BaseAdapter):
         key = (device.serial, app_id)
         sample_count = self._sample_count.get(key, 0) + 1
         self._sample_count[key] = sample_count
+        foreground_app = self.foreground_app(device) if device.platform == "Android" else ""
         fps, jank_percent = self._fps_and_jank(device, app_id, current)
         battery, temperature, power = self._battery(device)
         rx, tx = self._network_kbps(device, app_id, current)
         cpu = self._cpu_percent(device, app_id)
         memory = self._memory_mb(device, app_id)
         note = self._android_sample_note(device, app_id, sample_count, fps, cpu, memory, rx, tx)
+        foreground_note = self._foreground_session_note(device, app_id, foreground_app)
+        if foreground_note:
+            note = f"{foreground_note}；{note}" if note else foreground_note
         network_note = self._network_note_cache.get(key, "")
         if network_note:
             note = f"{note}；{network_note}" if note else network_note
@@ -1840,6 +1859,24 @@ class AndroidAdapter(BaseAdapter):
             tx_kbps=tx,
             note=note,
         )
+
+    def _foreground_session_note(self, device: DeviceInfo, app_id: str, foreground_app: str) -> str:
+        if not app_id or not foreground_app:
+            return ""
+        key = (device.serial, app_id)
+        if foreground_app != app_id:
+            self._foreground_missing.add(key)
+            self._foreground_recovery_remaining.pop(key, None)
+            return f"目标应用不在前台，当前前台为 {foreground_app}。"
+        if key in self._foreground_missing:
+            self._foreground_missing.discard(key)
+            self._foreground_recovery_remaining[key] = 2
+        remaining = self._foreground_recovery_remaining.get(key, 0)
+        if remaining > 0:
+            self._foreground_recovery_remaining[key] = remaining - 1
+            return "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。"
+        self._foreground_recovery_remaining.pop(key, None)
+        return ""
 
     def _android_sample_note(
         self,
