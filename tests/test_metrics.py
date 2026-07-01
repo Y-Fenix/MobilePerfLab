@@ -189,7 +189,7 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         self.assertEqual(health["rx_kbps"].state, "idle")
         self.assertEqual(health["tx_kbps"].state, "idle")
 
-    def test_marks_device_network_fallback_as_ok_when_it_has_values(self) -> None:
+    def test_marks_device_network_fallback_as_fallback_when_it_has_values(self) -> None:
         sample = PerfSample(
             timestamp=9.0,
             elapsed=9.0,
@@ -202,8 +202,9 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
 
         health = MetricHealthAnalyzer().analyze(sample)
 
-        self.assertEqual(health["rx_kbps"].state, "ok")
-        self.assertEqual(health["tx_kbps"].state, "ok")
+        self.assertEqual(health["rx_kbps"].state, "fallback")
+        self.assertEqual(health["tx_kbps"].state, "fallback")
+        self.assertEqual(health["rx_kbps"].label, "兜底")
 
     def test_marks_individual_metric_failures_from_parallel_android_sampling(self) -> None:
         sample = PerfSample(
@@ -248,6 +249,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         )
 
         self.assertIn("网络来源：设备级兜底", text)
+        self.assertIn("兜底：下行/上行", text)
         self.assertIn("异常样本 1/2", text)
         self.assertIn("兜底 1/2", text)
 

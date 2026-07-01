@@ -1293,6 +1293,7 @@ class MetricHealthAnalyzer:
 
     LABELS = {
         "ok": "正常",
+        "fallback": "兜底",
         "waiting": "等待",
         "idle": "无流量",
         "missing": "异常",
@@ -1307,6 +1308,8 @@ class MetricHealthAnalyzer:
         if self._note_marks_missing(metric, note):
             return self._health("missing", self._missing_detail(metric, note))
         if metric in ("rx_kbps", "tx_kbps"):
+            if "设备级网络兜底" in note and value > 0:
+                return self._health("fallback", "设备级网络兜底，非目标 App 独占流量")
             if value > 0:
                 return self._health("ok", "正在采集应用网络速率")
             if elapsed < 3.0:
@@ -1376,6 +1379,7 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     }
     primary_metrics = ("fps", "cpu_percent", "memory_mb", "temperature_c", "power_w", "rx_kbps", "tx_kbps")
     available: list[str] = []
+    fallback: list[str] = []
     unavailable: list[str] = []
     pending: list[str] = []
     for metric in primary_metrics:
@@ -1385,6 +1389,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
         label = labels.get(metric, metric)
         if status.state == "ok":
             available.append(label)
+        elif status.state == "fallback":
+            fallback.append(label)
         elif status.state == "missing":
             unavailable.append(label)
         else:
@@ -1392,6 +1398,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     parts: list[str] = []
     if available:
         parts.append(f"可用：{'/'.join(available)}")
+    if fallback:
+        parts.append(f"兜底：{'/'.join(fallback)}")
     if unavailable:
         parts.append(f"不可用：{'/'.join(unavailable)}")
     if pending:
@@ -7564,6 +7572,7 @@ class App:
         }
         prefixes = {
             "ok": "●",
+            "fallback": "◇",
             "waiting": "○",
             "idle": "○",
             "missing": "!",
