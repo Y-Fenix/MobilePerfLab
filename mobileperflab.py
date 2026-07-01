@@ -6638,6 +6638,7 @@ class App:
         self.weak_status_var = tk.StringVar(value="弱网代理未启动")
         self.weak_diagnostic_summary_var = tk.StringVar(value="弱网代理未就绪")
         self.weak_live_summary_var = tk.StringVar(value="弱网 OFF · 未启动")
+        self.weak_readiness_var = tk.StringVar(value="先启动弱网代理")
         self.weak_diagnostic_row_vars: list[tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = []
         self.weak_traffic_vars: dict[str, tk.StringVar] = {}
         self.metric_health_vars: dict[str, tk.StringVar] = {}
@@ -7003,6 +7004,7 @@ class App:
         self.weak_traffic_chart = TrafficMiniChart(panel)
         self.weak_traffic_chart.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         metrics = [
+            ("readiness", "测试就绪", "先启动弱网代理"),
             ("down_rate", "实时下行", "0.0 KB/s"),
             ("up_rate", "实时上行", "0.0 KB/s"),
             ("down_total", "累计下行", "0 B"),
@@ -7012,7 +7014,7 @@ class App:
             ("activity", "最近活动", "无"),
         ]
         for index, (key, label, default) in enumerate(metrics, start=1):
-            value_var = tk.StringVar(value=default)
+            value_var = self.weak_readiness_var if key == "readiness" else tk.StringVar(value=default)
             self.weak_traffic_vars[key] = value_var
             item = ttk.Frame(panel, style="Panel.TFrame", padding=(10, 8))
             item.grid(row=3 + (index - 1) // 4, column=(index - 1) % 4, sticky="ew", padx=(0 if (index - 1) % 4 == 0 else 8, 0), pady=(10, 0))
@@ -7502,6 +7504,21 @@ class App:
     def _refresh_proxy_traffic(self) -> None:
         snapshot = self.weak_proxy.traffic_snapshot()
         values = format_proxy_traffic_snapshot(snapshot)
+        traffic_state, _traffic_label = proxy_traffic_state(self.weak_proxy.is_running(), snapshot)
+        effectiveness = build_weak_network_effectiveness(
+            self.weak_proxy.is_running(),
+            traffic_state,
+            self.last_weak_diagnostics,
+            app_rx_kbps=self.last_app_rx_kbps,
+            app_tx_kbps=self.last_app_tx_kbps,
+        )
+        readiness = effectiveness.get("test_readiness", {})
+        readiness_label = "未知"
+        if isinstance(readiness, dict):
+            readiness_label = str(readiness.get("label", "未知"))
+        values["readiness"] = readiness_label
+        if hasattr(self, "weak_readiness_var"):
+            self.weak_readiness_var.set(readiness_label)
         weak_traffic_vars = getattr(self, "weak_traffic_vars", {})
         for key, text in values.items():
             variable = weak_traffic_vars.get(key)

@@ -144,7 +144,8 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
 
         app = object.__new__(App)
         app.weak_proxy = FakeWeakProxy()
-        app.weak_traffic_vars = {}
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {"readiness": FakeVar()}
         app.weak_live_summary_var = FakeVar()
         app.last_app_rx_kbps = 0.0
         app.last_app_tx_kbps = 0.0
@@ -159,6 +160,8 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         App._refresh_proxy_traffic(app)
 
         self.assertIn("端口不可达", app.weak_live_summary_var.value)
+        self.assertEqual(app.weak_readiness_var.value, "先修弱网链路")
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, "先修弱网链路")
 
 
 class AndroidProxyVerificationTest(unittest.TestCase):
