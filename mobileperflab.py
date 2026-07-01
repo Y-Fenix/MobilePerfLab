@@ -6878,21 +6878,28 @@ class App:
         ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
         interval.grid(row=0, column=1, sticky="e")
-        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
+        ttk.Button(settings, text="推荐间隔", style="Tool.TButton", command=self.apply_recommended_sampling_interval).grid(
             row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
+            row=2,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(10, 0),
         )
         ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
-            row=2,
+            row=3,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(12, 0),
         )
-        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
     def _set_graph_scrollbar_state(self) -> None:
         if not hasattr(self, "graph_scrollbar"):
@@ -6908,6 +6915,21 @@ class App:
             self.graph_scrollbar.state(["!disabled"])
         else:
             self.graph_scrollbar.state(["disabled"])
+
+    def apply_recommended_sampling_interval(self) -> None:
+        try:
+            current = float(self.interval_var.get())
+        except (ValueError, AttributeError):
+            current = DEFAULT_INTERVAL_SECONDS
+        recommended = recommended_sampling_interval(current)
+        recommended_text = f"{recommended:.1f}"
+        self.interval_var.set(recommended_text)
+        if hasattr(self, "recorder"):
+            self.recorder.set_expected_interval(recommended)
+        if hasattr(self, "live_quality"):
+            self.live_quality.set_expected_interval(recommended)
+        if hasattr(self, "append_log"):
+            self.append_log(f"推荐采样间隔已应用：{recommended_text}s。")
 
     def _build_weak_network_panel(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(10, 10))

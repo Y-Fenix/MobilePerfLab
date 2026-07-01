@@ -2,6 +2,7 @@ import unittest
 
 from mobileperflab import (
     AndroidCollectionDiagnostics,
+    App,
     collection_diagnostic_status_rows,
     build_environment_checks,
     format_environment_checks,
@@ -110,6 +111,38 @@ class QualityModeLabelTest(unittest.TestCase):
     def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
         self.assertIn("1.5", SAMPLING_INTERVAL_OPTIONS)
         self.assertIn("2.0", SAMPLING_INTERVAL_OPTIONS)
+
+    def test_app_applies_recommended_sampling_interval(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeIntervalTarget:
+            def __init__(self) -> None:
+                self.expected_interval = 0.0
+
+            def set_expected_interval(self, value: float) -> None:
+                self.expected_interval = value
+
+        app = object.__new__(App)
+        app.interval_var = FakeVar("1.0")
+        app.recorder = FakeIntervalTarget()
+        app.live_quality = FakeIntervalTarget()
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+
+        App.apply_recommended_sampling_interval(app)
+
+        self.assertEqual(app.interval_var.get(), "1.5")
+        self.assertEqual(app.recorder.expected_interval, 1.5)
+        self.assertEqual(app.live_quality.expected_interval, 1.5)
+        self.assertIn("推荐采样间隔", app.logs[-1])
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
