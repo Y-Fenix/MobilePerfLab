@@ -5,8 +5,10 @@ from mobileperflab import (
     MetricHealthAnalyzer,
     MetricStabilizer,
     PerfSample,
+    append_sampling_latency_note,
     quality_intervals_from_points,
     quality_event_from_sample,
+    quality_interval_label,
     sample_quality_tag,
 )
 
@@ -55,6 +57,21 @@ class MetricStabilizerTest(unittest.TestCase):
         display = stabilizer.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, cpu_percent=88.0))
 
         self.assertLess(display.cpu_percent, 55.0)
+
+    def test_smooths_more_when_recent_fps_history_is_volatile(self) -> None:
+        stable = MetricStabilizer()
+        stable.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        stable.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, fps=60.0))
+        stable_display = stable.smooth_sample(PerfSample(timestamp=3.0, elapsed=3.0, fps=20.0))
+
+        volatile = MetricStabilizer()
+        volatile.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        volatile.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, fps=40.0))
+        volatile.smooth_sample(PerfSample(timestamp=3.0, elapsed=3.0, fps=80.0))
+        volatile.smooth_sample(PerfSample(timestamp=4.0, elapsed=4.0, fps=60.0))
+        volatile_display = volatile.smooth_sample(PerfSample(timestamp=5.0, elapsed=5.0, fps=20.0))
+
+        self.assertGreater(volatile_display.fps, stable_display.fps + 3.0)
 
 
 class MetricHealthAnalyzerTest(unittest.TestCase):
@@ -144,6 +161,14 @@ class SampleQualityTagTest(unittest.TestCase):
         )
         self.assertEqual(sample_quality_tag(PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)), "ok")
 
+    def test_classifies_slow_sampling_window_as_issue(self) -> None:
+        sample = PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)
+        annotated = append_sampling_latency_note(sample, spent_seconds=1.6, interval_seconds=1.0)
+
+        self.assertIn("采样耗时 1.60s 超过采样间隔 1.00s", annotated.note)
+        self.assertEqual(sample.note, "")
+        self.assertEqual(sample_quality_tag(annotated), "issue")
+
     def test_classifies_foreground_state_quality_from_note(self) -> None:
         self.assertEqual(
             sample_quality_tag(PerfSample(timestamp=1.0, elapsed=1.0, note="目标应用不在前台，当前前台为 com.example.home。")),
@@ -182,6 +207,22 @@ class QualityIntervalsTest(unittest.TestCase):
                 {"start": 4.0, "end": 5.0, "quality": "fallback"},
             ],
         )
+
+    def test_labels_foreground_recovery_interval_separately_from_network_fallback(self) -> None:
+        recovery = PerfSample(
+            timestamp=1.0,
+            elapsed=1.0,
+            note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+        )
+        network = PerfSample(
+            timestamp=2.0,
+            elapsed=2.0,
+            note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+        )
+
+        self.assertEqual(quality_interval_label("fallback", recovery.note), "前台恢复窗口")
+        self.assertEqual(quality_interval_label("fallback", network.note), "设备级兜底")
+        self.assertEqual(quality_interval_label("issue", "采样耗时 1.60s 超过采样间隔 1.00s"), "采样耗时过长")
 
 
 class QualityEventTest(unittest.TestCase):

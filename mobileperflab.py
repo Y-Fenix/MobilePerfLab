@@ -341,6 +341,22 @@ def sample_quality_tag(sample: PerfSample) -> str:
     return "ok"
 
 
+def append_sampling_latency_note(sample: PerfSample, spent_seconds: float, interval_seconds: float) -> PerfSample:
+    if interval_seconds <= 0:
+        return sample
+    threshold = max(interval_seconds * 1.25, interval_seconds + 0.25)
+    if spent_seconds <= threshold:
+        return sample
+    payload = asdict(sample)
+    latency_note = (
+        f"采样耗时 {spent_seconds:.2f}s 超过采样间隔 {interval_seconds:.2f}s，"
+        "低端机或 adb 慢命令可能导致曲线时间窗不稳定。"
+    )
+    note = str(payload.get("note") or "")
+    payload["note"] = f"{note}；{latency_note}" if note else latency_note
+    return PerfSample(**payload)
+
+
 def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[str, float | str]]:
     intervals: list[dict[str, float | str]] = []
     active_quality = "ok"
@@ -367,6 +383,20 @@ def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[
     if active_start is not None and active_end is not None:
         intervals.append({"start": active_start, "end": active_end, "quality": active_quality})
     return intervals
+
+
+def quality_interval_label(quality: str, note: str = "") -> str:
+    if "恢复窗口内" in note:
+        return "前台恢复窗口"
+    if "采样耗时" in note:
+        return "采样耗时过长"
+    if "目标应用不在前台" in note:
+        return "目标离开前台"
+    if quality == "fallback":
+        return "设备级兜底"
+    if quality == "issue":
+        return "采集异常"
+    return "正常"
 
 
 def format_report_seconds(value: float) -> str:
@@ -534,6 +564,7 @@ class LiveQualityTracker:
             "采集不可用",
             "未找到运行中的",
             "不在前台",
+            "采样耗时",
         )
         return any(token in note for token in tokens)
 
@@ -588,14 +619,23 @@ class MetricStabilizer:
         "rx_kbps": (0.75, 1.2),
         "tx_kbps": (0.75, 1.2),
     }
+    VOLATILITY_SENSITIVITY_BY_METRIC = {
+        "fps": 0.75,
+        "cpu_percent": 0.45,
+        "power_w": 0.35,
+    }
 
     def __init__(self) -> None:
         self._values: dict[str, float] = {}
         self._timestamps: dict[str, float] = {}
+        self._raw_values: dict[str, float] = {}
+        self._volatility: dict[str, float] = {}
 
     def reset(self) -> None:
         self._values.clear()
         self._timestamps.clear()
+        self._raw_values.clear()
+        self._volatility.clear()
 
     def smooth_sample(self, sample: PerfSample) -> PerfSample:
         payload = asdict(sample)
@@ -605,16 +645,19 @@ class MetricStabilizer:
 
     def _smooth(self, metric: str, value: float, timestamp: float) -> float:
         previous = self._values.get(metric)
+        historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
             previous_timestamp = self._timestamps.get(metric, timestamp)
             hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0)
             if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
                 held = previous * 0.82
                 self._values[metric] = held
+                self._remember_raw_volatility(metric, value)
                 return held
         if previous is None or previous <= 0 or value <= 0:
             self._values[metric] = value
             self._timestamps[metric] = timestamp
+            self._remember_raw_volatility(metric, value)
             return value
         alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
         blended = previous + alpha * (value - previous)
@@ -623,8 +666,10 @@ class MetricStabilizer:
             keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
             blended = blended * (1.0 - keep) + value * keep
         blended = self._limit_display_step(metric, previous, blended)
+        blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility)
         self._values[metric] = blended
         self._timestamps[metric] = timestamp
+        self._remember_raw_volatility(metric, value)
         return max(blended, 0.0)
 
     def _limit_display_step(self, metric: str, previous: float, value: float) -> float:
@@ -635,6 +680,25 @@ class MetricStabilizer:
         lower = previous * max(0.0, 1.0 - down_ratio)
         upper = previous * (1.0 + up_ratio)
         return min(max(value, lower), upper)
+
+    def _dampen_when_volatile(self, metric: str, previous: float, value: float, volatility: float) -> float:
+        sensitivity = self.VOLATILITY_SENSITIVITY_BY_METRIC.get(metric, 0.0)
+        if sensitivity <= 0 or previous <= 0 or value <= 0:
+            return value
+        if volatility <= 0.08:
+            return value
+        keep_previous = min(volatility * sensitivity, 0.45)
+        return previous * keep_previous + value * (1.0 - keep_previous)
+
+    def _remember_raw_volatility(self, metric: str, value: float) -> None:
+        previous = self._raw_values.get(metric)
+        if value > 0:
+            self._raw_values[metric] = value
+        if previous is None or previous <= 0 or value <= 0:
+            return
+        change_ratio = abs(value - previous) / max(abs(previous), 1.0)
+        prior = self._volatility.get(metric, 0.0)
+        self._volatility[metric] = prior * 0.65 + change_ratio * 0.35
 
 
 class WeakNetworkProxy:
@@ -3358,6 +3422,9 @@ class SessionRecorder:
             "无法按应用统计": ("网络无法按应用统计", "系统未开放目标 App per-UID 网络统计。"),
             "网络采集失败": ("网络采集失败", "网络采集通道返回错误。"),
             "未匹配到目标 PID": ("PID 未匹配", "目标进程未匹配，CPU/内存/FPS 可能不可信。"),
+            "目标应用不在前台": ("目标离开前台", "目标 App 不在前台时，FPS/CPU/网络曲线不应作为目标场景性能结论。"),
+            "恢复窗口内": ("前台恢复窗口", "目标 App 刚回到前台，Surface/进程缓存重建会影响短时间样本。"),
+            "采样耗时": ("采样耗时过长", "单次采样超过采样间隔，低端机或 adb 慢命令可能让曲线时间窗不稳定。"),
         }
         issues: list[dict[str, object]] = []
         for token, (label, detail) in missing_tokens.items():
@@ -3511,9 +3578,21 @@ class SessionRecorder:
         quality_intervals = quality_intervals_from_points(
             [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
         )
+
+        def interval_note(interval: dict[str, float | str]) -> str:
+            start = float(interval.get("start", 0.0))
+            end = float(interval.get("end", start))
+            quality_tag = str(interval.get("quality", ""))
+            for sample in self.samples:
+                if sample.elapsed < start or sample.elapsed > end:
+                    continue
+                if sample_quality_tag(sample) == quality_tag and sample.note:
+                    return sample.note
+            return ""
+
         interval_rows = "".join(
             "<tr>"
-            f"<td>{html.escape('采集异常' if str(interval.get('quality')) == 'issue' else '设备级兜底')}</td>"
+            f"<td>{html.escape(quality_interval_label(str(interval.get('quality')), interval_note(interval)))}</td>"
             f"<td>{html.escape(format_report_seconds(float(interval.get('start', 0.0))))}</td>"
             f"<td>{html.escape(format_report_seconds(float(interval.get('end', 0.0))))}</td>"
             f"<td>{html.escape(format_report_seconds(max(0.0, float(interval.get('end', 0.0)) - float(interval.get('start', 0.0)))))}</td>"
@@ -4050,12 +4129,14 @@ class SamplerThread(threading.Thread):
             loop_start = time.time()
             try:
                 sample = self.adapter.collect_sample(self.device, self.app_id, self.start_time)
+                spent = time.time() - loop_start
+                sample = append_sampling_latency_note(sample, spent, self.interval)
                 self.output.put(("sample", sample))
                 if sample.note:
                     self.output.put(("note", sample.note))
             except Exception as exc:
                 self.output.put(("log", f"采样失败：{exc}"))
-            spent = time.time() - loop_start
+                spent = time.time() - loop_start
             self.stop_event.wait(max(self.interval - spent, 0.05))
         try:
             self.adapter.stop_session(self.device, self.app_id)
