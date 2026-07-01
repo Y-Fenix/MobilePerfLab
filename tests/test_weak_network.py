@@ -15,6 +15,7 @@ from mobileperflab import (
     format_weak_network_config,
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
+    weak_readiness_display_text,
     verify_android_proxy_state,
 )
 
@@ -340,6 +341,15 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertIn("App 有流量但代理未捕获", result["detail"])
         self.assertIn("QUIC/UDP", result["action"])
 
+    def test_formats_weak_readiness_display_text_with_action(self) -> None:
+        self.assertEqual(
+            weak_readiness_display_text({"label": "先修弱网链路", "action": "检查 QUIC/UDP、自建网络栈。"}),
+            "先修弱网链路 · 检查 QUIC/UDP、自建网络栈。",
+        )
+
+    def test_formats_weak_readiness_display_text_without_empty_separator(self) -> None:
+        self.assertEqual(weak_readiness_display_text({"label": "可以开始测试"}), "可以开始测试")
+
     def test_scores_unreachable_proxy_before_traffic_checks(self) -> None:
         diagnostics = build_weak_network_diagnostics(
             proxy_running=True,
@@ -654,6 +664,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["traffic_state"], "hit")
         self.assertEqual(payload["effectiveness"]["state"], "effective")
         self.assertEqual(payload["effectiveness"]["label"], "弱网已生效")
+        self.assertEqual(payload["readiness_display"], "可以开始测试 · 继续执行业务场景并观察代理真实流量曲线。")
 
     def test_builds_report_payload_with_waiting_proxy_traffic_state(self) -> None:
         payload = build_weak_network_report_payload(True, "127.0.0.1:18888", ProxyTrafficSnapshot(), [])
@@ -661,6 +672,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["traffic_state"], "waiting")
         self.assertIn("等待目标流量", payload["summary"])
         self.assertEqual(payload["effectiveness"]["state"], "waiting")
+        self.assertIn("先触发业务请求", payload["readiness_display"])
 
     def test_builds_report_payload_with_dropped_proxy_traffic_state(self) -> None:
         payload = build_weak_network_report_payload(

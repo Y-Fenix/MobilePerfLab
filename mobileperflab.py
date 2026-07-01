@@ -533,6 +533,14 @@ def weak_network_test_readiness(effectiveness_state: str) -> dict[str, str]:
     }
 
 
+def weak_readiness_display_text(readiness: dict[str, object] | object) -> str:
+    if not isinstance(readiness, dict):
+        return "未知"
+    label = str(readiness.get("label", "未知") or "未知")
+    action = str(readiness.get("action", "") or "")
+    return f"{label} · {action}" if action else label
+
+
 def _weak_network_effectiveness_result(
     state: str,
     label: str,
@@ -673,6 +681,7 @@ def build_weak_network_report_payload(
         "traffic_state": traffic_state,
         "traffic_state_label": traffic_state_label,
         "effectiveness": effectiveness,
+        "readiness_display": weak_readiness_display_text(effectiveness.get("test_readiness", {})),
         "risk_message": weak_network_risk_message(traffic_state),
         "summary": format_live_proxy_summary(running, endpoint, snapshot),
         "config": dict(config or {}),
@@ -7797,12 +7806,7 @@ class App:
             app_tx_kbps=self.last_app_tx_kbps,
         )
         readiness = effectiveness.get("test_readiness", {})
-        readiness_label = "未知"
-        readiness_action = ""
-        if isinstance(readiness, dict):
-            readiness_label = str(readiness.get("label", "未知"))
-            readiness_action = str(readiness.get("action", ""))
-        readiness_text = f"{readiness_label} · {readiness_action}" if readiness_action else readiness_label
+        readiness_text = weak_readiness_display_text(readiness)
         values["readiness"] = readiness_text
         if hasattr(self, "weak_readiness_var"):
             self.weak_readiness_var.set(readiness_text)
