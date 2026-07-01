@@ -334,6 +334,18 @@ def format_report_seconds(value: float) -> str:
     return f"{float(value):.1f}s"
 
 
+def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None:
+    tag = sample_quality_tag(sample)
+    if tag == "ok":
+        return None
+    note = sample.note or ""
+    if tag == "fallback":
+        detail = "非目标 App 独占流量" if "非目标 App 独占流量" in note else "网络使用设备级兜底"
+        return format_report_seconds(sample.elapsed), "设备级兜底", detail
+    detail = note.split("；", 1)[0].strip() if note else "采集异常"
+    return format_report_seconds(sample.elapsed), "采集异常", detail[:80]
+
+
 @dataclass(frozen=True)
 class MetricHealth:
     state: str
@@ -4095,6 +4107,7 @@ class App:
         self.stabilizer = MetricStabilizer()
         self.health_analyzer = MetricHealthAnalyzer()
         self.live_quality = LiveQualityTracker()
+        self.last_quality_event_tag = "ok"
         self.weak_proxy = WeakNetworkProxy(self._threadsafe_log)
         self.weak_registry = WeakProxyDeviceRegistry()
 
@@ -4550,6 +4563,7 @@ class App:
         bottom = ttk.Frame(main, style="Root.TFrame")
         bottom.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
         bottom.columnconfigure(1, weight=1)
+        bottom.columnconfigure(2, weight=1)
         bottom.rowconfigure(0, weight=1)
         marker_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
         marker_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
@@ -4557,8 +4571,24 @@ class App:
         ttk.Entry(marker_panel, textvariable=self.marker_var, width=18).grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(marker_panel, text="添加", style="Tool.TButton", command=self.add_marker).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         ttk.Button(marker_panel, text="截图", style="Tool.TButton", command=self.capture_screenshot).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        quality_event_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
+        quality_event_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
+        ttk.Label(quality_event_panel, text="质量事件", style="PanelTitle.TLabel").pack(anchor="w")
+        self.quality_event_tree = ttk.Treeview(
+            quality_event_panel,
+            columns=("time", "kind", "detail"),
+            show="headings",
+            height=5,
+        )
+        self.quality_event_tree.heading("time", text="时间")
+        self.quality_event_tree.heading("kind", text="类型")
+        self.quality_event_tree.heading("detail", text="说明")
+        self.quality_event_tree.column("time", width=70, anchor="center", stretch=False)
+        self.quality_event_tree.column("kind", width=96, anchor="center", stretch=False)
+        self.quality_event_tree.column("detail", width=280, stretch=True)
+        self.quality_event_tree.pack(fill="both", expand=True, pady=(8, 0))
         log_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
-        log_panel.grid(row=0, column=1, sticky="nsew")
+        log_panel.grid(row=0, column=2, sticky="nsew")
         ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").pack(anchor="w")
         self.log_text = tk.Text(
             log_panel,
@@ -5057,7 +5087,9 @@ class App:
         self.graph_follow_latest = True
         self.stabilizer.reset()
         self.live_quality.reset()
+        self.last_quality_event_tag = "ok"
         self.quality_var.set("采集质量：等待数据")
+        self._clear_quality_events()
         for graph in self.graphs.values():
             graph.reset()
         for card in self.cards.values():
@@ -5122,6 +5154,30 @@ class App:
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
+        self._append_quality_event(sample)
+
+    def _clear_quality_events(self) -> None:
+        if not hasattr(self, "quality_event_tree"):
+            return
+        for item in self.quality_event_tree.get_children():
+            self.quality_event_tree.delete(item)
+
+    def _append_quality_event(self, sample: PerfSample) -> None:
+        tag = sample_quality_tag(sample)
+        if tag == "ok":
+            self.last_quality_event_tag = "ok"
+            return
+        if tag == self.last_quality_event_tag:
+            return
+        event = quality_event_from_sample(sample)
+        self.last_quality_event_tag = tag
+        if not event or not hasattr(self, "quality_event_tree"):
+            return
+        self.quality_event_tree.insert("", "end", values=event)
+        children = self.quality_event_tree.get_children()
+        for item in children[:-80]:
+            self.quality_event_tree.delete(item)
+        self.quality_event_tree.yview_moveto(1.0)
 
     def _update_metric_health(self, sample: PerfSample) -> None:
         labels = {

@@ -6,6 +6,7 @@ from mobileperflab import (
     MetricStabilizer,
     PerfSample,
     quality_intervals_from_points,
+    quality_event_from_sample,
     sample_quality_tag,
 )
 
@@ -165,6 +166,35 @@ class QualityIntervalsTest(unittest.TestCase):
                 {"start": 4.0, "end": 5.0, "quality": "fallback"},
             ],
         )
+
+
+class QualityEventTest(unittest.TestCase):
+    def test_builds_realtime_event_for_issue_sample(self) -> None:
+        event = quality_event_from_sample(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=12.4,
+                fps=0.0,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量。",
+            )
+        )
+
+        self.assertEqual(event, ("12.4s", "采集异常", "Android FPS 未采集到 Surface"))
+
+    def test_builds_realtime_event_for_network_fallback_sample(self) -> None:
+        event = quality_event_from_sample(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=5.0,
+                rx_kbps=3.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+            )
+        )
+
+        self.assertEqual(event, ("5.0s", "设备级兜底", "非目标 App 独占流量"))
+
+    def test_ignores_ok_sample(self) -> None:
+        self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))
 
 
 if __name__ == "__main__":
