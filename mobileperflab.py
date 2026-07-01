@@ -587,6 +587,13 @@ def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) 
     return smoothed
 
 
+def graph_display_series(points: list[tuple[float, float]], smooth: bool = False, alpha: float = 0.28) -> list[tuple[float, float]]:
+    normalized = [(float(elapsed), float(value)) for elapsed, value in points]
+    if not smooth:
+        return normalized
+    return smooth_graph_series(normalized, alpha=alpha)
+
+
 QUALITY_ISSUE_TOKENS = (
     "未采集",
     "无帧增量",
@@ -5369,7 +5376,7 @@ class GraphPanel(ttk.Frame):
                 font=("Helvetica", 12),
             )
             return
-        display_values = smooth_graph_series([(elapsed, value) for elapsed, value, _quality in visible_points])
+        display_values = graph_display_series([(elapsed, value) for elapsed, value, _quality in visible_points], smooth=False)
         display_by_elapsed = {elapsed: value for elapsed, value in display_values}
         values = [
             display_by_elapsed.get(elapsed, value)

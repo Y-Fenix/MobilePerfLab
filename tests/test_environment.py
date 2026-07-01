@@ -7,6 +7,7 @@ from mobileperflab import (
     format_environment_checks,
     format_graph_view_height,
     format_quality_mode_label,
+    graph_display_series,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
     smooth_graph_series,
@@ -90,6 +91,13 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertEqual(len(smoothed), len(raw))
         self.assertEqual(smoothed[0][0], 0.0)
         self.assertLess(smooth_range, raw_range)
+
+    def test_live_graph_display_series_can_skip_second_smoothing_pass(self) -> None:
+        stabilized = [(0.0, 60.0), (1.0, 45.0), (2.0, 30.0)]
+
+        display = graph_display_series(stabilized, smooth=False)
+
+        self.assertEqual(display, stabilized)
 
 
 class QualityModeLabelTest(unittest.TestCase):
