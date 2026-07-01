@@ -5247,6 +5247,11 @@ class SessionRecorder:
             }
             quality["recent_window"] = build_recent_window_health([], expected_interval=self.expected_interval)
             quality["display_strategy"] = build_display_strategy([], quality)
+            if isinstance(quality["recent_window"], dict):
+                quality["recent_window"]["action"] = live_sampling_action_label(
+                    quality["recent_window"],
+                    isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
+                )
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             quality["metric_availability"] = build_metric_availability([], quality)
@@ -5339,6 +5344,11 @@ class SessionRecorder:
         }
         quality["recent_window"] = build_recent_window_health(self.samples, expected_interval=self.expected_interval)
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
+        if isinstance(quality["recent_window"], dict):
+            quality["recent_window"]["action"] = live_sampling_action_label(
+                quality["recent_window"],
+                isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
+            )
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         quality["metric_availability"] = build_metric_availability(self.samples, quality)
@@ -5503,6 +5513,11 @@ class SessionRecorder:
                     "最近窗口",
                     str(recent_window.get("label", "窗口：等待数据")),
                     f"{recent_window.get('trend_label', '趋势：等待数据')}。{recent_window.get('detail', '最近窗口暂无样本。')}",
+                ),
+                (
+                    "采样建议",
+                    str(recent_window.get("action", "建议：等待更多样本")),
+                    "根据最近窗口判断下一步采样策略。",
                 ),
                 (
                     "展示策略",

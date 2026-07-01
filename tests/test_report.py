@@ -384,9 +384,12 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["recent_window"]["state"], "bad")
         self.assertEqual(payload["quality"]["recent_window"]["label"], "窗口：节拍失稳")
         self.assertEqual(payload["quality"]["recent_window"]["trend_source"], "collection")
+        self.assertIn("采样间隔调到 1.5s/2s", payload["quality"]["recent_window"]["action"])
         self.assertIn("最近窗口", html_text)
         self.assertIn("窗口：节拍失稳", html_text)
         self.assertIn("趋势：采集波动", html_text)
+        self.assertIn("采样建议", html_text)
+        self.assertIn("采样间隔调到 1.5s/2s", html_text)
 
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
