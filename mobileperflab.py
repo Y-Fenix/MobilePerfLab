@@ -222,6 +222,18 @@ class WeakNetworkDiagnostics:
     rows: list[tuple[str, str, str]]
 
 
+@dataclass(frozen=True)
+class ProxyTrafficSnapshot:
+    up_bytes: int = 0
+    down_bytes: int = 0
+    up_kbps: float = 0.0
+    down_kbps: float = 0.0
+    active_connections: int = 0
+    total_connections: int = 0
+    dropped_connections: int = 0
+    last_activity_age: float | None = None
+
+
 def normalize_android_proxy_value(value: str) -> str:
     proxy = (value or "").strip()
     if not proxy or proxy.lower() in {"null", "none", ":0", "0.0.0.0:0"}:
@@ -291,6 +303,31 @@ def build_weak_network_diagnostics(
     rows.append(("设备代理", "未检查", "选择设备后刷新状态"))
     rows.append(("端口连通", "未检查", "启动代理并选择设备后检测"))
     return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
+
+
+def format_bytes(value: int) -> str:
+    size = float(max(value, 0))
+    if size < 1024:
+        return f"{int(size)} B"
+    units = ("KB", "MB", "GB")
+    for unit in units:
+        size /= 1024.0
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+    return f"{size:.1f} GB"
+
+
+def format_proxy_traffic_snapshot(snapshot: ProxyTrafficSnapshot) -> dict[str, str]:
+    activity = "无" if snapshot.last_activity_age is None else f"{snapshot.last_activity_age:.1f}s 前"
+    return {
+        "down_rate": f"{snapshot.down_kbps:.1f} KB/s",
+        "up_rate": f"{snapshot.up_kbps:.1f} KB/s",
+        "down_total": format_bytes(snapshot.down_bytes),
+        "up_total": format_bytes(snapshot.up_bytes),
+        "connections": f"{snapshot.active_connections} 活跃 / {snapshot.total_connections} 总计",
+        "drops": str(snapshot.dropped_connections),
+        "activity": activity,
+    }
 
 
 def sample_quality_tag(sample: PerfSample) -> str:
@@ -604,6 +641,16 @@ class WeakNetworkProxy:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._traffic_lock = threading.Lock()
+        self._traffic_up_bytes = 0
+        self._traffic_down_bytes = 0
+        self._traffic_active_connections = 0
+        self._traffic_total_connections = 0
+        self._traffic_dropped_connections = 0
+        self._traffic_last_activity: float | None = None
+        self._traffic_rate_base_time = time.time()
+        self._traffic_rate_base_up = 0
+        self._traffic_rate_base_down = 0
 
     def configure(
         self,
@@ -658,6 +705,74 @@ class WeakNetworkProxy:
     def local_endpoint(self) -> str:
         return f"{self._host_lan_ip()}:{self.port}"
 
+    def reset_traffic(self, now: float | None = None) -> None:
+        timestamp = time.time() if now is None else now
+        with self._traffic_lock:
+            self._traffic_up_bytes = 0
+            self._traffic_down_bytes = 0
+            self._traffic_active_connections = 0
+            self._traffic_total_connections = 0
+            self._traffic_dropped_connections = 0
+            self._traffic_last_activity = None
+            self._traffic_rate_base_time = timestamp
+            self._traffic_rate_base_up = 0
+            self._traffic_rate_base_down = 0
+
+    def traffic_snapshot(self, now: float | None = None) -> ProxyTrafficSnapshot:
+        timestamp = time.time() if now is None else now
+        with self._traffic_lock:
+            elapsed = max(timestamp - self._traffic_rate_base_time, 0.0)
+            up_bytes = self._traffic_up_bytes
+            down_bytes = self._traffic_down_bytes
+            if elapsed <= 0 or elapsed > 3.0:
+                up_kbps = 0.0
+                down_kbps = 0.0
+            else:
+                up_kbps = max(up_bytes - self._traffic_rate_base_up, 0) / 1024.0 / elapsed
+                down_kbps = max(down_bytes - self._traffic_rate_base_down, 0) / 1024.0 / elapsed
+            last_age = None if self._traffic_last_activity is None else max(timestamp - self._traffic_last_activity, 0.0)
+            self._traffic_rate_base_time = timestamp
+            self._traffic_rate_base_up = up_bytes
+            self._traffic_rate_base_down = down_bytes
+            return ProxyTrafficSnapshot(
+                up_bytes=up_bytes,
+                down_bytes=down_bytes,
+                up_kbps=up_kbps,
+                down_kbps=down_kbps,
+                active_connections=self._traffic_active_connections,
+                total_connections=self._traffic_total_connections,
+                dropped_connections=self._traffic_dropped_connections,
+                last_activity_age=last_age,
+            )
+
+    def _record_connection_open(self, now: float | None = None) -> None:
+        timestamp = time.time() if now is None else now
+        with self._traffic_lock:
+            self._traffic_active_connections += 1
+            self._traffic_total_connections += 1
+            self._traffic_last_activity = timestamp
+
+    def _record_connection_close(self) -> None:
+        with self._traffic_lock:
+            self._traffic_active_connections = max(self._traffic_active_connections - 1, 0)
+
+    def _record_dropped_connection(self, now: float | None = None) -> None:
+        timestamp = time.time() if now is None else now
+        with self._traffic_lock:
+            self._traffic_dropped_connections += 1
+            self._traffic_last_activity = timestamp
+
+    def _record_transfer(self, direction: str, size: int, now: float | None = None) -> None:
+        if size <= 0:
+            return
+        timestamp = time.time() if now is None else now
+        with self._traffic_lock:
+            if direction == "up":
+                self._traffic_up_bytes += size
+            else:
+                self._traffic_down_bytes += size
+            self._traffic_last_activity = timestamp
+
     @staticmethod
     def _host_lan_ip() -> str:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -685,6 +800,7 @@ class WeakNetworkProxy:
     def _handle_client(self, client: socket.socket, address: tuple[str, int]) -> None:
         client.settimeout(12)
         remote: socket.socket | None = None
+        counted_connection = False
         try:
             header = self._recv_header(client)
             if not header:
@@ -705,7 +821,10 @@ class WeakNetworkProxy:
                     b"mobileperflab-ok"
                 )
                 return
+            self._record_connection_open()
+            counted_connection = True
             if self._should_drop_connection():
+                self._record_dropped_connection()
                 self.log_callback(f"弱网丢弃连接：{address[0]} -> {target}")
                 return
             if method == "CONNECT":
@@ -717,13 +836,17 @@ class WeakNetworkProxy:
                 if not host:
                     return
                 remote = socket.create_connection((host, port), timeout=12)
-                remote.sendall(self._rewrite_http_request(header, target))
+                rewritten = self._rewrite_http_request(header, target)
+                remote.sendall(rewritten)
+                self._record_transfer("up", len(rewritten))
             remote.settimeout(12)
             self._pipe_bidirectional(client, remote)
         except Exception as exc:
             if not self._stop_event.is_set():
                 self.log_callback(f"弱网代理连接失败：{self._short_error(str(exc))}")
         finally:
+            if counted_connection:
+                self._record_connection_close()
             for sock in (client, remote):
                 if sock:
                     try:
@@ -813,6 +936,7 @@ class WeakNetworkProxy:
                     break
                 self._shape_before_send(direction, len(data))
                 target.sendall(data)
+                self._record_transfer(direction, len(data))
         except OSError:
             pass
         finally:
@@ -4132,6 +4256,7 @@ class App:
         self.weak_status_var = tk.StringVar(value="弱网代理未启动")
         self.weak_diagnostic_summary_var = tk.StringVar(value="弱网代理未就绪")
         self.weak_diagnostic_row_vars: list[tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = []
+        self.weak_traffic_vars: dict[str, tk.StringVar] = {}
         self.metric_health_vars: dict[str, tk.StringVar] = {}
 
         self._configure_styles()
@@ -4405,7 +4530,8 @@ class App:
             pady=(6, 0),
         )
         self._build_weak_diagnostic_rows(guide, row=2)
-        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=3, column=0, sticky="w", pady=(18, 0))
+        self._build_proxy_traffic_panel(guide, row=3)
+        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=4, column=0, sticky="w", pady=(18, 0))
         text = (
             "1. 选择一台 Android 设备，并确认手机和电脑在同一网络。\n"
             "2. 选择弱网预设或手动配置参数。\n"
@@ -4423,7 +4549,7 @@ class App:
             font=("Helvetica", 12),
             borderwidth=0,
             justify="left",
-        ).grid(row=4, column=0, sticky="new", pady=(12, 0))
+        ).grid(row=5, column=0, sticky="new", pady=(12, 0))
         self.proxy_preview_text = tk.Text(
             guide,
             height=8,
@@ -4434,13 +4560,14 @@ class App:
             fg="#243044",
             font=("Menlo", 11),
         )
-        self.proxy_preview_text.grid(row=5, column=0, sticky="ew", pady=(16, 0))
+        self.proxy_preview_text.grid(row=6, column=0, sticky="ew", pady=(16, 0))
         self.proxy_preview_text.insert(
             "1.0",
             "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
         )
         self.proxy_preview_text.configure(state="disabled")
         self._refresh_weak_diagnostics()
+        self._refresh_proxy_traffic()
 
     def _build_weak_diagnostic_rows(self, master: tk.Widget, row: int) -> None:
         table = ttk.Frame(master, style="Panel.TFrame")
@@ -4461,6 +4588,34 @@ class App:
                 padx=(14, 0),
                 pady=(4, 0),
             )
+
+    def _build_proxy_traffic_panel(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
+        panel.grid(row=row, column=0, sticky="ew", pady=(18, 0))
+        ttk.Label(panel, text="代理真实流量", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(
+            panel,
+            text="统计所有经过本机弱网代理的 HTTP/HTTPS 流量，用于验证弱网是否真实生效。",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        metrics = [
+            ("down_rate", "实时下行", "0.0 KB/s"),
+            ("up_rate", "实时上行", "0.0 KB/s"),
+            ("down_total", "累计下行", "0 B"),
+            ("up_total", "累计上行", "0 B"),
+            ("connections", "连接", "0 活跃 / 0 总计"),
+            ("drops", "丢弃", "0"),
+            ("activity", "最近活动", "无"),
+        ]
+        for index, (key, label, default) in enumerate(metrics, start=1):
+            value_var = tk.StringVar(value=default)
+            self.weak_traffic_vars[key] = value_var
+            item = ttk.Frame(panel, style="Panel.TFrame", padding=(10, 8))
+            item.grid(row=2 + (index - 1) // 4, column=(index - 1) % 4, sticky="ew", padx=(0 if (index - 1) % 4 == 0 else 8, 0), pady=(10, 0))
+            ttk.Label(item, text=label, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(item, textvariable=value_var, style="GraphValue.TLabel").pack(anchor="w", pady=(3, 0))
+        for column in range(4):
+            panel.columnconfigure(column, weight=1)
 
     def _build_dashboard(self, master: tk.Widget) -> None:
         master.columnconfigure(0, weight=1)
@@ -4786,6 +4941,7 @@ class App:
             if restart:
                 self.weak_proxy.stop()
             self.weak_proxy.configure(port, latency, jitter, loss, down, up)
+            self.weak_proxy.reset_traffic()
             self.weak_proxy.start()
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"启动弱网代理失败：{exc}")
@@ -4793,6 +4949,7 @@ class App:
         self.weak_status_var.set(f"代理运行中：{self.weak_proxy.local_endpoint()}")
         self._refresh_proxy_preview()
         self._refresh_weak_diagnostics()
+        self._refresh_proxy_traffic()
         self.append_log(
             f"弱网配置：延迟 {latency}ms，抖动 {jitter}ms，丢包 {loss:g}%，"
             f"下行 {down:g}KB/s，上行 {up:g}KB/s。"
@@ -4803,6 +4960,7 @@ class App:
         self.weak_status_var.set("弱网代理未启动")
         self._refresh_proxy_preview()
         self._refresh_weak_diagnostics()
+        self._refresh_proxy_traffic()
 
     def _refresh_proxy_preview(self) -> None:
         if not hasattr(self, "proxy_preview_text"):
@@ -4860,6 +5018,15 @@ class App:
                 name_var.set("-")
                 state_var.set("-")
                 detail_var.set("-")
+
+    def _refresh_proxy_traffic(self) -> None:
+        if not self.weak_traffic_vars:
+            return
+        values = format_proxy_traffic_snapshot(self.weak_proxy.traffic_snapshot())
+        for key, text in values.items():
+            variable = self.weak_traffic_vars.get(key)
+            if variable:
+                variable.set(text)
 
     def _selected_android_device(self) -> DeviceInfo | None:
         device = self.selected_device
@@ -5209,6 +5376,7 @@ class App:
         if self.sampler and self.recorder.start_time:
             elapsed = time.time() - self.recorder.start_time
             self.session_var.set(f"{self._format_elapsed(elapsed)} · {len(self.recorder.samples)} samples")
+        self._refresh_proxy_traffic()
         self.root.after(1000, self._tick)
 
     @staticmethod
