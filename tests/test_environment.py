@@ -144,6 +144,39 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(app.live_quality.expected_interval, 1.5)
         self.assertIn("推荐采样间隔", app.logs[-1])
 
+    def test_app_applies_recommended_sampling_interval_to_running_sampler(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeIntervalTarget:
+            def set_expected_interval(self, _value: float) -> None:
+                pass
+
+        class FakeSampler:
+            def __init__(self) -> None:
+                self.interval = 1.0
+
+            def set_interval(self, value: float) -> None:
+                self.interval = value
+
+        app = object.__new__(App)
+        app.interval_var = FakeVar("1.0")
+        app.recorder = FakeIntervalTarget()
+        app.live_quality = FakeIntervalTarget()
+        app.sampler = FakeSampler()
+        app.append_log = lambda _text: None
+
+        App.apply_recommended_sampling_interval(app)
+
+        self.assertEqual(app.sampler.interval, 1.5)
+
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
     def test_marks_all_android_collection_links_as_ok_when_sources_are_healthy(self) -> None:

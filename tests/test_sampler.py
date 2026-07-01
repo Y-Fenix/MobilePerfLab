@@ -52,6 +52,15 @@ class StopAfterSamples:
 
 
 class SamplerThreadTest(unittest.TestCase):
+    def test_sampler_interval_can_be_updated_while_running(self) -> None:
+        clock = FakeClock()
+        adapter = ScriptedAdapter(clock, [0.2])
+        sampler = SamplerThread(adapter, DeviceInfo("Android", "serial", "LowEnd", "", "", "ready"), "com.example", 1.0, queue.Queue())
+
+        sampler.set_interval(1.5)
+
+        self.assertEqual(sampler.interval, 1.5)
+
     def test_sampler_catches_up_to_fixed_cadence_after_slow_low_end_sample(self) -> None:
         clock = FakeClock()
         adapter = ScriptedAdapter(clock, [0.2, 1.6, 0.2])

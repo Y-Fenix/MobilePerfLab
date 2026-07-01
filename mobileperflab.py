@@ -6376,10 +6376,19 @@ class SamplerThread(threading.Thread):
         self.interval = interval
         self.output = output
         self.stop_event = threading.Event()
+        self._interval_lock = threading.Lock()
         self.start_time = time.time()
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def set_interval(self, interval: float) -> None:
+        with self._interval_lock:
+            self.interval = max(float(interval or DEFAULT_INTERVAL_SECONDS), 0.2)
+
+    def current_interval(self) -> float:
+        with self._interval_lock:
+            return self.interval
 
     def run(self) -> None:
         try:
@@ -6393,14 +6402,16 @@ class SamplerThread(threading.Thread):
             try:
                 sample = self.adapter.collect_sample(self.device, self.app_id, self.start_time)
                 spent = time.time() - loop_start
-                sample = append_sampling_latency_note(sample, spent, self.interval)
+                interval = self.current_interval()
+                sample = append_sampling_latency_note(sample, spent, interval)
                 self.output.put(("sample", sample))
                 if sample.note:
                     self.output.put(("note", sample.note))
             except Exception as exc:
                 self.output.put(("log", f"采样失败：{exc}"))
                 spent = time.time() - loop_start
-            next_tick += self.interval
+                interval = self.current_interval()
+            next_tick += interval
             delay = max(next_tick - time.time(), 0.0)
             self.stop_event.wait(delay)
         try:
@@ -6928,6 +6939,9 @@ class App:
             self.recorder.set_expected_interval(recommended)
         if hasattr(self, "live_quality"):
             self.live_quality.set_expected_interval(recommended)
+        sampler = getattr(self, "sampler", None)
+        if sampler is not None and hasattr(sampler, "set_interval"):
+            sampler.set_interval(recommended)
         if hasattr(self, "append_log"):
             self.append_log(f"推荐采样间隔已应用：{recommended_text}s。")
 
