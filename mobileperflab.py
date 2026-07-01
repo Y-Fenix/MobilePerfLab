@@ -1149,6 +1149,36 @@ def live_recent_window_summary(
     return f"采集稳定 · {label} · 继续采集"
 
 
+def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str, str]:
+    trend_source = str(recent_window.get("trend_source", "waiting") if isinstance(recent_window, dict) else "waiting")
+    state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
+    slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    if state == "waiting":
+        return {
+            "state": "waiting",
+            "label": "等待更多样本",
+            "detail": "样本不足，暂不输出性能结论。",
+        }
+    if trend_source == "collection" or slow_samples or issue_samples:
+        return {
+            "state": "blocked",
+            "label": "先修采集链路",
+            "detail": "最近窗口主要是采集波动，不能直接作为性能结论。",
+        }
+    if trend_source == "performance":
+        return {
+            "state": "actionable",
+            "label": "可分析性能",
+            "detail": "最近窗口更像真实性能波动，可结合业务动作和曲线继续分析。",
+        }
+    return {
+        "state": "trusted",
+        "label": "结论可信",
+        "detail": "最近窗口采集链路稳定，可作为性能趋势参考。",
+    }
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -5434,6 +5464,7 @@ class SessionRecorder:
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
         recent_window["action"] = live_sampling_action_label(recent_window, conservative_display, self.expected_interval)
         recent_window["summary"] = live_recent_window_summary(recent_window, conservative_display, self.expected_interval)
+        quality["performance_conclusion"] = performance_conclusion_status(recent_window)
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -5576,6 +5607,9 @@ class SessionRecorder:
         display_strategy = quality.get("display_strategy", {})
         if not isinstance(display_strategy, dict):
             display_strategy = {}
+        performance_conclusion = quality.get("performance_conclusion", {})
+        if not isinstance(performance_conclusion, dict):
+            performance_conclusion = {}
         quality_cards = "".join(
             "<article class='quality-card'>"
             f"<span>{html.escape(label)}</span>"
@@ -5602,6 +5636,11 @@ class SessionRecorder:
                     "采样建议",
                     str(recent_window.get("action", "建议：等待更多样本")),
                     "根据最近窗口判断下一步采样策略。",
+                ),
+                (
+                    "性能结论",
+                    str(performance_conclusion.get("label", "等待更多样本")),
+                    str(performance_conclusion.get("detail", "样本不足，暂不输出性能结论。")),
                 ),
                 (
                     "展示策略",

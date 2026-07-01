@@ -9,6 +9,7 @@ from mobileperflab import (
     build_recent_window_health,
     live_recent_window_summary,
     live_sampling_action_label,
+    performance_conclusion_status,
     recommended_sampling_interval,
     recommended_sampling_interval_button_text,
     session_quality_gate,
@@ -439,6 +440,36 @@ class LiveQualityTrackerTest(unittest.TestCase):
             live_recent_window_summary(recent_window, low_end_display_mode=False, expected_interval=1.0),
             "性能波动 · 窗口：谨慎参考 · 按真实性能分析",
         )
+
+    def test_performance_conclusion_status_blocks_collection_jitter(self) -> None:
+        status = performance_conclusion_status(
+            {
+                "state": "bad",
+                "label": "窗口：节拍失稳",
+                "trend_source": "collection",
+                "slow_samples": 3,
+                "issue_samples": 1,
+            }
+        )
+
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(status["label"], "先修采集链路")
+        self.assertIn("不能直接作为性能结论", status["detail"])
+
+    def test_performance_conclusion_status_allows_real_performance_volatility(self) -> None:
+        status = performance_conclusion_status(
+            {
+                "state": "caution",
+                "label": "窗口：谨慎参考",
+                "trend_source": "performance",
+                "slow_samples": 0,
+                "issue_samples": 0,
+            }
+        )
+
+        self.assertEqual(status["state"], "actionable")
+        self.assertEqual(status["label"], "可分析性能")
+        self.assertIn("真实性能波动", status["detail"])
 
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
