@@ -2716,6 +2716,7 @@ class AndroidAdapter(BaseAdapter):
         for command, timeout in (
             ("dumpsys window", 6.0),
             ("dumpsys activity activities", 7.0),
+            ("dumpsys activity top", 5.0),
             ("cmd activity get-foreground-activities", 5.0),
         ):
             output = self._shell(device.serial, command, timeout=timeout)

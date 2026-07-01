@@ -131,6 +131,40 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
 
+    def test_foreground_app_falls_back_to_activity_top_for_vendor_roms(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "",
+                "dumpsys activity activities": "",
+                "cmd activity get-foreground-activities": "",
+                "dumpsys activity top": "ACTIVITY com.example.game/.MainActivity 123 pid=101\n",
+            }
+        )
+
+        self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
+        self.assertIn("dumpsys activity top", adapter.calls)
+
+    def test_collection_diagnostics_uses_activity_top_foreground_fallback(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "",
+                "dumpsys activity activities": "",
+                "dumpsys activity top": "ACTIVITY com.example.game/.MainActivity 123 pid=101\n",
+                "cmd activity get-foreground-activities": "",
+                "pidof com.example.game": "101",
+                "cat /proc/101/status": "Uid:\t10234\t10234\t10234\t10234\n",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 120\nJanky frames: 6\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "4096",
+                "cat /proc/uid_stat/10234/tcp_snd": "2048",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=100.0)
+
+        self.assertEqual(diagnostics.foreground_state, "ok")
+        self.assertEqual(diagnostics.foreground_app, "com.example.game")
+        self.assertIn(("前台", "匹配", "当前前台 com.example.game"), diagnostics.rows)
+
     def test_cpu_percent_sums_all_pids_returned_by_pidof(self) -> None:
         adapter = FakeAndroidAdapter(
             {
