@@ -690,13 +690,25 @@ QUALITY_ISSUE_TOKENS = (
     "采样耗时",
 )
 
+NON_SAMPLE_QUALITY_ISSUE_TOKENS = (
+    "电量/温度/功耗 采集失败",
+)
+
 
 def note_has_quality_issue(note: str) -> bool:
     if not note:
         return False
     if "目标应用刚回到前台" in note:
         return False
-    return any(token in note for token in QUALITY_ISSUE_TOKENS)
+    parts = [part.strip() for part in re.split(r"[；;]", note) if part.strip()]
+    if not parts:
+        parts = [note]
+    for part in parts:
+        if any(token in part for token in NON_SAMPLE_QUALITY_ISSUE_TOKENS):
+            continue
+        if any(token in part for token in QUALITY_ISSUE_TOKENS):
+            return True
+    return False
 
 
 def primary_quality_issue_note(note: str) -> str:

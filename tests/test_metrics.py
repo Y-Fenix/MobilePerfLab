@@ -378,6 +378,19 @@ class SampleQualityTagTest(unittest.TestCase):
 
         self.assertEqual(sample_quality_tag(sample), "issue")
 
+    def test_does_not_mark_sample_issue_when_only_power_channel_fails(self) -> None:
+        sample = PerfSample(
+            timestamp=1.0,
+            elapsed=1.0,
+            fps=58.0,
+            cpu_percent=22.0,
+            memory_mb=520.0,
+            temperature_c=36.5,
+            note="Android 电量/温度/功耗 采集失败：battery current denied",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "ok")
+
     def test_classifies_slow_sampling_window_as_issue(self) -> None:
         sample = PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)
         annotated = append_sampling_latency_note(sample, spent_seconds=1.6, interval_seconds=1.0)

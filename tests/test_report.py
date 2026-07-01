@@ -25,6 +25,27 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("CPU 采集失败", labels)
         self.assertIn("电量/温度/功耗采集失败", labels)
 
+    def test_quality_summary_keeps_sample_trusted_when_only_power_channel_fails(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=58.0,
+                cpu_percent=22.0,
+                memory_mb=520.0,
+                temperature_c=36.8,
+                note="Android 电量/温度/功耗 采集失败：battery current denied",
+            )
+        )
+
+        summary = recorder.quality_summary()
+        labels = {str(issue["label"]) for issue in summary["issues"]}  # type: ignore[index]
+
+        self.assertEqual(summary["quality_gate"]["label"], "高可信")
+        self.assertIn("电量/温度/功耗采集失败", labels)
+
     def test_quality_summary_counts_network_unavailable_as_per_uid_unavailable(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
