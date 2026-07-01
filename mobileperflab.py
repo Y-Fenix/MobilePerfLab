@@ -2930,6 +2930,16 @@ class AndroidAdapter(BaseAdapter):
         status, hint = payload
         return name, status, hint
 
+    @staticmethod
+    def _parse_dumpsys_package_uid(output: str) -> int | None:
+        match = (
+            re.search(r"\buserId\s*=\s*(\d+)", output)
+            or re.search(r"\bappId\s*=\s*(\d+)", output)
+            or re.search(r"\buid\s*=\s*(\d+)", output, flags=re.IGNORECASE)
+            or re.search(r"\buid\s*:\s*(\d+)", output, flags=re.IGNORECASE)
+        )
+        return int(match.group(1)) if match else None
+
     def _diagnose_process_pids(self, device: DeviceInfo, app_id: str) -> tuple[list[int], str]:
         if not app_id:
             return [], "missing"
@@ -2969,9 +2979,8 @@ class AndroidAdapter(BaseAdapter):
         if key in self._uid_cache:
             return self._uid_cache[key], "cache"
         output = self._shell(device.serial, f"dumpsys package {shlex.quote(app_id)}", timeout=5.0)
-        match = re.search(r"userId=(\d+)", output) or re.search(r"appId=(\d+)", output)
-        if match:
-            uid = int(match.group(1))
+        uid = self._parse_dumpsys_package_uid(output)
+        if uid is not None:
             self._uid_cache[key] = uid
             return uid, "dumpsys package"
         for pid in pids or []:
@@ -3430,11 +3439,8 @@ class AndroidAdapter(BaseAdapter):
         if key in self._uid_cache:
             return self._uid_cache[key]
         output = self._shell(device.serial, f"dumpsys package {app_id}", timeout=5.0)
-        match = re.search(r"userId=(\d+)", output)
-        if not match:
-            match = re.search(r"appId=(\d+)", output)
-        if match:
-            uid = int(match.group(1))
+        uid = self._parse_dumpsys_package_uid(output)
+        if uid is not None:
             self._uid_cache[key] = uid
             return uid
         uid = self._app_uid_from_process_status(device, app_id)
