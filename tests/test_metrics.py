@@ -19,6 +19,7 @@ from mobileperflab import (
     quality_intervals_from_points,
     quality_event_from_sample,
     quality_interval_label,
+    sample_quality_tags_with_cadence,
     sample_quality_tag,
 )
 
@@ -604,6 +605,17 @@ class SampleQualityTagTest(unittest.TestCase):
         self.assertIn("采样耗时 1.60s 超过采样间隔 1.00s", annotated.note)
         self.assertEqual(sample.note, "")
         self.assertEqual(sample_quality_tag(annotated), "issue")
+
+    def test_marks_cadence_inferred_slow_samples_as_quality_issues(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0),
+            PerfSample(timestamp=2.8, elapsed=2.8, fps=24.0),
+            PerfSample(timestamp=4.6, elapsed=4.6, fps=58.0),
+        ]
+
+        tags = sample_quality_tags_with_cadence(samples, expected_interval=1.0)
+
+        self.assertEqual(tags, ["ok", "issue", "issue"])
 
     def test_classifies_foreground_state_quality_from_note(self) -> None:
         self.assertEqual(

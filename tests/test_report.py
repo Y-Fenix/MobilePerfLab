@@ -355,6 +355,26 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["display_strategy"]["mode"], "conservative")
         self.assertIn("低端机保守展示", html_text)
 
+    def test_export_bundle_marks_cadence_inferred_slow_samples_on_graph(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=24.0, cpu_percent=92.0, memory_mb=521.0))
+        recorder.append(PerfSample(timestamp=4.6, elapsed=4.6, fps=26.0, cpu_percent=88.0, memory_mb=522.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["samples"][1]["note"], "")
+        self.assertEqual(payload["quality"]["cadence"]["slow_intervals"], 2)
+        self.assertEqual(payload["quality"]["display_strategy"]["mode"], "conservative")
+        self.assertEqual(payload["display_samples"][0]["qualityTag"], "ok")
+        self.assertEqual(payload["display_samples"][1]["qualityTag"], "issue")
+        self.assertEqual(payload["display_samples"][2]["qualityTag"], "issue")
+        self.assertIn('"qualityTag": "issue"', html_text)
+
     def test_quality_summary_respects_custom_expected_interval_for_low_end_runs(self) -> None:
         recorder = SessionRecorder(expected_interval=2.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

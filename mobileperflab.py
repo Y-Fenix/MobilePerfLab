@@ -1022,6 +1022,24 @@ def sample_quality_tag(sample: PerfSample) -> str:
     return "ok"
 
 
+def sample_quality_tags_with_cadence(
+    samples: list[PerfSample],
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> list[str]:
+    expected = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
+    slow_threshold = max(expected * 1.25, expected + 0.25)
+    tags: list[str] = []
+    previous_elapsed: float | None = None
+    for sample in samples:
+        tag = sample_quality_tag(sample)
+        current_elapsed = float(sample.elapsed)
+        if previous_elapsed is not None and current_elapsed - previous_elapsed > slow_threshold:
+            tag = "issue"
+        tags.append(tag)
+        previous_elapsed = current_elapsed
+    return tags
+
+
 def append_sampling_latency_note(sample: PerfSample, spent_seconds: float, interval_seconds: float) -> PerfSample:
     if interval_seconds <= 0:
         return sample
@@ -1664,13 +1682,18 @@ def build_display_strategy(
     }
 
 
-def build_display_samples(samples: list[PerfSample], conservative: bool = False) -> list[dict[str, object]]:
+def build_display_samples(
+    samples: list[PerfSample],
+    conservative: bool = False,
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> list[dict[str, object]]:
     stabilizer = MetricStabilizer()
     display_rows: list[dict[str, object]] = []
-    for sample in samples:
+    quality_tags = sample_quality_tags_with_cadence(samples, expected_interval)
+    for sample, quality_tag in zip(samples, quality_tags):
         display = stabilizer.smooth_sample(sample, conservative=conservative)
         row = asdict(display)
-        row["qualityTag"] = sample_quality_tag(sample)
+        row["qualityTag"] = quality_tag
         display_rows.append(row)
     return display_rows
 
@@ -1970,6 +1993,11 @@ class LiveQualityTracker:
         interval = float(elapsed) - previous
         threshold = max(self.expected_interval * 1.25, self.expected_interval + 0.25)
         return interval > threshold
+
+    def quality_tag_for_sample(self, sample: PerfSample) -> str:
+        if self._is_slow_elapsed_interval(sample.elapsed):
+            return "issue"
+        return sample_quality_tag(sample)
 
     @staticmethod
     def _network_source(sample: PerfSample, note: str) -> str:
@@ -5723,7 +5751,11 @@ class SessionRecorder:
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
         self._update_recent_window_guidance(quality)
         self._add_sampling_action_recommendation(quality)
-        display_samples = build_display_samples(self.samples, conservative=conservative_display)
+        display_samples = build_display_samples(
+            self.samples,
+            conservative=conservative_display,
+            expected_interval=self.expected_interval,
+        )
         payload = {
             "app": APP_NAME,
             "version": APP_VERSION,
@@ -5888,8 +5920,9 @@ class SessionRecorder:
             for item in quality.get("recommendations", [])
             if isinstance(item, dict)
         ) or "<tr><td colspan='4'>暂无修复建议</td></tr>"
+        quality_tags = sample_quality_tags_with_cadence(self.samples, self.expected_interval)
         quality_intervals = quality_intervals_from_points(
-            [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
+            [(float(sample.elapsed), quality_tag) for sample, quality_tag in zip(self.samples, quality_tags)]
         )
 
         collection_diagnostics_section = ""
@@ -6053,13 +6086,13 @@ class SessionRecorder:
             {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
         ]
         report_samples: list[dict[str, object]] = []
-        for sample in self.samples:
+        for sample, quality_tag in zip(self.samples, quality_tags):
             row = asdict(sample)
-            row["qualityTag"] = sample_quality_tag(sample)
+            row["qualityTag"] = quality_tag
             report_samples.append(row)
         display_samples = payload.get("display_samples")
         if not isinstance(display_samples, list) or len(display_samples) != len(report_samples):
-            display_samples = build_display_samples(self.samples)
+            display_samples = build_display_samples(self.samples, expected_interval=self.expected_interval)
         axis_max_by_metric: dict[str, float] = {}
         for key in ("fps", "jank_percent", "cpu_percent", "memory_mb", "temperature_c", "power_w", "rx_kbps", "tx_kbps"):
             display_points = [
@@ -6069,8 +6102,8 @@ class SessionRecorder:
             ]
             axis_max_by_metric[key] = graph_display_max_value(
                 [
-                    (sample.elapsed, float(getattr(sample, key, 0.0) or 0.0), sample_quality_tag(sample))
-                    for sample in self.samples
+                    (sample.elapsed, float(getattr(sample, key, 0.0) or 0.0), quality_tag)
+                    for sample, quality_tag in zip(self.samples, quality_tags)
                 ],
                 key,
                 display_points,
@@ -8341,8 +8374,8 @@ class App:
         self.recorder.append(sample)
         self.last_app_rx_kbps = max(float(sample.rx_kbps or 0.0), 0.0)
         self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
-        quality_tag = sample_quality_tag(sample)
         self._update_metric_health(sample)
+        quality_tag = self.live_quality.quality_tag_for_sample(sample)
         quality_text = self.live_quality.update(sample)
         recent_window = self.live_quality.recent_window_health()
         self.quality_summary_var.set(
