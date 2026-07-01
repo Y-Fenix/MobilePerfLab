@@ -838,6 +838,17 @@ def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, s
     return row_height * rows + row_gap * max(rows - 1, 0) + scrollbar_height
 
 
+def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:
+    issue_count = sum(1 for _elapsed, _value, quality in points if quality == "issue")
+    fallback_count = sum(1 for _elapsed, _value, quality in points if quality == "fallback")
+    parts: list[str] = []
+    if issue_count:
+        parts.append(f"异常 {issue_count}")
+    if fallback_count:
+        parts.append(f"兜底 {fallback_count}")
+    return " · ".join(parts)
+
+
 def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) -> list[tuple[float, float]]:
     if len(points) < 2:
         return list(points)
@@ -6485,11 +6496,13 @@ class GraphPanel(ttk.Frame):
         self.points: list[tuple[float, float, str]] = []
         self.view_start = 0.0
         self.view_seconds = 10.0
-        self.header = ttk.Frame(self, style="Panel.TFrame")
+        self.header = ttk.Frame(self, style="PanelBody.TFrame")
         self.header.pack(fill="x")
         ttk.Label(self.header, text=title, style="PanelTitle.TLabel").pack(side="left")
         self.value_var = tk.StringVar(value="--")
+        self.quality_badge_var = tk.StringVar(value="")
         ttk.Label(self.header, textvariable=self.value_var, style="GraphValue.TLabel").pack(side="right")
+        ttk.Label(self.header, textvariable=self.quality_badge_var, style="Muted.TLabel").pack(side="right", padx=(0, 10))
         self.canvas = tk.Canvas(self, height=132, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
@@ -6505,6 +6518,7 @@ class GraphPanel(ttk.Frame):
         self.view_start = 0.0
         self.view_seconds = 10.0
         self.value_var.set("--")
+        self.quality_badge_var.set("")
         self.redraw()
 
     def set_view(self, view_start: float, view_seconds: float) -> None:
@@ -6572,6 +6586,7 @@ class GraphPanel(ttk.Frame):
         canvas.create_text(width / 2, height - 4, anchor="center", text=self._format_time(mid), fill=text_color, font=("Helvetica", 9))
         canvas.create_text(width - pad_right, height - 4, anchor="e", text=self._format_time(view_end), fill=text_color, font=("Helvetica", 9))
         visible_points = self._visible_points(view_start, view_end)
+        self.quality_badge_var.set(graph_quality_badge_text(visible_points))
         if len(visible_points) < 2:
             canvas.create_text(
                 width / 2,

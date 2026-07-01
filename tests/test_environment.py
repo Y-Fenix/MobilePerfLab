@@ -8,6 +8,7 @@ from mobileperflab import (
     format_environment_checks,
     format_graph_view_height,
     format_quality_mode_label,
+    graph_quality_badge_text,
     graph_display_series,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
@@ -71,6 +72,22 @@ class EnvironmentCheckTest(unittest.TestCase):
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):
+    def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:
+        self.assertEqual(
+            graph_quality_badge_text(
+                [
+                    (0.0, 60.0, "ok"),
+                    (1.0, 0.0, "issue"),
+                    (2.0, 55.0, "fallback"),
+                    (3.0, 20.0, "issue"),
+                ]
+            ),
+            "异常 2 · 兜底 1",
+        )
+
+    def test_graph_quality_badge_is_empty_for_trusted_points(self) -> None:
+        self.assertEqual(graph_quality_badge_text([(0.0, 60.0, "ok"), (1.0, 59.0, "ok")]), "")
+
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)
         self.assertEqual(graph_scroll_row_step(-1), -1)
