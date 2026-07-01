@@ -758,6 +758,41 @@ def build_weak_network_report_payload(
     return payload
 
 
+def build_weak_network_bypass_evidence(
+    traffic_state: str,
+    app_rx_peak: float,
+    app_tx_peak: float,
+    proxy_down_peak: float,
+    proxy_up_peak: float,
+) -> dict[str, object]:
+    app_peak = round(max(float(app_rx_peak or 0.0), 0.0) + max(float(app_tx_peak or 0.0), 0.0), 3)
+    proxy_peak = round(max(float(proxy_down_peak or 0.0), 0.0) + max(float(proxy_up_peak or 0.0), 0.0), 3)
+    if traffic_state == "waiting" and app_peak > 0.0 and proxy_peak <= 0.0:
+        state = "bypass"
+        label = "弱网绕过证据"
+        ratio_text = "代理无流量"
+        detail = f"App 峰值 {app_peak:.1f} KB/s，但弱网代理峰值 {proxy_peak:.1f} KB/s，疑似没有走系统代理。"
+    elif app_peak > 0.0 and proxy_peak > 0.0:
+        ratio = round(app_peak / max(proxy_peak, 0.001), 2)
+        state = "matched" if ratio <= 3.0 else "mismatch"
+        label = "代理有流量"
+        ratio_text = f"{ratio:.2f}x"
+        detail = f"App 峰值 {app_peak:.1f} KB/s，弱网代理峰值 {proxy_peak:.1f} KB/s，峰值比 {ratio_text}。"
+    else:
+        state = "waiting"
+        label = "等待业务流量"
+        ratio_text = "-"
+        detail = "尚未看到 App 或代理侧明确业务流量。"
+    return {
+        "state": state,
+        "label": label,
+        "app_peak_kbps": app_peak,
+        "proxy_peak_kbps": proxy_peak,
+        "ratio": ratio_text,
+        "detail": detail,
+    }
+
+
 def enrich_weak_network_with_app_traffic(
     weak_network: dict[str, object],
     samples: list[PerfSample],
@@ -769,6 +804,26 @@ def enrich_weak_network_with_app_traffic(
     app_tx_peak = max((float(sample.tx_kbps or 0.0) for sample in samples), default=0.0)
     app_has_traffic = app_rx_peak > 0.0 or app_tx_peak > 0.0
     payload["app_network_peak"] = {"rx_kbps": round(app_rx_peak, 3), "tx_kbps": round(app_tx_peak, 3)}
+    snapshot = payload.get("snapshot")
+    proxy_down_peak = 0.0
+    proxy_up_peak = 0.0
+    if isinstance(snapshot, dict):
+        proxy_down_peak = max(proxy_down_peak, float(snapshot.get("down_kbps", 0.0) or 0.0))
+        proxy_up_peak = max(proxy_up_peak, float(snapshot.get("up_kbps", 0.0) or 0.0))
+    history = payload.get("history", [])
+    if isinstance(history, list):
+        for point in history:
+            if not isinstance(point, dict):
+                continue
+            proxy_down_peak = max(proxy_down_peak, float(point.get("down_kbps", 0.0) or 0.0))
+            proxy_up_peak = max(proxy_up_peak, float(point.get("up_kbps", 0.0) or 0.0))
+    payload["bypass_evidence"] = build_weak_network_bypass_evidence(
+        traffic_state,
+        app_rx_peak,
+        app_tx_peak,
+        proxy_down_peak,
+        proxy_up_peak,
+    )
     diagnostics = payload.get("diagnostics")
     payload["effectiveness"] = build_weak_network_effectiveness(
         bool(payload.get("running", False)),
@@ -784,7 +839,6 @@ def enrich_weak_network_with_app_traffic(
         app_rx_kbps=app_rx_peak,
         app_tx_kbps=app_tx_peak,
     )
-    snapshot = payload.get("snapshot")
     if isinstance(snapshot, dict):
         payload["summary"] = format_live_proxy_summary(
             bool(payload.get("running", False)),
@@ -6199,6 +6253,14 @@ class SessionRecorder:
                 if risk_message
                 else ""
             )
+            bypass_evidence = weak_network.get("bypass_evidence", {})
+            if not isinstance(bypass_evidence, dict):
+                bypass_evidence = {}
+            bypass_evidence_row = (
+                f"<tr><th>弱网绕过证据</th><td>{html.escape(str(bypass_evidence.get('detail', '')))}</td></tr>"
+                if bypass_evidence
+                else ""
+            )
             weak_network_section = "".join(
                 [
                     "<h2>弱网真实流量</h2>",
@@ -6224,6 +6286,7 @@ class SessionRecorder:
                     f"<tr><th>丢弃</th><td>{html.escape(str(weak_display.get('drops', '0')))}</td></tr>",
                     f"<tr><th>最近活跃</th><td>{html.escape(str(weak_display.get('activity', '无')))}</td></tr>",
                     f"<tr><th>原始快照</th><td>{html.escape(str(weak_snapshot.get('down_kbps', 0.0)))} KB/s 下行 · {html.escape(str(weak_snapshot.get('up_kbps', 0.0)))} KB/s 上行</td></tr>",
+                    bypass_evidence_row,
                     risk_row,
                     "</table>",
                     "<h2>弱网链路诊断</h2>",

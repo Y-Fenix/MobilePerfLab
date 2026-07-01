@@ -790,12 +790,18 @@ class ReportExportTest(unittest.TestCase):
         recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
 
         self.assertEqual(payload["weak_network"]["effectiveness"]["state"], "bypass")
+        self.assertEqual(payload["weak_network"]["bypass_evidence"]["state"], "bypass")
+        self.assertEqual(payload["weak_network"]["bypass_evidence"]["app_peak_kbps"], 144.0)
+        self.assertEqual(payload["weak_network"]["bypass_evidence"]["proxy_peak_kbps"], 0.0)
+        self.assertIn("App 峰值 144.0 KB/s", payload["weak_network"]["bypass_evidence"]["detail"])
         self.assertIn("先修弱网链路", payload["weak_network"]["readiness_display"])
         self.assertIn("疑似绕过代理", payload["weak_network"]["summary"])
         self.assertIn("疑似绕过系统代理", payload["weak_network"]["risk_message"])
         self.assertIn("App 上下行已有流量", recommendations["weak_network"]["reason"])
         self.assertIn("QUIC/UDP", recommendations["weak_network"]["action"])
         self.assertIn("疑似绕过系统代理", html_text)
+        self.assertIn("弱网绕过证据", html_text)
+        self.assertIn("App 峰值 144.0 KB/s", html_text)
 
     def test_export_bundle_includes_actionable_quality_recommendations(self) -> None:
         recorder = SessionRecorder()

@@ -9,6 +9,7 @@ from mobileperflab import (
     ProxyTrafficHistory,
     WeakNetworkProxy,
     WeakProxyDeviceRegistry,
+    build_weak_network_bypass_evidence,
     build_weak_network_diagnostics,
     build_weak_network_effectiveness,
     build_weak_network_report_payload,
@@ -235,6 +236,21 @@ class AndroidProxyVerificationTest(unittest.TestCase):
 
 
 class WeakNetworkDiagnosticsTest(unittest.TestCase):
+    def test_builds_quantified_proxy_bypass_evidence(self) -> None:
+        evidence = build_weak_network_bypass_evidence(
+            traffic_state="waiting",
+            app_rx_peak=128.0,
+            app_tx_peak=16.0,
+            proxy_down_peak=0.0,
+            proxy_up_peak=0.0,
+        )
+
+        self.assertEqual(evidence["state"], "bypass")
+        self.assertEqual(evidence["app_peak_kbps"], 144.0)
+        self.assertEqual(evidence["proxy_peak_kbps"], 0.0)
+        self.assertEqual(evidence["ratio"], "代理无流量")
+        self.assertIn("App 峰值 144.0 KB/s", evidence["detail"])
+
     def test_reports_confirmed_proxy_when_running_device_and_readback_match(self) -> None:
         device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")
 
