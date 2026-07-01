@@ -731,6 +731,23 @@ def enrich_weak_network_with_app_traffic(
         app_rx_kbps=app_rx_peak,
         app_tx_kbps=app_tx_peak,
     )
+    payload["readiness_display"] = weak_readiness_display_text(payload["effectiveness"].get("test_readiness", {}))
+    payload["hit_status"] = weak_hit_status_text(
+        bool(payload.get("running", False)),
+        traffic_state,
+        app_rx_kbps=app_rx_peak,
+        app_tx_kbps=app_tx_peak,
+    )
+    snapshot = payload.get("snapshot")
+    if isinstance(snapshot, dict):
+        payload["summary"] = format_live_proxy_summary(
+            bool(payload.get("running", False)),
+            str(payload.get("endpoint", "")),
+            ProxyTrafficSnapshot(**{key: value for key, value in snapshot.items() if key in ProxyTrafficSnapshot.__dataclass_fields__}),
+            app_rx_kbps=app_rx_peak,
+            app_tx_kbps=app_tx_peak,
+            diagnostics=diagnostics if isinstance(diagnostics, dict) else None,
+        )
     if traffic_state == "waiting" and app_has_traffic:
         bypass_risk = (
             "报告期间 App 上下行已有流量，但弱网代理没有捕获请求，疑似绕过系统代理；"
