@@ -2593,11 +2593,13 @@ class BaseAdapter:
 
 class AndroidAdapter(BaseAdapter):
     platform_name = "Android"
+    _FPS_COUNTER_NO_DELTA_REPROBE_THRESHOLD = 2
 
     def __init__(self) -> None:
         self.adb_path = resolve_adb_path()
         self._metric_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._frame_cache: dict[tuple[str, str], tuple[float, int, int]] = {}
+        self._fps_no_delta_count: dict[tuple[str, str], int] = {}
         self._framestats_cache: dict[tuple[str, str], tuple[float, int]] = {}
         self._surface_frame_cache: dict[tuple[str, str], tuple[float, int]] = {}
         self._surface_cache: dict[tuple[str, str], str] = {}
@@ -2955,6 +2957,7 @@ class AndroidAdapter(BaseAdapter):
             self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)} reset", timeout=4.0)
         key = (device.serial, app_id)
         self._frame_cache.pop(key, None)
+        self._fps_no_delta_count.pop(key, None)
         self._framestats_cache.pop(key, None)
         self._surface_frame_cache.pop(key, None)
         self._surface_cache.pop(key, None)
@@ -2976,6 +2979,7 @@ class AndroidAdapter(BaseAdapter):
         self._shutdown_metric_executor()
         key = (device.serial, app_id)
         self._frame_cache.pop(key, None)
+        self._fps_no_delta_count.pop(key, None)
         self._framestats_cache.pop(key, None)
         self._surface_frame_cache.pop(key, None)
         self._surface_cache.pop(key, None)
@@ -3535,16 +3539,37 @@ class AndroidAdapter(BaseAdapter):
         if not app_id:
             return 0.0, 0.0
         key = (device.serial, app_id)
+        previous_counter = self._frame_cache.get(key)
         counter_result = self._gfxinfo_counter_fps_and_jank(device, app_id, now)
         if counter_result is not None:
+            self._fps_no_delta_count.pop(key, None)
             return counter_result
-        if key in self._frame_cache:
+        if key in self._frame_cache and not self._should_reprobe_fps_after_counter_miss(key, previous_counter):
             return 0.0, 0.0
         for collector in (self._gfxinfo_framestats_fps_and_jank, self._surface_fps_and_jank):
             result = collector(device, app_id, now)
             if result is not None:
                 return result
         return 0.0, 0.0
+
+    def _should_reprobe_fps_after_counter_miss(
+        self,
+        key: tuple[str, str],
+        previous_counter: tuple[float, int, int] | None,
+    ) -> bool:
+        current_counter = self._frame_cache.get(key)
+        if previous_counter is None or current_counter is None:
+            self._fps_no_delta_count.pop(key, None)
+            return False
+        if current_counter[1] > previous_counter[1]:
+            self._fps_no_delta_count.pop(key, None)
+            return False
+        count = self._fps_no_delta_count.get(key, 0) + 1
+        if count < self._FPS_COUNTER_NO_DELTA_REPROBE_THRESHOLD:
+            self._fps_no_delta_count[key] = count
+            return False
+        self._fps_no_delta_count.pop(key, None)
+        return True
 
     def _gfxinfo_counter_fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float] | None:
         output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)}", timeout=5.0)
@@ -3939,6 +3964,7 @@ class AndroidAdapter(BaseAdapter):
 
     def _reset_foreground_delta_caches(self, key: tuple[str, str]) -> None:
         self._frame_cache.pop(key, None)
+        self._fps_no_delta_count.pop(key, None)
         self._framestats_cache.pop(key, None)
         self._surface_frame_cache.pop(key, None)
         self._surface_cache.pop(key, None)
