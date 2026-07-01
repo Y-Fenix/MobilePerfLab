@@ -587,14 +587,50 @@ def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) 
     return smoothed
 
 
+QUALITY_ISSUE_TOKENS = (
+    "未采集",
+    "无帧增量",
+    "无进程增量",
+    "未匹配",
+    "无法按应用统计",
+    "采集失败",
+    "采集不可用",
+    "未找到运行中的",
+    "不在前台",
+    "采样耗时",
+)
+
+
+def note_has_quality_issue(note: str) -> bool:
+    if not note:
+        return False
+    if "目标应用刚回到前台" in note:
+        return False
+    return any(token in note for token in QUALITY_ISSUE_TOKENS)
+
+
+def primary_quality_issue_note(note: str) -> str:
+    parts = [part.strip() for part in re.split(r"[；;]", note or "") if part.strip()]
+    for part in parts:
+        if note_has_quality_issue(part):
+            if "目标应用不在前台" in part:
+                return "目标应用不在前台"
+            return part
+    if note_has_quality_issue(note):
+        if "目标应用不在前台" in note:
+            return "目标应用不在前台"
+        return (note or "采集异常").strip()
+    return "采集异常"
+
+
 def sample_quality_tag(sample: PerfSample) -> str:
     note = sample.note or ""
-    if "设备级网络兜底" in note:
-        return "fallback"
     if "恢复窗口内" in note:
         return "fallback"
-    if LiveQualityTracker._has_quality_issue(note):
+    if note_has_quality_issue(note):
         return "issue"
+    if "设备级网络兜底" in note:
+        return "fallback"
     return "ok"
 
 
@@ -734,9 +770,7 @@ def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None
     if tag == "fallback":
         detail = "非目标 App 独占流量" if "非目标 App 独占流量" in note else "网络使用设备级兜底"
         return format_report_seconds(sample.elapsed), "设备级兜底", detail
-    detail = note.split("；", 1)[0].strip() if note else "采集异常"
-    if "目标应用不在前台" in note:
-        detail = "目标应用不在前台"
+    detail = primary_quality_issue_note(note)
     return format_report_seconds(sample.elapsed), "采集异常", detail[:80]
 
 
@@ -891,25 +925,7 @@ class LiveQualityTracker:
 
     @staticmethod
     def _has_quality_issue(note: str) -> bool:
-        if not note:
-            return False
-        if "设备级网络兜底" in note and "；" not in note:
-            return False
-        if "目标应用刚回到前台" in note:
-            return False
-        tokens = (
-            "未采集",
-            "无帧增量",
-            "无进程增量",
-            "未匹配",
-            "无法按应用统计",
-            "采集失败",
-            "采集不可用",
-            "未找到运行中的",
-            "不在前台",
-            "采样耗时",
-        )
-        return any(token in note for token in tokens)
+        return note_has_quality_issue(note)
 
     @staticmethod
     def _network_source(sample: PerfSample, note: str) -> str:
@@ -4783,9 +4799,11 @@ class SessionRecorder:
     function sampleQualityTag(sample) {
       const note = String(sample.note || '');
       if (sample.qualityTag) return sample.qualityTag;
+      if (note.includes('恢复窗口内')) return 'fallback';
+      const issueTokens = ['未采集', '无帧增量', '无进程增量', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
+      if (!note.includes('目标应用刚回到前台') && issueTokens.some(token => note.includes(token))) return 'issue';
       if (note.includes('设备级网络兜底')) return 'fallback';
-      const issueTokens = ['未采集', '无帧增量', '无进程增量', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的'];
-      return issueTokens.some(token => note.includes(token)) ? 'issue' : 'ok';
+      return 'ok';
     }
 
     function drawQualityMarker(ctx, x, y, tag) {

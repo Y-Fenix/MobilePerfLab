@@ -45,6 +45,32 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("网络采集不可用", labels)
         self.assertEqual(summary["network_source"], "per-UID 不可用")
 
+    def test_report_prioritizes_collection_issue_when_sample_also_uses_network_fallback(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=5.0,
+                fps=0.0,
+                cpu_percent=20.0,
+                memory_mb=512.0,
+                rx_kbps=8.0,
+                tx_kbps=2.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。；Android FPS 未采集到 Surface",
+            )
+        )
+
+        summary = recorder.quality_summary()
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(summary["network_fallback_samples"], 1)
+        self.assertEqual(payload["quality"]["quality_gate"]["label"], "不可信")
+        self.assertIn('"qualityTag": "issue"', html_text)
+
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

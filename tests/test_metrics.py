@@ -323,6 +323,15 @@ class SampleQualityTagTest(unittest.TestCase):
         )
         self.assertEqual(sample_quality_tag(PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)), "ok")
 
+    def test_prioritizes_collection_issue_over_network_fallback_note(self) -> None:
+        sample = PerfSample(
+            timestamp=4.0,
+            elapsed=4.0,
+            note="Android 网络使用设备级网络兜底，非目标 App 独占流量。；Android FPS 未采集到 Surface",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "issue")
+
     def test_classifies_slow_sampling_window_as_issue(self) -> None:
         sample = PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)
         annotated = append_sampling_latency_note(sample, spent_seconds=1.6, interval_seconds=1.0)
@@ -411,6 +420,18 @@ class QualityEventTest(unittest.TestCase):
         )
 
         self.assertEqual(event, ("5.0s", "设备级兜底", "非目标 App 独占流量"))
+
+    def test_builds_realtime_event_for_collection_issue_before_network_fallback(self) -> None:
+        event = quality_event_from_sample(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=5.0,
+                rx_kbps=3.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。；Android FPS 未采集到 Surface",
+            )
+        )
+
+        self.assertEqual(event, ("5.0s", "采集异常", "Android FPS 未采集到 Surface"))
 
     def test_builds_realtime_event_for_foreground_recovery_sample(self) -> None:
         event = quality_event_from_sample(
