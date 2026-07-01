@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mobileperflab import AndroidCollectionDiagnostics, DeviceInfo, PerfSample, SessionRecorder
+from mobileperflab import AndroidCollectionDiagnostics, DeviceInfo, PerfSample, SessionRecorder, build_session_usability
 
 
 class ReportExportTest(unittest.TestCase):
@@ -296,6 +296,84 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("FPS", html_text)
         self.assertIn("不可用", html_text)
         self.assertIn("memory_mb", json.dumps(payload["quality"]["metric_availability"], ensure_ascii=False))
+
+    def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
+        availability = [
+            {"key": "fps", "state": "unavailable", "coverage_percent": 0.0},
+            {"key": "cpu_percent", "state": "unavailable", "coverage_percent": 0.0},
+            {"key": "memory_mb", "state": "available", "coverage_percent": 100.0},
+            {"key": "temperature_c", "state": "available", "coverage_percent": 100.0},
+            {"key": "power_w", "state": "unavailable", "coverage_percent": 0.0},
+            {"key": "rx_kbps", "state": "unavailable", "coverage_percent": 0.0},
+            {"key": "tx_kbps", "state": "unavailable", "coverage_percent": 0.0},
+        ]
+
+        usability = build_session_usability(
+            availability,
+            {"state": "bad", "label": "不可信", "confidence_percent": 30.0},
+        )
+
+        self.assertEqual(usability["state"], "blocked")
+        self.assertEqual(usability["label"], "只可参考部分指标")
+        self.assertIn("FPS/CPU/网络不可用", usability["detail"])
+        self.assertIn("不能用于判断流畅度", usability["action"])
+
+    def test_report_exports_session_usability_for_memory_temperature_only_runs(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="warning",
+                summary="Android 采集链路需关注",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "缺失", "未匹配到目标 PID"),
+                    ("UID", "缺失", "未匹配到目标 UID"),
+                    ("FPS", "缺失", "gfxinfo/SurfaceFlinger 均不可用"),
+                    ("网络", "缺失", "per-UID 与设备级计数均不可读"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="missing",
+                pids=[],
+                uid_source="missing",
+                uid=None,
+                fps_source="missing",
+                network_source="missing",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                memory_mb=512.0,
+                temperature_c=36.5,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                memory_mb=516.0,
+                temperature_c=36.8,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        usability = payload["quality"]["session_usability"]
+
+        self.assertEqual(usability["state"], "blocked")
+        self.assertEqual(usability["label"], "只可参考部分指标")
+        self.assertIn("FPS/CPU/网络不可用", usability["detail"])
+        self.assertIn("会话可用性", html_text)
+        self.assertIn("只可参考部分指标", html_text)
+        self.assertIn("不能用于判断流畅度", html_text)
 
     def test_export_bundle_keeps_raw_samples_and_adds_display_smoothed_samples(self) -> None:
         recorder = SessionRecorder()

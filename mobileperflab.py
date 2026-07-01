@@ -1700,6 +1700,62 @@ def build_metric_availability(
     return rows
 
 
+def build_session_usability(
+    metric_availability: list[dict[str, object]],
+    quality_gate: dict[str, object] | None = None,
+) -> dict[str, str]:
+    availability_by_key = {
+        str(item.get("key", "")): item
+        for item in metric_availability
+        if isinstance(item, dict)
+    }
+    required = {
+        "fps": "FPS",
+        "cpu_percent": "CPU",
+        "rx_kbps": "网络",
+        "tx_kbps": "网络",
+    }
+    missing_labels: list[str] = []
+    for key, label in required.items():
+        item = availability_by_key.get(key)
+        state = str(item.get("state", "waiting") if isinstance(item, dict) else "waiting")
+        coverage = float(item.get("coverage_percent", 0.0) or 0.0) if isinstance(item, dict) else 0.0
+        if state in {"unavailable", "waiting"} or coverage <= 0.0:
+            if label not in missing_labels:
+                missing_labels.append(label)
+    gate = quality_gate if isinstance(quality_gate, dict) else {}
+    gate_state = str(gate.get("state", "waiting"))
+    gate_label = str(gate.get("label", "无数据"))
+    if missing_labels:
+        missing_text = "/".join(missing_labels)
+        return {
+            "state": "blocked",
+            "label": "只可参考部分指标",
+            "detail": f"{missing_text}不可用，本次报告只能参考已采到的内存、温度等指标；质量门禁：{gate_label}。",
+            "action": "不能用于判断流畅度、CPU 占用或目标 App 上下行；先执行采集自检，修复 FPS/CPU/网络链路后再复测。",
+        }
+    if gate_state == "bad":
+        return {
+            "state": "blocked",
+            "label": "先修采集链路",
+            "detail": f"关键指标有数据，但质量门禁为{gate_label}，当前会话不适合作为性能结论。",
+            "action": "优先处理前台一致性、慢采样和采集异常，复测后再分析性能。",
+        }
+    if gate_state == "warning":
+        return {
+            "state": "caution",
+            "label": "谨慎分析性能",
+            "detail": f"关键指标基本可用，但质量门禁为{gate_label}，需要结合异常标记和稳定展示曲线判断。",
+            "action": "优先看稳定展示和异常区间，必要时调大采样间隔后复测。",
+        }
+    return {
+        "state": "trusted",
+        "label": "可分析性能",
+        "detail": "FPS、CPU 和上下行网络等关键指标可用，可结合业务动作分析性能趋势。",
+        "action": "继续结合标记、异常区间和弱网命中状态分析。",
+    }
+
+
 def build_display_strategy(
     samples: list[PerfSample],
     quality: dict[str, object] | None = None,
@@ -5689,6 +5745,10 @@ class SessionRecorder:
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             self._add_sampling_action_recommendation(quality)
             quality["metric_availability"] = build_metric_availability([], quality)
+            quality["session_usability"] = build_session_usability(
+                quality["metric_availability"],
+                quality["quality_gate"] if isinstance(quality.get("quality_gate"), dict) else {},
+            )
             return quality
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
@@ -5783,6 +5843,10 @@ class SessionRecorder:
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         self._add_sampling_action_recommendation(quality)
         quality["metric_availability"] = build_metric_availability(self.samples, quality)
+        quality["session_usability"] = build_session_usability(
+            quality["metric_availability"],
+            quality["quality_gate"] if isinstance(quality.get("quality_gate"), dict) else {},
+        )
         return quality
 
     @staticmethod
@@ -5964,6 +6028,9 @@ class SessionRecorder:
         performance_conclusion = quality.get("performance_conclusion", {})
         if not isinstance(performance_conclusion, dict):
             performance_conclusion = {}
+        session_usability = quality.get("session_usability", {})
+        if not isinstance(session_usability, dict):
+            session_usability = {}
         quality_cards = "".join(
             "<article class='quality-card'>"
             f"<span>{html.escape(label)}</span>"
@@ -5995,6 +6062,11 @@ class SessionRecorder:
                     "性能结论",
                     str(performance_conclusion.get("label", "等待更多样本")),
                     str(performance_conclusion.get("detail", "样本不足，暂不输出性能结论。")),
+                ),
+                (
+                    "会话可用性",
+                    str(session_usability.get("label", "等待更多样本")),
+                    f"{session_usability.get('detail', '样本不足，暂无法判断会话可用性。')} {session_usability.get('action', '')}".strip(),
                 ),
                 (
                     "展示策略",
