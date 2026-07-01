@@ -865,6 +865,20 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertIsNone(adapter._metric_executor)
 
+    def test_start_session_clears_cached_uid_after_app_reinstall(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "userId=20234",
+            }
+        )
+        key = (self.device.serial, "com.example.game")
+        adapter._uid_cache[key] = 10234
+
+        adapter.start_session(self.device, "com.example.game")
+
+        self.assertNotIn(key, adapter._uid_cache)
+        self.assertEqual(adapter._app_uid(self.device, "com.example.game"), 20234)
+
     def test_android_collection_diagnostics_reports_healthy_sources(self) -> None:
         adapter = FakeAndroidAdapter(
             {
