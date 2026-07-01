@@ -394,6 +394,61 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("等待目标流量", html_text)
         self.assertIn("报告导出时弱网代理没有捕获到目标请求", html_text)
 
+    def test_export_bundle_includes_actionable_quality_recommendations(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络未匹配到 App UID，无法按应用统计上下行。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=3.1,
+                elapsed=3.1,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=516.0,
+                rx_kbps=8.0,
+                tx_kbps=3.0,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+            )
+        )
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "waiting",
+            "traffic_state_label": "等待目标流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 等待目标流量",
+            "config": {"profile": "弱网", "port": 18888},
+            "snapshot": {},
+            "history": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+
+        self.assertIn("fps", recommendations)
+        self.assertIn("network", recommendations)
+        self.assertIn("cadence", recommendations)
+        self.assertIn("weak_network", recommendations)
+        self.assertIn("保持目标页面可见", recommendations["fps"]["action"])
+        self.assertIn("设备级兜底不能当目标 App 独占流量", recommendations["network"]["action"])
+        self.assertIn("采样间隔", recommendations["cadence"]["action"])
+        self.assertIn("系统 HTTP/HTTPS 代理", recommendations["weak_network"]["action"])
+        self.assertIn("修复建议", html_text)
+        self.assertIn("保持目标页面可见", html_text)
+        self.assertIn("系统 HTTP/HTTPS 代理", html_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -927,6 +927,69 @@ def build_validation_checklist(
     ]
 
 
+def build_quality_recommendations(
+    validation_checklist: list[dict[str, str]],
+    weak_network: dict[str, object] | None = None,
+) -> list[dict[str, str]]:
+    """Turn failed validation items into operator-facing next steps."""
+    recommendations_by_key = {
+        "fps": {
+            "title": "恢复 FPS 链路",
+            "action": "保持目标页面可见并产生真实动画或滚动，执行采集自检，检查 gfxinfo/SurfaceFlinger 来源是否可用；静止页面请换成持续刷新的场景复测。",
+        },
+        "cpu": {
+            "title": "恢复 CPU 链路",
+            "action": "确认目标 PID 正在运行且未切后台，重新选择当前前台应用后执行采集自检；低端机建议把采样间隔调到 1.5s 或 2s。",
+        },
+        "network": {
+            "title": "校准上下行来源",
+            "action": "确认 UID/per-UID 网络统计是否可读；设备级兜底不能当目标 App 独占流量，建议制造明确下载/上传动作后复测。",
+        },
+        "foreground": {
+            "title": "固定前台场景",
+            "action": "测试期间保持目标 App 在前台，切后台/切回来后的恢复窗口不要用于性能结论；需要切后台时请添加标记并分段分析。",
+        },
+        "cadence": {
+            "title": "稳定采样节拍",
+            "action": "低端机上把采样间隔调大到 1.5s 或 2s，减少并行 adb 慢命令；如果仍抖动，先只看稳定展示曲线并结合异常区间判断。",
+        },
+        "weak_network": {
+            "title": "确认弱网命中",
+            "action": "确认 App 是否走系统 HTTP/HTTPS 代理，关闭 QUIC/UDP 或证书绕过路径；打开弱网后先访问会产生 HTTP/HTTPS 请求的页面再导出报告。",
+        },
+        "sample": {
+            "title": "补齐采样数据",
+            "action": "先选择设备和目标 App，启动采集后保持业务场景运行至少 30 秒，再导出报告。",
+        },
+    }
+    severity_rank = {"fail": 0, "warning": 1, "waiting": 2}
+    recommendations: list[dict[str, str]] = []
+    for item in validation_checklist:
+        key = str(item.get("key", ""))
+        state = str(item.get("state", ""))
+        if state == "pass":
+            continue
+        template = recommendations_by_key.get(key)
+        if template is None:
+            continue
+        detail = str(item.get("detail", ""))
+        if key == "weak_network" and weak_network is not None:
+            risk_message = str(weak_network.get("risk_message", ""))
+            if risk_message and risk_message not in detail:
+                detail = f"{detail} {risk_message}".strip()
+        recommendations.append(
+            {
+                "key": key,
+                "severity": state,
+                "title": template["title"],
+                "reason": detail,
+                "action": template["action"],
+            }
+        )
+    recommendations.sort(key=lambda row: (severity_rank.get(str(row.get("severity", "")), 9), str(row.get("key", ""))))
+    return recommendations
+
+
 def build_display_samples(samples: list[PerfSample]) -> list[dict[str, object]]:
     stabilizer = MetricStabilizer()
     display_rows: list[dict[str, object]] = []
@@ -4588,6 +4651,7 @@ class SessionRecorder:
                 "issues": [],
             }
             quality["validation_checklist"] = build_validation_checklist([], quality)
+            quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             return quality
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
@@ -4676,6 +4740,7 @@ class SessionRecorder:
             "issues": issues,
         }
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
+        quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         return quality
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
@@ -4709,6 +4774,7 @@ class SessionRecorder:
                 writer.writerow(row)
         quality = self.quality_summary()
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality, weak_network)
+        quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"], weak_network)
         display_samples = build_display_samples(self.samples)
         payload = {
             "app": APP_NAME,
@@ -4824,6 +4890,16 @@ class SessionRecorder:
             for item in quality.get("validation_checklist", [])
             if isinstance(item, dict)
         ) or "<tr><td colspan='3'>暂无实机验证结论</td></tr>"
+        recommendation_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('title', '')))}</td>"
+            f"<td>{html.escape(validation_state_label(str(item.get('severity', ''))))}</td>"
+            f"<td>{html.escape(str(item.get('reason', '')))}</td>"
+            f"<td>{html.escape(str(item.get('action', '')))}</td>"
+            "</tr>"
+            for item in quality.get("recommendations", [])
+            if isinstance(item, dict)
+        ) or "<tr><td colspan='4'>暂无修复建议</td></tr>"
         quality_intervals = quality_intervals_from_points(
             [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
         )
@@ -5051,6 +5127,8 @@ class SessionRecorder:
     <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
     <h2>实机验证清单</h2>
     <table class="issue-table"><tr><th>链路</th><th>状态</th><th>结论</th></tr>__VALIDATION_ROWS__</table>
+    <h2>修复建议</h2>
+    <table class="issue-table"><tr><th>问题</th><th>级别</th><th>原因</th><th>建议动作</th></tr>__RECOMMENDATION_ROWS__</table>
     __COLLECTION_DIAGNOSTICS_SECTION__
     <h2>异常区间</h2>
     <table class="issue-table"><tr><th>类型</th><th>开始</th><th>结束</th><th>持续</th></tr>__INTERVAL_ROWS__</table>
@@ -5541,6 +5619,7 @@ class SessionRecorder:
             .replace("__QUALITY_CARDS__", quality_cards)
             .replace("__ISSUE_ROWS__", issue_rows)
             .replace("__VALIDATION_ROWS__", validation_rows)
+            .replace("__RECOMMENDATION_ROWS__", recommendation_rows)
             .replace("__COLLECTION_DIAGNOSTICS_SECTION__", collection_diagnostics_section)
             .replace("__INTERVAL_ROWS__", interval_rows)
             .replace("__WEAK_NETWORK_SECTION__", weak_network_section)
