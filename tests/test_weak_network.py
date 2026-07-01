@@ -15,6 +15,7 @@ from mobileperflab import (
     format_weak_network_config,
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
+    weak_hit_status_text,
     weak_readiness_display_text,
     verify_android_proxy_state,
 )
@@ -191,7 +192,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         app = object.__new__(App)
         app.weak_proxy = FakeWeakProxy()
         app.weak_readiness_var = FakeVar()
-        app.weak_traffic_vars = {"readiness": FakeVar()}
+        app.weak_traffic_vars = {"readiness": FakeVar(), "hit_status": FakeVar()}
         app.weak_live_summary_var = FakeVar()
         app.last_app_rx_kbps = 120.0
         app.last_app_tx_kbps = 8.0
@@ -208,6 +209,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("先修弱网链路", app.weak_readiness_var.value)
         self.assertIn("QUIC/UDP", app.weak_readiness_var.value)
         self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
+        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "疑似绕过代理 · App 有流量但代理未捕获")
 
 
 class AndroidProxyVerificationTest(unittest.TestCase):
@@ -583,6 +585,26 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("疑似绕过代理", text)
         self.assertIn("先修弱网链路", text)
         self.assertIn("App ↑↓有流量", text)
+
+    def test_formats_weak_hit_status_for_proxy_bypass_and_real_hits(self) -> None:
+        self.assertEqual(
+            weak_hit_status_text(
+                running=True,
+                traffic_state="waiting",
+                app_rx_kbps=120.0,
+                app_tx_kbps=8.0,
+            ),
+            "疑似绕过代理 · App 有流量但代理未捕获",
+        )
+        self.assertEqual(
+            weak_hit_status_text(
+                running=True,
+                traffic_state="hit",
+                app_rx_kbps=0.0,
+                app_tx_kbps=0.0,
+            ),
+            "已命中目标流量 · 弱网规则有生效证据",
+        )
 
     def test_formats_live_proxy_summary_with_link_diagnostics(self) -> None:
         diagnostics = build_weak_network_diagnostics(

@@ -453,6 +453,24 @@ def proxy_traffic_state(running: bool, snapshot: ProxyTrafficSnapshot) -> tuple[
     return "hit", "已命中目标流量"
 
 
+def weak_hit_status_text(
+    running: bool,
+    traffic_state: str,
+    app_rx_kbps: float = 0.0,
+    app_tx_kbps: float = 0.0,
+) -> str:
+    app_has_traffic = max(float(app_rx_kbps or 0.0), 0.0) > 0.0 or max(float(app_tx_kbps or 0.0), 0.0) > 0.0
+    if not running or traffic_state == "off":
+        return "未启动 · 先启动代理并应用到 Android"
+    if traffic_state == "hit":
+        return "已命中目标流量 · 弱网规则有生效证据"
+    if traffic_state == "dropped":
+        return "已命中并丢弃 · 结合业务日志确认目标请求"
+    if traffic_state == "waiting" and app_has_traffic:
+        return "疑似绕过代理 · App 有流量但代理未捕获"
+    return "等待目标流量 · 在 App 内触发 HTTP/HTTPS 请求"
+
+
 def format_live_proxy_summary(
     running: bool,
     endpoint: str,
@@ -7408,6 +7426,7 @@ class App:
         self.weak_traffic_chart.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         metrics = [
             ("readiness", "测试就绪", "先启动弱网代理"),
+            ("hit_status", "流量命中", "未启动"),
             ("down_rate", "实时下行", "0.0 KB/s"),
             ("up_rate", "实时上行", "0.0 KB/s"),
             ("down_total", "累计下行", "0 B"),
@@ -7922,6 +7941,12 @@ class App:
         readiness = effectiveness.get("test_readiness", {})
         readiness_text = weak_readiness_display_text(readiness)
         values["readiness"] = readiness_text
+        values["hit_status"] = weak_hit_status_text(
+            self.weak_proxy.is_running(),
+            traffic_state,
+            self.last_app_rx_kbps,
+            self.last_app_tx_kbps,
+        )
         if hasattr(self, "weak_readiness_var"):
             self.weak_readiness_var.set(readiness_text)
         weak_traffic_vars = getattr(self, "weak_traffic_vars", {})
