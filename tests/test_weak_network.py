@@ -363,6 +363,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertIn("弱网 ON", text)
         self.assertIn("等待目标流量", text)
+        self.assertIn("未捕获请求", text)
 
     def test_formats_running_proxy_with_connections_as_traffic_hit(self) -> None:
         text = format_live_proxy_summary(
@@ -381,6 +382,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         )
 
         self.assertIn("已命中并丢弃", text)
+        self.assertIn("只见丢弃", text)
 
     def test_formats_disabled_live_proxy_summary(self) -> None:
         text = format_live_proxy_summary(False, "<host>:<port>", ProxyTrafficSnapshot())
@@ -439,6 +441,30 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertEqual(payload["traffic_state"], "dropped")
         self.assertEqual(payload["traffic_state_label"], "已命中并丢弃")
+
+    def test_builds_report_payload_with_export_time_diagnostics(self) -> None:
+        device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=device,
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        payload = build_weak_network_report_payload(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(),
+            [],
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(payload["diagnostics"]["overall_state"], "ok")
+        self.assertEqual(payload["diagnostics"]["summary"], "弱网代理已确认生效，端口可达")
+        self.assertEqual(payload["diagnostics"]["rows"][2]["name"], "设备代理")
+        self.assertEqual(payload["diagnostics"]["rows"][2]["state"], "已确认")
+        self.assertEqual(payload["diagnostics"]["rows"][3]["detail"], "Android 可连接本机代理端口")
 
 
 class ProxyTrafficHistoryTest(unittest.TestCase):

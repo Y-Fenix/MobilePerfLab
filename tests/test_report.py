@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mobileperflab import DeviceInfo, PerfSample, SessionRecorder
+from mobileperflab import AndroidCollectionDiagnostics, DeviceInfo, PerfSample, SessionRecorder
 
 
 class ReportExportTest(unittest.TestCase):
@@ -85,6 +85,108 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(cadence["slow_intervals"], 3)
         self.assertEqual(gate["label"], "不可信")
         self.assertIn("慢采样", gate["detail"])
+
+    def test_quality_summary_includes_real_device_validation_checklist(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络未匹配到 App UID，无法按应用统计上下行。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.8,
+                elapsed=2.8,
+                fps=55.0,
+                cpu_percent=21.0,
+                memory_mb=520.0,
+                rx_kbps=12.0,
+                tx_kbps=3.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+            )
+        )
+
+        quality = recorder.quality_summary()
+        checklist = quality["validation_checklist"]
+        by_key = {item["key"]: item for item in checklist}
+
+        self.assertEqual(by_key["fps"]["state"], "fail")
+        self.assertIn("FPS", by_key["fps"]["detail"])
+        self.assertEqual(by_key["cpu"]["state"], "warning")
+        self.assertEqual(by_key["network"]["state"], "warning")
+        self.assertIn("设备级", by_key["network"]["detail"])
+        self.assertEqual(by_key["cadence"]["state"], "fail")
+        self.assertEqual(by_key["foreground"]["state"], "pass")
+
+    def test_export_bundle_includes_android_collection_diagnostics(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="warning",
+                summary="Android 采集链路需关注",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "已获取", "101, 202"),
+                    ("UID", "已获取", "10234"),
+                    ("FPS", "缺失", "gfxinfo 无帧增量"),
+                    ("网络", "设备级兜底", "非目标 App 独占流量"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="pidof",
+                pids=[101, 202],
+                uid_source="dumpsys package",
+                uid=10234,
+                fps_source="missing",
+                network_source="device",
+            )
+        )
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=52.0, cpu_percent=24.0, memory_mb=520.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        diagnostics = payload["collection_diagnostics"]
+        self.assertEqual(diagnostics["summary"], "Android 采集链路需关注")
+        self.assertEqual(diagnostics["foreground_app"], "com.example.game")
+        self.assertEqual(diagnostics["pids"], [101, 202])
+        self.assertEqual(diagnostics["uid"], 10234)
+        self.assertEqual(diagnostics["network_source"], "device")
+        self.assertEqual(diagnostics["rows"][3]["name"], "FPS")
+        self.assertIn("采集链路自检", html_text)
+        self.assertIn("Android 采集链路需关注", html_text)
+        self.assertIn("设备级兜底", html_text)
+
+    def test_export_bundle_keeps_raw_samples_and_adds_display_smoothed_samples(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=2.0, elapsed=2.0, fps=60.0, cpu_percent=20.0, memory_mb=521.0))
+        recorder.append(PerfSample(timestamp=3.0, elapsed=3.0, fps=20.0, cpu_percent=80.0, memory_mb=522.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["samples"][2]["fps"], 20.0)
+        self.assertIn("display_samples", payload)
+        self.assertEqual(len(payload["display_samples"]), 3)
+        self.assertGreater(payload["display_samples"][2]["fps"], payload["samples"][2]["fps"])
+        checklist = {item["key"]: item for item in payload["quality"]["validation_checklist"]}
+        self.assertEqual(checklist["cadence"]["state"], "pass")
+        self.assertIn("const displaySamples", html_text)
+        self.assertIn("原始值", html_text)
+        self.assertIn("稳定展示", html_text)
 
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
@@ -174,6 +276,9 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("异常区间", html_text)
         self.assertIn("采集异常", html_text)
         self.assertIn("设备级兜底", html_text)
+        self.assertIn("实机验证清单", html_text)
+        self.assertIn("FPS 链路", html_text)
+        self.assertIn("网络链路", html_text)
         self.assertIn("1.0s", html_text)
         self.assertIn("FPS 未采集", html_text)
         self.assertIn("非目标 App 独占流量", html_text)
@@ -182,6 +287,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn('"quality"', payload)
         self.assertIn('"quality_gate"', payload)
         self.assertIn('"cadence"', payload)
+        self.assertIn('"validation_checklist"', payload)
 
     def test_html_report_includes_weak_network_real_traffic_snapshot(self) -> None:
         recorder = SessionRecorder()
@@ -202,6 +308,16 @@ class ReportExportTest(unittest.TestCase):
             "traffic_state": "hit",
             "traffic_state_label": "已命中目标流量",
             "summary": "弱网 ON · 127.0.0.1:18888 · 已命中目标流量 · ↓12.3 KB/s ↑4.5 KB/s · 2/8 连接 · 丢弃 1",
+            "diagnostics": {
+                "overall_state": "ok",
+                "summary": "弱网代理已确认生效，端口可达",
+                "rows": [
+                    {"name": "本机代理", "state": "运行中", "detail": "127.0.0.1:18888"},
+                    {"name": "Android 设备", "state": "已选择", "detail": "LowEnd"},
+                    {"name": "设备代理", "state": "已确认", "detail": "127.0.0.1:18888"},
+                    {"name": "端口连通", "state": "可达", "detail": "Android 可连接本机代理端口"},
+                ],
+            },
             "config": {
                 "profile": "弱网",
                 "port": 18888,
@@ -238,16 +354,45 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["weak_network"]["traffic_state"], "hit")
         self.assertEqual(payload["weak_network"]["config"]["profile"], "弱网")
         self.assertEqual(payload["weak_network"]["history"][1]["down_kbps"], 12.3)
+        self.assertEqual(payload["weak_network"]["diagnostics"]["summary"], "弱网代理已确认生效，端口可达")
         self.assertIn("弱网真实流量", html_text)
+        self.assertIn("弱网链路诊断", html_text)
         self.assertIn("弱网配置", html_text)
         self.assertIn("延迟 300ms", html_text)
         self.assertIn("丢包 2.0%", html_text)
         self.assertIn("流量状态", html_text)
         self.assertIn("已命中目标流量", html_text)
+        self.assertIn("设备代理", html_text)
+        self.assertIn("端口连通", html_text)
+        self.assertIn("Android 可连接本机代理端口", html_text)
         self.assertIn("proxyTrafficHistory", html_text)
         self.assertIn("127.0.0.1:18888", html_text)
         self.assertIn("↓12.3 KB/s", html_text)
         self.assertIn("↑4.5 KB/s", html_text)
+
+    def test_html_report_warns_when_weak_proxy_has_not_seen_real_traffic(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=52.0, cpu_percent=24.0, memory_mb=520.0))
+
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "waiting",
+            "traffic_state_label": "等待目标流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 等待目标流量 · ↓0.0 KB/s ↑0.0 KB/s · 0/0 连接 · 丢弃 0",
+            "config": {"profile": "弱网", "port": 18888},
+            "snapshot": {},
+            "snapshot_display": {},
+            "history": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("等待目标流量", html_text)
+        self.assertIn("报告导出时弱网代理没有捕获到目标请求", html_text)
 
 
 if __name__ == "__main__":

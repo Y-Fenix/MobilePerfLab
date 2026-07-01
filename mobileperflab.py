@@ -456,7 +456,11 @@ def format_live_proxy_summary(running: bool, endpoint: str, snapshot: ProxyTraff
     if not running:
         return "弱网 OFF · 未启动"
     values = format_proxy_traffic_snapshot(snapshot)
-    _state, traffic_label = proxy_traffic_state(running, snapshot)
+    state, traffic_label = proxy_traffic_state(running, snapshot)
+    if state == "waiting":
+        traffic_label = f"{traffic_label}/未捕获请求"
+    elif state == "dropped":
+        traffic_label = f"{traffic_label}/只见丢弃"
     return (
         f"弱网 ON · {endpoint} · "
         f"{traffic_label} · "
@@ -466,12 +470,34 @@ def format_live_proxy_summary(running: bool, endpoint: str, snapshot: ProxyTraff
     )
 
 
+def weak_network_diagnostics_payload(diagnostics: WeakNetworkDiagnostics) -> dict[str, object]:
+    return {
+        "overall_state": diagnostics.overall_state,
+        "summary": diagnostics.summary,
+        "rows": [
+            {"name": name, "state": state, "detail": detail}
+            for name, state, detail in diagnostics.rows
+        ],
+    }
+
+
+def weak_network_risk_message(traffic_state: str) -> str:
+    if traffic_state == "waiting":
+        return "报告导出时弱网代理没有捕获到目标请求，请确认目标 App 是否走系统 HTTP/HTTPS 代理。"
+    if traffic_state == "dropped":
+        return "报告导出时代理只记录到被丢弃的连接，请结合业务日志确认弱网丢包是否命中目标请求。"
+    if traffic_state == "off":
+        return "报告导出时弱网代理未启动，本报告不包含有效弱网生效证据。"
+    return ""
+
+
 def build_weak_network_report_payload(
     running: bool,
     endpoint: str,
     snapshot: ProxyTrafficSnapshot,
     history: list[tuple[float, float, float]],
     config: dict[str, object] | None = None,
+    diagnostics: WeakNetworkDiagnostics | None = None,
 ) -> dict[str, object]:
     normalized_history: list[dict[str, float]] = []
     history_points = [(float(elapsed), float(down_kbps), float(up_kbps)) for elapsed, down_kbps, up_kbps in history]
@@ -486,17 +512,21 @@ def build_weak_network_report_payload(
                 }
             )
     traffic_state, traffic_state_label = proxy_traffic_state(running, snapshot)
-    return {
+    payload: dict[str, object] = {
         "running": running,
         "endpoint": endpoint,
         "traffic_state": traffic_state,
         "traffic_state_label": traffic_state_label,
+        "risk_message": weak_network_risk_message(traffic_state),
         "summary": format_live_proxy_summary(running, endpoint, snapshot),
         "config": dict(config or {}),
         "snapshot": asdict(snapshot),
         "snapshot_display": format_proxy_traffic_snapshot(snapshot),
         "history": normalized_history,
     }
+    if diagnostics is not None:
+        payload["diagnostics"] = weak_network_diagnostics_payload(diagnostics)
+    return payload
 
 
 def format_weak_network_config(config: dict[str, object]) -> str:
@@ -526,6 +556,25 @@ def format_quality_mode_label(smoothing_enabled: bool, low_end_bias: bool) -> st
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
     detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
+
+
+def android_collection_diagnostics_payload(diagnostics: AndroidCollectionDiagnostics) -> dict[str, object]:
+    return {
+        "overall_state": diagnostics.overall_state,
+        "summary": diagnostics.summary,
+        "rows": [
+            {"name": name, "state": state, "detail": detail}
+            for name, state, detail in diagnostics.rows
+        ],
+        "foreground_app": diagnostics.foreground_app,
+        "foreground_state": diagnostics.foreground_state,
+        "pid_source": diagnostics.pid_source,
+        "pids": list(diagnostics.pids),
+        "uid_source": diagnostics.uid_source,
+        "uid": diagnostics.uid,
+        "fps_source": diagnostics.fps_source,
+        "network_source": diagnostics.network_source,
+    }
 
 
 def collection_diagnostic_status_rows(diagnostics: AndroidCollectionDiagnostics) -> list[tuple[str, str, str, str]]:
@@ -753,6 +802,140 @@ def sampling_cadence_summary(samples: list[PerfSample], expected_interval: float
         "slow_percent": round(slow_percent, 1),
         "detail": detail,
     }
+
+
+def validation_state_label(state: str) -> str:
+    return {
+        "pass": "通过",
+        "warning": "注意",
+        "fail": "失败",
+        "waiting": "待验证",
+    }.get(state, state)
+
+
+def build_validation_checklist(
+    samples: list[PerfSample],
+    quality: dict[str, object],
+    weak_network: dict[str, object] | None = None,
+) -> list[dict[str, str]]:
+    total = len(samples)
+
+    def note_count(*tokens: str) -> int:
+        return sum(1 for sample in samples if any(token in sample.note for token in tokens))
+
+    def positive_count(metric: str) -> int:
+        return sum(1 for sample in samples if float(getattr(sample, metric, 0.0) or 0.0) > 0.0)
+
+    if total <= 0:
+        return [
+            {"key": "sample", "name": "采样数据", "state": "waiting", "detail": "暂无样本，无法判断实机采集链路。"}
+        ]
+
+    fps_issue = note_count("FPS 未采集", "FPS 当前无帧增量", "无帧增量")
+    fps_positive = positive_count("fps")
+    if fps_issue:
+        fps_state = "fail" if fps_positive == 0 or fps_issue / total >= 0.3 else "warning"
+        fps_detail = f"FPS 链路出现 {fps_issue}/{total} 个异常样本，请检查 Surface/gfxinfo/页面是否静止。"
+    elif fps_positive:
+        fps_state = "pass"
+        fps_detail = f"FPS 链路有 {fps_positive}/{total} 个有效样本。"
+    else:
+        fps_state = "waiting"
+        fps_detail = "FPS 尚无有效样本。"
+
+    cpu_issue = note_count("CPU 当前无进程增量", "CPU 采集失败")
+    cpu_positive = positive_count("cpu_percent")
+    if cpu_issue:
+        cpu_state = "fail" if cpu_positive == 0 or cpu_issue / total > 0.5 else "warning"
+        cpu_detail = f"CPU 链路出现 {cpu_issue}/{total} 个异常样本，请检查目标 PID 和 /proc 读取权限。"
+    elif cpu_positive:
+        cpu_state = "pass"
+        cpu_detail = f"CPU 链路有 {cpu_positive}/{total} 个有效样本。"
+    else:
+        cpu_state = "waiting"
+        cpu_detail = "CPU 尚无有效样本。"
+
+    network_source = str(quality.get("network_source", "无数据"))
+    fallback_count = int(quality.get("network_fallback_samples", 0) or 0)
+    network_issue = note_count("网络未匹配", "无法按应用统计", "网络采集失败", "网络采集不可用")
+    if network_issue and fallback_count:
+        network_state = "warning"
+        network_detail = f"网络链路未稳定命中 per-UID，含 {fallback_count}/{total} 个设备级兜底样本，当前来源：{network_source}。"
+    elif "per-UID 不可用" in network_source or network_issue:
+        network_state = "fail"
+        network_detail = f"网络链路不可用或未匹配 UID，当前来源：{network_source}。"
+    elif fallback_count:
+        network_state = "warning"
+        network_detail = f"网络链路含 {fallback_count}/{total} 个设备级兜底样本，不能当目标 App 独占流量。"
+    elif positive_count("rx_kbps") or positive_count("tx_kbps"):
+        network_state = "pass"
+        network_detail = "网络链路使用目标 App per-UID 数据。"
+    else:
+        network_state = "waiting"
+        network_detail = "目标 App 当前无网络流量，需结合业务动作复测。"
+
+    foreground_issue = note_count("目标应用不在前台")
+    recovery_count = note_count("恢复窗口内")
+    if foreground_issue:
+        foreground_state = "fail"
+        foreground_detail = f"目标 App 离开前台 {foreground_issue}/{total} 次，相关区间不应用于性能结论。"
+    elif recovery_count:
+        foreground_state = "warning"
+        foreground_detail = f"检测到 {recovery_count}/{total} 个前台恢复窗口样本，切回前几秒请谨慎参考。"
+    else:
+        foreground_state = "pass"
+        foreground_detail = "未发现目标 App 离开前台或恢复窗口异常。"
+
+    cadence = quality.get("cadence", {})
+    if not isinstance(cadence, dict):
+        cadence = {}
+    cadence_state = str(cadence.get("state", "waiting"))
+    cadence_detail = str(cadence.get("detail", "暂无采样节拍结论。"))
+    if cadence_state in {"ok", "good"}:
+        cadence_item_state = "pass"
+    elif cadence_state == "caution":
+        cadence_item_state = "warning"
+    elif cadence_state == "bad":
+        cadence_item_state = "fail"
+    else:
+        cadence_item_state = "waiting"
+
+    weak_state = "waiting"
+    weak_detail = "未导出弱网代理状态。"
+    if weak_network is not None:
+        traffic_state = str(weak_network.get("traffic_state", "off"))
+        if traffic_state == "hit":
+            weak_state = "pass"
+            weak_detail = "弱网代理已捕获真实目标流量。"
+        elif traffic_state == "waiting":
+            weak_state = "warning"
+            weak_detail = "弱网代理运行中但未捕获目标请求，请确认 App 是否走系统代理。"
+        elif traffic_state == "dropped":
+            weak_state = "warning"
+            weak_detail = "弱网代理记录到丢弃连接，请结合业务日志确认是否命中目标请求。"
+        else:
+            weak_state = "waiting"
+            weak_detail = "弱网代理未启动或无弱网状态。"
+
+    return [
+        {"key": "fps", "name": "FPS 链路", "state": fps_state, "detail": fps_detail},
+        {"key": "cpu", "name": "CPU 链路", "state": cpu_state, "detail": cpu_detail},
+        {"key": "network", "name": "网络链路", "state": network_state, "detail": network_detail},
+        {"key": "foreground", "name": "前后台一致性", "state": foreground_state, "detail": foreground_detail},
+        {"key": "cadence", "name": "采样节拍", "state": cadence_item_state, "detail": cadence_detail},
+        {"key": "weak_network", "name": "弱网命中", "state": weak_state, "detail": weak_detail},
+    ]
+
+
+def build_display_samples(samples: list[PerfSample]) -> list[dict[str, object]]:
+    stabilizer = MetricStabilizer()
+    display_rows: list[dict[str, object]] = []
+    for sample in samples:
+        display = stabilizer.smooth_sample(sample)
+        row = asdict(display)
+        row["qualityTag"] = sample_quality_tag(sample)
+        display_rows.append(row)
+    return display_rows
 
 
 def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[str, float | str]]:
@@ -4336,6 +4519,7 @@ class SessionRecorder:
         self.start_time = 0.0
         self.device: DeviceInfo | None = None
         self.app_id = ""
+        self.collection_diagnostics: AndroidCollectionDiagnostics | None = None
 
     def reset(self, device: DeviceInfo, app_id: str) -> None:
         self.samples.clear()
@@ -4344,6 +4528,7 @@ class SessionRecorder:
         self.start_time = time.time()
         self.device = device
         self.app_id = app_id
+        self.collection_diagnostics = None
 
     def append(self, sample: PerfSample) -> None:
         self.samples.append(sample)
@@ -4359,6 +4544,9 @@ class SessionRecorder:
         elapsed = time.time() - self.start_time if self.start_time else 0.0
         self.markers.append({"elapsed": round(elapsed, 3), "label": label})
         self.log(f"已添加标记：{label} @ {elapsed:.1f}s")
+
+    def set_collection_diagnostics(self, diagnostics: AndroidCollectionDiagnostics) -> None:
+        self.collection_diagnostics = diagnostics
 
     def summary(self) -> dict[str, float | str]:
         if not self.samples:
@@ -4388,7 +4576,7 @@ class SessionRecorder:
     def quality_summary(self) -> dict[str, object]:
         total = len(self.samples)
         if total <= 0:
-            return {
+            quality: dict[str, object] = {
                 "sample_count": 0,
                 "noted_samples": 0,
                 "noted_percent": 0.0,
@@ -4399,6 +4587,8 @@ class SessionRecorder:
                 "network_fallback_percent": 0.0,
                 "issues": [],
             }
+            quality["validation_checklist"] = build_validation_checklist([], quality)
+            return quality
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
         issue_count = sum(1 for sample in self.samples if sample_quality_tag(sample) == "issue")
@@ -4466,7 +4656,7 @@ class SessionRecorder:
             for sample in self.samples
         ):
             network_source = "per-UID 不可用"
-        return {
+        quality = {
             "sample_count": total,
             "noted_samples": len(noted_samples),
             "noted_percent": round(len(noted_samples) / total * 100.0, 1),
@@ -4485,6 +4675,8 @@ class SessionRecorder:
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
             "issues": issues,
         }
+        quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
+        return quality
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -4515,6 +4707,9 @@ class SessionRecorder:
                 row = asdict(sample)
                 row["timestamp"] = datetime.fromtimestamp(sample.timestamp).isoformat(timespec="seconds")
                 writer.writerow(row)
+        quality = self.quality_summary()
+        quality["validation_checklist"] = build_validation_checklist(self.samples, quality, weak_network)
+        display_samples = build_display_samples(self.samples)
         payload = {
             "app": APP_NAME,
             "version": APP_VERSION,
@@ -4522,10 +4717,13 @@ class SessionRecorder:
             "device": asdict(self.device) if self.device else None,
             "target_app": self.app_id,
             "summary": self.summary(),
-            "quality": self.quality_summary(),
+            "quality": quality,
             "markers": self.markers,
             "samples": [asdict(sample) for sample in self.samples],
+            "display_samples": display_samples,
         }
+        if self.collection_diagnostics is not None:
+            payload["collection_diagnostics"] = android_collection_diagnostics_payload(self.collection_diagnostics)
         if weak_network is not None:
             payload["weak_network"] = weak_network
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -4536,6 +4734,7 @@ class SessionRecorder:
         summary = payload.get("summary", {})
         quality = payload.get("quality", {})
         weak_network = payload.get("weak_network")
+        collection_diagnostics = payload.get("collection_diagnostics")
         summary_labels = {
             "device": "设备",
             "app_id": "目标应用",
@@ -4616,9 +4815,60 @@ class SessionRecorder:
             for issue in quality.get("issues", [])
             if isinstance(issue, dict)
         ) or "<tr><td colspan='4'>未发现明显采集异常或兜底说明</td></tr>"
+        validation_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('name', '')))}</td>"
+            f"<td>{html.escape(validation_state_label(str(item.get('state', ''))))}</td>"
+            f"<td>{html.escape(str(item.get('detail', '')))}</td>"
+            "</tr>"
+            for item in quality.get("validation_checklist", [])
+            if isinstance(item, dict)
+        ) or "<tr><td colspan='3'>暂无实机验证结论</td></tr>"
         quality_intervals = quality_intervals_from_points(
             [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
         )
+
+        collection_diagnostics_section = ""
+        if isinstance(collection_diagnostics, dict):
+            diagnostic_rows = collection_diagnostics.get("rows", [])
+            if not isinstance(diagnostic_rows, list):
+                diagnostic_rows = []
+            diagnostic_rows_html = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('name', '')))}</td>"
+                f"<td>{html.escape(str(row.get('state', '')))}</td>"
+                f"<td>{html.escape(str(row.get('detail', '')))}</td>"
+                "</tr>"
+                for row in diagnostic_rows
+                if isinstance(row, dict)
+            ) or "<tr><td colspan='3'>未记录自检明细</td></tr>"
+            source_rows = [
+                ("前台应用", collection_diagnostics.get("foreground_app", "")),
+                ("PID 来源", collection_diagnostics.get("pid_source", "")),
+                ("PID", ", ".join(str(pid) for pid in collection_diagnostics.get("pids", []) if pid is not None)),
+                ("UID 来源", collection_diagnostics.get("uid_source", "")),
+                ("UID", collection_diagnostics.get("uid", "")),
+                ("FPS 来源", collection_diagnostics.get("fps_source", "")),
+                ("网络来源", collection_diagnostics.get("network_source", "")),
+            ]
+            source_rows_html = "".join(
+                f"<tr><th>{html.escape(name)}</th><td>{html.escape(str(value))}</td></tr>"
+                for name, value in source_rows
+                if str(value)
+            )
+            collection_diagnostics_section = "".join(
+                [
+                    "<h2>采集链路自检</h2>",
+                    "<table><tr><th>项目</th><th>值</th></tr>",
+                    f"<tr><th>整体</th><td>{html.escape(str(collection_diagnostics.get('summary', '')))}</td></tr>",
+                    f"<tr><th>状态</th><td>{html.escape(str(collection_diagnostics.get('overall_state', '')))}</td></tr>",
+                    source_rows_html,
+                    "</table>",
+                    "<table class='issue-table' style='margin-top: 12px;'><tr><th>链路</th><th>状态</th><th>说明</th></tr>",
+                    diagnostic_rows_html,
+                    "</table>",
+                ]
+            )
 
         weak_network_section = ""
         if isinstance(weak_network, dict):
@@ -4628,6 +4878,27 @@ class SessionRecorder:
             weak_config = weak_network.get("config", {})
             if not isinstance(weak_config, dict):
                 weak_config = {}
+            weak_diagnostics = weak_network.get("diagnostics", {})
+            if not isinstance(weak_diagnostics, dict):
+                weak_diagnostics = {}
+            weak_diagnostic_rows = weak_diagnostics.get("rows", [])
+            if not isinstance(weak_diagnostic_rows, list):
+                weak_diagnostic_rows = []
+            diagnostic_rows_html = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('name', '')))}</td>"
+                f"<td>{html.escape(str(row.get('state', '')))}</td>"
+                f"<td>{html.escape(str(row.get('detail', '')))}</td>"
+                "</tr>"
+                for row in weak_diagnostic_rows
+                if isinstance(row, dict)
+            ) or "<tr><td colspan='3'>未记录导出时链路诊断</td></tr>"
+            risk_message = str(weak_network.get("risk_message", "") or weak_network_risk_message(str(weak_network.get("traffic_state", ""))))
+            risk_row = (
+                f"<tr><th>风险提示</th><td>{html.escape(risk_message)}</td></tr>"
+                if risk_message
+                else ""
+            )
             weak_network_section = "".join(
                 [
                     "<h2>弱网真实流量</h2>",
@@ -4644,6 +4915,12 @@ class SessionRecorder:
                     f"<tr><th>丢弃</th><td>{html.escape(str(weak_display.get('drops', '0')))}</td></tr>",
                     f"<tr><th>最近活跃</th><td>{html.escape(str(weak_display.get('activity', '无')))}</td></tr>",
                     f"<tr><th>原始快照</th><td>{html.escape(str(weak_snapshot.get('down_kbps', 0.0)))} KB/s 下行 · {html.escape(str(weak_snapshot.get('up_kbps', 0.0)))} KB/s 上行</td></tr>",
+                    risk_row,
+                    "</table>",
+                    "<h2>弱网链路诊断</h2>",
+                    "<table class='issue-table'><tr><th>项目</th><th>状态</th><th>说明</th></tr>",
+                    f"<tr><td>整体</td><td>{html.escape(str(weak_diagnostics.get('overall_state', '未记录')))}</td><td>{html.escape(str(weak_diagnostics.get('summary', '未记录导出时链路诊断')))}</td></tr>",
+                    diagnostic_rows_html,
                     "</table>",
                     "<div class='weak-traffic-chart'><canvas id='proxyTrafficHistory'></canvas></div>",
                     f"<script>window.proxyTrafficHistory = {json.dumps(list(weak_history), ensure_ascii=False).replace('</', '<\\/')};</script>",
@@ -4693,12 +4970,16 @@ class SessionRecorder:
             {"key": "rx_kbps", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
             {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
         ]
-        report_samples = []
+        report_samples: list[dict[str, object]] = []
         for sample in self.samples:
             row = asdict(sample)
             row["qualityTag"] = sample_quality_tag(sample)
             report_samples.append(row)
+        display_samples = payload.get("display_samples")
+        if not isinstance(display_samples, list) or len(display_samples) != len(report_samples):
+            display_samples = build_display_samples(self.samples)
         data = json.dumps(report_samples, ensure_ascii=False).replace("</", "<\\/")
+        display_data = json.dumps(display_samples, ensure_ascii=False).replace("</", "<\\/")
         markers = json.dumps(self.markers, ensure_ascii=False).replace("</", "<\\/")
         charts = json.dumps(chart_config, ensure_ascii=False).replace("</", "<\\/")
         html_text = """<!doctype html>
@@ -4768,6 +5049,9 @@ class SessionRecorder:
     <h2>采集质量</h2>
     <div class="quality-grid">__QUALITY_CARDS__</div>
     <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
+    <h2>实机验证清单</h2>
+    <table class="issue-table"><tr><th>链路</th><th>状态</th><th>结论</th></tr>__VALIDATION_ROWS__</table>
+    __COLLECTION_DIAGNOSTICS_SECTION__
     <h2>异常区间</h2>
     <table class="issue-table"><tr><th>类型</th><th>开始</th><th>结束</th><th>持续</th></tr>__INTERVAL_ROWS__</table>
     __WEAK_NETWORK_SECTION__
@@ -4775,6 +5059,8 @@ class SessionRecorder:
     <div class="hint">每张图使用独立单位和坐标轴；虚线为参考阈值，标记会显示为竖线。</div>
     <div class="legend" aria-label="曲线标识">
       <span class="legend-item"><span class="legend-dot"></span>正常样本</span>
+      <span class="legend-item">粗线：稳定展示</span>
+      <span class="legend-item">细线：原始值</span>
       <span class="legend-item"><span class="legend-ring"></span>设备级网络兜底</span>
       <span class="legend-item"><span class="legend-triangle"></span>采集异常样本</span>
       <span class="legend-item">浅橙/浅红背景表示连续兜底或异常区间</span>
@@ -4785,6 +5071,7 @@ class SessionRecorder:
   </main>
     <script>
     const samples = __DATA__;
+    const displaySamples = __DISPLAY_DATA__;
     const markers = __MARKERS__;
     const chartConfigs = __CHARTS__;
     const proxyTrafficHistory = window.proxyTrafficHistory || [];
@@ -4793,6 +5080,9 @@ class SessionRecorder:
     let syncingChartScroll = false;
 
     const finiteValues = (key) => samples
+      .map(sample => Number(sample[key] || 0))
+      .filter(value => Number.isFinite(value));
+    const displayFiniteValues = (key) => displaySamples
       .map(sample => Number(sample[key] || 0))
       .filter(value => Number.isFinite(value));
 
@@ -5005,8 +5295,10 @@ class SessionRecorder:
       const plotW = width - pad.left - pad.right;
       const plotH = height - pad.top - pad.bottom;
       const values = finiteValues(config.key);
+      const displayValues = displayFiniteValues(config.key);
       const valueMax = Math.max(...values, Number(config.suggestedMax || 0), 1);
-      const maxY = niceCeil(valueMax * 1.08);
+      const displayMax = Math.max(...displayValues, 0);
+      const maxY = niceCeil(Math.max(valueMax, displayMax) * 1.08);
       const minY = 0;
       const range = Math.max(maxY - minY, 1);
       const xFor = (seconds) => pad.left + (Math.max(0, Math.min(Number(seconds || 0), timelineSeconds)) / timelineSeconds) * plotW;
@@ -5084,18 +5376,19 @@ class SessionRecorder:
         ctx.font = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
         ctx.fillText('无有效数据', pad.left + 12, pad.top + plotH / 2);
       } else {
+        const displaySeries = displaySamples.length === samples.length ? displaySamples : samples;
         const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
         gradient.addColorStop(0, `${config.color}2e`);
         gradient.addColorStop(1, `${config.color}00`);
         ctx.beginPath();
-        samples.forEach((sample, index) => {
+        displaySeries.forEach((sample, index) => {
           const x = xFor(sample.elapsed);
           const y = yFor(sample[config.key]);
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
-        ctx.lineTo(xFor(samples[samples.length - 1]?.elapsed || 0), pad.top + plotH);
-        ctx.lineTo(xFor(samples[0]?.elapsed || 0), pad.top + plotH);
+        ctx.lineTo(xFor(displaySeries[displaySeries.length - 1]?.elapsed || 0), pad.top + plotH);
+        ctx.lineTo(xFor(displaySeries[0]?.elapsed || 0), pad.top + plotH);
         ctx.closePath();
         ctx.fillStyle = gradient;
         ctx.fill();
@@ -5107,13 +5400,27 @@ class SessionRecorder:
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
+        ctx.save();
+        ctx.strokeStyle = config.color;
+        ctx.globalAlpha = 0.32;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.beginPath();
+        displaySeries.forEach((sample, index) => {
+          const x = xFor(sample.elapsed);
+          const y = yFor(sample[config.key]);
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
         ctx.strokeStyle = config.color;
         ctx.lineWidth = 2.4;
         ctx.stroke();
 
         if (samples.length <= 80) {
           ctx.fillStyle = config.color;
-          samples.forEach(sample => {
+          displaySeries.forEach(sample => {
             const x = xFor(sample.elapsed);
             const y = yFor(sample[config.key]);
             ctx.beginPath();
@@ -5233,11 +5540,14 @@ class SessionRecorder:
             .replace("__SUMMARY_ROWS__", rows)
             .replace("__QUALITY_CARDS__", quality_cards)
             .replace("__ISSUE_ROWS__", issue_rows)
+            .replace("__VALIDATION_ROWS__", validation_rows)
+            .replace("__COLLECTION_DIAGNOSTICS_SECTION__", collection_diagnostics_section)
             .replace("__INTERVAL_ROWS__", interval_rows)
             .replace("__WEAK_NETWORK_SECTION__", weak_network_section)
             .replace("__CHART_CARDS__", chart_cards)
             .replace("__MARKER_ROWS__", marker_rows)
             .replace("__DATA__", data)
+            .replace("__DISPLAY_DATA__", display_data)
             .replace("__MARKERS__", markers)
             .replace("__CHARTS__", charts)
         )
@@ -6430,6 +6740,36 @@ class App:
                 state_var.set("-")
                 detail_var.set("-")
 
+    def _weak_network_export_diagnostics(self) -> WeakNetworkDiagnostics:
+        device = self.selected_device if self.selected_device and self.selected_device.platform == "Android" else None
+        endpoint = self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>"
+        current_proxy = ""
+        proxy_reachable: bool | None = None
+        if device:
+            try:
+                current_proxy = self.android.current_http_proxy(device)
+            except Exception as exc:
+                current_proxy = ""
+                self.append_log(f"导出报告读取 Android 代理失败：{exc}")
+            verification = verify_android_proxy_state(endpoint, current_proxy)
+            if self.weak_proxy.is_running() and verification.confirmed:
+                host, port_text = endpoint.rsplit(":", 1)
+                try:
+                    proxy_reachable, detail = self.android.probe_tcp_connectivity(device, host, int(port_text))
+                    self.append_log(
+                        f"导出报告弱网端口{'可达' if proxy_reachable else '不可达'}：{detail}"
+                    )
+                except Exception as exc:
+                    proxy_reachable = False
+                    self.append_log(f"导出报告弱网端口检测失败：{exc}")
+        return build_weak_network_diagnostics(
+            proxy_running=self.weak_proxy.is_running(),
+            endpoint=endpoint,
+            device=device,
+            current_proxy=current_proxy,
+            proxy_reachable=proxy_reachable,
+        )
+
     def _refresh_proxy_traffic(self) -> None:
         if not self.weak_traffic_vars:
             return
@@ -6644,6 +6984,7 @@ class App:
                 return
             self.app_hint_var.set(diagnostics.summary)
             self._update_collection_links(diagnostics)
+            self.recorder.set_collection_diagnostics(diagnostics)
             self.append_log(format_android_collection_diagnostics(diagnostics))
             return
         note = "iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 需要保持 iOS 采集服务窗口运行。"
@@ -6681,6 +7022,7 @@ class App:
             try:
                 diagnostics = adapter.collection_diagnostics(device, app_id)
                 self.recorder.log(format_android_collection_diagnostics(diagnostics))
+                self.recorder.set_collection_diagnostics(diagnostics)
                 self.app_hint_var.set(diagnostics.summary)
                 self._update_collection_links(diagnostics)
             except Exception as exc:
@@ -6913,6 +7255,7 @@ class App:
             proxy_snapshot,
             self.weak_proxy.traffic_history(),
             self.weak_proxy.runtime_config(self.weak_profile_var.get()),
+            diagnostics=self._weak_network_export_diagnostics(),
         )
         csv_path, json_path, html_path = self.recorder.export_bundle(Path(folder), weak_network=weak_network)
         self.last_export_folder = html_path.parent
