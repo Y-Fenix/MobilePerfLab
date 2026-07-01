@@ -210,6 +210,29 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertAlmostEqual(adapter._cpu_percent(self.device, "com.example.game"), 18.5)
 
+    def test_cpu_percent_recovers_immediately_when_cached_pid_disappears_after_app_restart(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "pidof com.example.game": "\n---NEXT---\n".join(["101", "202"]),
+                "getconf CLK_TCK": "100",
+                "cat /proc/101/stat": "\n---NEXT---\n".join(
+                    [
+                        stat_line(101, "main", 10, 5),
+                        "",
+                    ]
+                ),
+                "cat /proc/202/stat": stat_line(202, "main", 30, 10),
+                "dumpsys cpuinfo com.example.game": "  14% 202/com.example.game: 9% user + 5% kernel",
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[100.0, 101.0]):
+            self.assertIsNone(adapter._cpu_percent_from_proc(self.device, "com.example.game"))
+            self.assertAlmostEqual(adapter._cpu_percent(self.device, "com.example.game"), 14.0)
+
+        self.assertEqual(adapter._pid_cache[(self.device.serial, "com.example.game")], 202)
+        self.assertEqual(adapter._cpu_proc_cache[(self.device.serial, "com.example.game")][1], {202: 40})
+
     def test_cpu_percent_falls_back_to_top_when_cpuinfo_is_empty(self) -> None:
         adapter = FakeAndroidAdapter(
             {

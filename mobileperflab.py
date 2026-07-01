@@ -3256,8 +3256,18 @@ class AndroidAdapter(BaseAdapter):
             if jiffies is not None:
                 process_jiffies[pid] = jiffies
         if not process_jiffies:
-            self._pid_cache.pop((device.serial, app_id), None)
-            self._pid_list_cache.pop((device.serial, app_id), None)
+            key = (device.serial, app_id)
+            self._pid_cache.pop(key, None)
+            self._pid_list_cache.pop(key, None)
+            pids = self._process_pids(device, app_id)
+            for pid in pids:
+                stat = self._shell(device.serial, f"cat /proc/{pid}/stat", timeout=2.0)
+                jiffies = self._jiffies_from_proc_stat(stat)
+                if jiffies is not None:
+                    process_jiffies[pid] = jiffies
+            if not process_jiffies:
+                return None
+            self._cpu_proc_cache[key] = (time.time(), process_jiffies)
             return None
         clk_tck = self._clock_ticks_per_second(device)
         if clk_tck <= 0:
