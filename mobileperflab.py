@@ -445,6 +445,8 @@ def format_proxy_traffic_snapshot(snapshot: ProxyTrafficSnapshot) -> dict[str, s
 def proxy_traffic_state(running: bool, snapshot: ProxyTrafficSnapshot) -> tuple[str, str]:
     if not running:
         return "off", "未启动"
+    if snapshot.dropped_connections > 0 and snapshot.total_connections <= 0 and snapshot.up_bytes <= 0 and snapshot.down_bytes <= 0:
+        return "dropped", "已命中并丢弃"
     if snapshot.total_connections <= 0 and snapshot.up_bytes <= 0 and snapshot.down_bytes <= 0:
         return "waiting", "等待目标流量"
     return "hit", "已命中目标流量"

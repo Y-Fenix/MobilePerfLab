@@ -338,6 +338,15 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertIn("已命中目标流量", text)
 
+    def test_formats_dropped_proxy_connection_as_hit_and_dropped(self) -> None:
+        text = format_live_proxy_summary(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(dropped_connections=2),
+        )
+
+        self.assertIn("已命中并丢弃", text)
+
     def test_formats_disabled_live_proxy_summary(self) -> None:
         text = format_live_proxy_summary(False, "<host>:<port>", ProxyTrafficSnapshot())
 
@@ -374,6 +383,17 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertEqual(payload["traffic_state"], "waiting")
         self.assertIn("等待目标流量", payload["summary"])
+
+    def test_builds_report_payload_with_dropped_proxy_traffic_state(self) -> None:
+        payload = build_weak_network_report_payload(
+            True,
+            "127.0.0.1:18888",
+            ProxyTrafficSnapshot(dropped_connections=1),
+            [],
+        )
+
+        self.assertEqual(payload["traffic_state"], "dropped")
+        self.assertEqual(payload["traffic_state_label"], "已命中并丢弃")
 
 
 class ProxyTrafficHistoryTest(unittest.TestCase):
