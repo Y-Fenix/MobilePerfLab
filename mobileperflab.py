@@ -3447,8 +3447,8 @@ class AndroidAdapter(BaseAdapter):
 
     @staticmethod
     def _rx_tx_from_named_bytes(line: str) -> tuple[int, int] | None:
-        rx_match = re.search(r"\brxBytes[=:\s]+(\d+)", line)
-        tx_match = re.search(r"\btxBytes[=:\s]+(\d+)", line)
+        rx_match = re.search(r"\b(?:rxBytes|rx_bytes)[=:\s]+(\d+)", line)
+        tx_match = re.search(r"\b(?:txBytes|tx_bytes)[=:\s]+(\d+)", line)
         if rx_match and tx_match:
             return int(rx_match.group(1)), int(tx_match.group(1))
         return None

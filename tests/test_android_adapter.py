@@ -323,6 +323,16 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertEqual(AndroidAdapter._parse_netstats_detail_for_uid(output, 10234), (4096, 2048))
 
+    def test_netstats_parser_reads_snake_case_named_uid_bucket_values(self) -> None:
+        output = """
+        Bucket{uid=10234 tag=0x0 set=DEFAULT}:
+          bucket_start=1710000000000 active_time=2500 rx_bytes=4096 rx_packets=8 tx_bytes=2048 tx_packets=4 operations=0
+        Bucket{uid=10001 tag=0x0 set=DEFAULT}:
+          bucket_start=1710000000000 active_time=2500 rx_bytes=9999 rx_packets=9 tx_bytes=9999 tx_packets=9 operations=0
+        """
+
+        self.assertEqual(AndroidAdapter._parse_netstats_detail_for_uid(output, 10234), (4096, 2048))
+
     def test_netstats_parser_reads_bucket_header_with_positional_history_values(self) -> None:
         output = """
         ident=[{type=WIFI, subType=COMBINED, networkId="lab"}] uid=10234 set=DEFAULT tag=0x0
@@ -563,6 +573,37 @@ class AndroidAdapterTest(unittest.TestCase):
                 "cmd package list packages -U com.example.game": "package:com.example.game uid:10234\n",
                 "cat /proc/uid_stat/10234/tcp_rcv": "\n---NEXT---\n".join(["4096", "8192"]),
                 "cat /proc/uid_stat/10234/tcp_snd": "\n---NEXT---\n".join(["2048", "4096"]),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0]):
+            rx1, tx1 = adapter._network_kbps(self.device, "com.example.game", 10.0)
+            rx2, tx2 = adapter._network_kbps(self.device, "com.example.game", 11.0)
+
+        self.assertEqual((rx1, tx1), (0.0, 0.0))
+        self.assertAlmostEqual(rx2, 4.0)
+        self.assertAlmostEqual(tx2, 2.0)
+        self.assertNotIn("设备级网络兜底", adapter._network_note_cache[("serial-1", "com.example.game")])
+
+    def test_network_kbps_uses_netstats_snake_case_when_uid_stat_is_unavailable(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "userId=10234",
+                "cat /proc/uid_stat/10234/tcp_rcv": "",
+                "cat /proc/uid_stat/10234/tcp_snd": "",
+                "cat /proc/net/xt_qtaguid/stats": "",
+                "dumpsys netstats detail": "\n---NEXT---\n".join(
+                    [
+                        """
+                        Bucket{uid=10234 tag=0x0 set=DEFAULT}:
+                          bucket_start=1710000000000 active_time=2500 rx_bytes=1024 rx_packets=8 tx_bytes=512 tx_packets=4 operations=0
+                        """,
+                        """
+                        Bucket{uid=10234 tag=0x0 set=DEFAULT}:
+                          bucket_start=1710000001000 active_time=2500 rx_bytes=5120 rx_packets=8 tx_bytes=2560 tx_packets=4 operations=0
+                        """,
+                    ]
+                ),
             }
         )
 
