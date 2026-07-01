@@ -472,6 +472,11 @@ def format_live_proxy_summary(
         app_tx_kbps=app_tx_kbps,
     )
     effectiveness_label = str(effectiveness.get("label", ""))
+    readiness = effectiveness.get("test_readiness", {})
+    readiness_label = ""
+    if isinstance(readiness, dict):
+        readiness_label = str(readiness.get("label", ""))
+    readiness_text = f" · {readiness_label}" if readiness_label else ""
     if state == "waiting":
         traffic_label = f"{traffic_label}/未捕获请求"
         if app_rx_kbps > 0.0 or app_tx_kbps > 0.0:
@@ -481,7 +486,7 @@ def format_live_proxy_summary(
     app_traffic = f" · App ↑↓有流量 {app_rx_kbps:.1f}/{app_tx_kbps:.1f} KB/s" if state == "waiting" and (app_rx_kbps > 0.0 or app_tx_kbps > 0.0) else ""
     return (
         f"弱网 ON · {endpoint} · "
-        f"{effectiveness_label} · "
+        f"{effectiveness_label}{readiness_text} · "
         f"{traffic_label} · "
         f"↓{values['down_rate']} ↑{values['up_rate']} · "
         f"{snapshot.active_connections}/{snapshot.total_connections} 连接 · "

@@ -497,7 +497,18 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertIn("弱网 ON", text)
         self.assertIn("等待目标流量", text)
+        self.assertIn("先触发业务请求", text)
         self.assertIn("未捕获请求", text)
+
+    def test_formats_live_proxy_summary_with_ready_action_after_real_traffic(self) -> None:
+        text = format_live_proxy_summary(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(total_connections=1, down_bytes=2048, up_bytes=1024),
+        )
+
+        self.assertIn("弱网已生效", text)
+        self.assertIn("可以开始测试", text)
 
     def test_formats_live_proxy_bypass_warning_when_app_has_network_but_proxy_waits(self) -> None:
         text = format_live_proxy_summary(
@@ -510,6 +521,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertIn("疑似绕过系统代理", text)
         self.assertIn("疑似绕过代理", text)
+        self.assertIn("先修弱网链路", text)
         self.assertIn("App ↑↓有流量", text)
 
     def test_formats_live_proxy_summary_with_link_diagnostics(self) -> None:
