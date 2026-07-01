@@ -4597,6 +4597,7 @@ class SessionRecorder:
                     "<h2>弱网真实流量</h2>",
                     "<table><tr><th>项目</th><th>值</th></tr>",
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
+                    f"<tr><th>流量状态</th><td>{html.escape(str(weak_network.get('traffic_state_label', '未知')))}</td></tr>",
                     f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",
                     f"<tr><th>下行速率</th><td>{html.escape(str(weak_display.get('down_rate', '0.0 KB/s')))}</td></tr>",
                     f"<tr><th>上行速率</th><td>{html.escape(str(weak_display.get('up_rate', '0.0 KB/s')))}</td></tr>",
