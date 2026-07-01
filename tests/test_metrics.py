@@ -7,6 +7,7 @@ from mobileperflab import (
     PerfSample,
     SAMPLING_INTERVAL_OPTIONS,
     build_recent_window_health,
+    live_recent_window_summary,
     live_sampling_action_label,
     recommended_sampling_interval,
     recommended_sampling_interval_button_text,
@@ -407,6 +408,36 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(
             live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.5),
             "建议：采样间隔调到 2.0s，优先看稳定展示",
+        )
+
+    def test_live_recent_window_summary_prioritizes_collection_jitter_action(self) -> None:
+        recent_window = {
+            "state": "bad",
+            "label": "窗口：节拍失稳",
+            "trend_source": "collection",
+            "trend_label": "趋势：采集波动",
+            "slow_samples": 3,
+            "issue_samples": 1,
+        }
+
+        self.assertEqual(
+            live_recent_window_summary(recent_window, low_end_display_mode=True, expected_interval=1.0),
+            "采集波动 · 窗口：节拍失稳 · 推荐 1.5s",
+        )
+
+    def test_live_recent_window_summary_distinguishes_real_performance_volatility(self) -> None:
+        recent_window = {
+            "state": "caution",
+            "label": "窗口：谨慎参考",
+            "trend_source": "performance",
+            "trend_label": "趋势：性能波动",
+            "slow_samples": 0,
+            "issue_samples": 0,
+        }
+
+        self.assertEqual(
+            live_recent_window_summary(recent_window, low_end_display_mode=False, expected_interval=1.0),
+            "性能波动 · 窗口：谨慎参考 · 按真实性能分析",
         )
 
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:

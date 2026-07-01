@@ -11,6 +11,7 @@ from mobileperflab import (
     graph_display_series,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
+    live_recent_window_summary,
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
@@ -179,6 +180,21 @@ class QualityModeLabelTest(unittest.TestCase):
         App.apply_recommended_sampling_interval(app)
 
         self.assertEqual(app.sampler.interval, 1.5)
+
+    def test_live_recent_window_summary_has_short_ui_message(self) -> None:
+        summary = live_recent_window_summary(
+            {
+                "state": "bad",
+                "label": "窗口：节拍失稳",
+                "trend_source": "collection",
+                "slow_samples": 2,
+                "issue_samples": 0,
+            },
+            low_end_display_mode=True,
+            expected_interval=1.5,
+        )
+
+        self.assertEqual(summary, "采集波动 · 窗口：节拍失稳 · 推荐 2.0s")
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

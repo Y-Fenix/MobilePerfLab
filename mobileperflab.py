@@ -1114,6 +1114,28 @@ def live_sampling_action_label(
     return "建议：继续采集"
 
 
+def live_recent_window_summary(
+    recent_window: dict[str, object],
+    low_end_display_mode: bool = False,
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> str:
+    state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
+    label = str(recent_window.get("label", "窗口：等待数据") if isinstance(recent_window, dict) else "窗口：等待数据")
+    trend_source = str(recent_window.get("trend_source", "waiting") if isinstance(recent_window, dict) else "waiting")
+    slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    fallback_samples = int(recent_window.get("fallback_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    if state == "waiting":
+        return "等待数据 · 窗口：等待数据 · 继续采集"
+    if trend_source == "collection" or slow_samples or issue_samples or low_end_display_mode:
+        return f"采集波动 · {label} · 推荐 {next_low_end_interval_label(expected_interval)}"
+    if trend_source == "performance":
+        return f"性能波动 · {label} · 按真实性能分析"
+    if fallback_samples:
+        return f"网络兜底 · {label} · 确认网络来源"
+    return f"采集稳定 · {label} · 继续采集"
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -6723,6 +6745,7 @@ class App:
         self.app_hint_var = tk.StringVar(value="选择设备后可刷新应用列表或读取前台应用。")
         self.capability_var = tk.StringVar(value="")
         self.marker_var = tk.StringVar(value="关键操作")
+        self.quality_summary_var = tk.StringVar(value="等待数据 · 窗口：等待数据 · 继续采集")
         self.quality_var = tk.StringVar(value="采集质量：等待数据")
         self.smoothing_var = tk.BooleanVar(value=True)
         self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")
@@ -6781,6 +6804,7 @@ class App:
         style.configure("TopSub.TLabel", background="#172235", foreground="#B5C4D8", font=("Helvetica", 11))
         style.configure("Sidebar.TFrame", background="#FFFFFF")
         style.configure("Panel.TFrame", background="#FFFFFF", relief="solid", borderwidth=1)
+        style.configure("PanelBody.TFrame", background="#FFFFFF")
         style.configure("Card.TFrame", background="#FFFFFF", relief="solid", borderwidth=1)
         style.configure("PanelTitle.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 13, "bold"))
         style.configure("CardTitle.TLabel", background="#FFFFFF", foreground="#6A7482", font=("Helvetica", 10))
@@ -7176,7 +7200,10 @@ class App:
         quality = ttk.Frame(main, style="Panel.TFrame", padding=(12, 9))
         quality.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         quality.columnconfigure(0, weight=1)
-        ttk.Label(quality, textvariable=self.quality_var, style="Quality.TLabel").pack(side="left")
+        quality_text = ttk.Frame(quality, style="PanelBody.TFrame")
+        quality_text.pack(side="left", fill="x", expand=True)
+        ttk.Label(quality_text, textvariable=self.quality_summary_var, style="Quality.TLabel").pack(anchor="w")
+        ttk.Label(quality_text, textvariable=self.quality_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         ttk.Label(quality, textvariable=self.weak_live_summary_var, style="Muted.TLabel").pack(side="right", padx=(16, 0))
         ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
 
@@ -7948,6 +7975,7 @@ class App:
         self.stabilizer.reset()
         self.live_quality.reset()
         self.last_quality_event_tag = "ok"
+        self.quality_summary_var.set("等待数据 · 窗口：等待数据 · 继续采集")
         self.quality_var.set("采集质量：等待数据")
         self._refresh_quality_mode()
         self._clear_quality_events()
@@ -8015,7 +8043,12 @@ class App:
         self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
         quality_tag = sample_quality_tag(sample)
         self._update_metric_health(sample)
-        self.quality_var.set(f"采集质量：{self.live_quality.update(sample)}")
+        quality_text = self.live_quality.update(sample)
+        recent_window = self.live_quality.recent_window_health()
+        self.quality_summary_var.set(
+            live_recent_window_summary(recent_window, self.live_quality.low_end_display_mode(), self.live_quality.expected_interval)
+        )
+        self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()
         display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample
         self._refresh_quality_mode()
