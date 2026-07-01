@@ -365,6 +365,18 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("等待目标流量", text)
         self.assertIn("未捕获请求", text)
 
+    def test_formats_live_proxy_bypass_warning_when_app_has_network_but_proxy_waits(self) -> None:
+        text = format_live_proxy_summary(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(),
+            app_rx_kbps=120.0,
+            app_tx_kbps=8.0,
+        )
+
+        self.assertIn("疑似绕过系统代理", text)
+        self.assertIn("App ↑↓有流量", text)
+
     def test_formats_running_proxy_with_connections_as_traffic_hit(self) -> None:
         text = format_live_proxy_summary(
             True,

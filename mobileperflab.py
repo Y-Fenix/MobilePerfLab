@@ -452,21 +452,31 @@ def proxy_traffic_state(running: bool, snapshot: ProxyTrafficSnapshot) -> tuple[
     return "hit", "已命中目标流量"
 
 
-def format_live_proxy_summary(running: bool, endpoint: str, snapshot: ProxyTrafficSnapshot) -> str:
+def format_live_proxy_summary(
+    running: bool,
+    endpoint: str,
+    snapshot: ProxyTrafficSnapshot,
+    app_rx_kbps: float = 0.0,
+    app_tx_kbps: float = 0.0,
+) -> str:
     if not running:
         return "弱网 OFF · 未启动"
     values = format_proxy_traffic_snapshot(snapshot)
     state, traffic_label = proxy_traffic_state(running, snapshot)
     if state == "waiting":
         traffic_label = f"{traffic_label}/未捕获请求"
+        if app_rx_kbps > 0.0 or app_tx_kbps > 0.0:
+            traffic_label = f"{traffic_label}/疑似绕过系统代理"
     elif state == "dropped":
         traffic_label = f"{traffic_label}/只见丢弃"
+    app_traffic = f" · App ↑↓有流量 {app_rx_kbps:.1f}/{app_tx_kbps:.1f} KB/s" if state == "waiting" and (app_rx_kbps > 0.0 or app_tx_kbps > 0.0) else ""
     return (
         f"弱网 ON · {endpoint} · "
         f"{traffic_label} · "
         f"↓{values['down_rate']} ↑{values['up_rate']} · "
         f"{snapshot.active_connections}/{snapshot.total_connections} 连接 · "
         f"丢弃 {snapshot.dropped_connections}"
+        f"{app_traffic}"
     )
 
 
@@ -6238,6 +6248,8 @@ class App:
         self.graph_view_start = 0.0
         self.graph_view_seconds = 10.0
         self.graph_follow_latest = True
+        self.last_app_rx_kbps = 0.0
+        self.last_app_tx_kbps = 0.0
         self.stabilizer = MetricStabilizer()
         self.health_analyzer = MetricHealthAnalyzer()
         self.live_quality = LiveQualityTracker()
@@ -7138,7 +7150,13 @@ class App:
                 variable.set(text)
         if hasattr(self, "weak_live_summary_var"):
             self.weak_live_summary_var.set(
-                format_live_proxy_summary(self.weak_proxy.is_running(), self.weak_proxy.local_endpoint(), snapshot)
+                format_live_proxy_summary(
+                    self.weak_proxy.is_running(),
+                    self.weak_proxy.local_endpoint(),
+                    snapshot,
+                    self.last_app_rx_kbps,
+                    self.last_app_tx_kbps,
+                )
             )
         if hasattr(self, "weak_traffic_chart"):
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
@@ -7476,6 +7494,8 @@ class App:
 
     def _handle_sample(self, sample: PerfSample) -> None:
         self.recorder.append(sample)
+        self.last_app_rx_kbps = max(float(sample.rx_kbps or 0.0), 0.0)
+        self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
         display_sample = self.stabilizer.smooth_sample(sample) if self.smoothing_var.get() else sample
         quality_tag = sample_quality_tag(sample)
         self._update_metric_health(sample)
@@ -7499,6 +7519,7 @@ class App:
         self.graphs["tx_kbps"].append(display_sample.elapsed, display_sample.tx_kbps, quality_tag)
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
+        self._refresh_proxy_traffic()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
         self._append_quality_event(sample)
 
