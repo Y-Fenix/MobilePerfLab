@@ -851,6 +851,18 @@ def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:
     return " · ".join(parts)
 
 
+def graph_quality_badge_text_for_context(
+    points: list[tuple[float, float, str]],
+    smoothing_enabled: bool,
+    low_end_display_mode: bool,
+) -> str:
+    base = graph_quality_badge_text(points)
+    has_visible_issue = any(quality in {"issue", "fallback"} for _elapsed, _value, quality in points)
+    if smoothing_enabled and (low_end_display_mode or has_visible_issue):
+        return " · ".join(part for part in (base, "稳态") if part)
+    return base
+
+
 def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) -> list[tuple[float, float]]:
     if len(points) < 2:
         return list(points)
@@ -871,6 +883,23 @@ def graph_display_series(points: list[tuple[float, float]], smooth: bool = False
     normalized = [(float(elapsed), float(value)) for elapsed, value in points]
     if not smooth:
         return normalized
+    return smooth_graph_series(normalized, alpha=alpha)
+
+
+def graph_display_series_for_context(
+    points: list[tuple[float, float]],
+    smoothing_enabled: bool,
+    low_end_display_mode: bool,
+    qualities: list[str] | tuple[str, ...] | None = None,
+) -> list[tuple[float, float]]:
+    normalized = [(float(elapsed), float(value)) for elapsed, value in points]
+    if not smoothing_enabled:
+        return normalized
+    quality_values = list(qualities or [])
+    has_visible_issue = any(quality in {"issue", "fallback"} for quality in quality_values)
+    if not low_end_display_mode and not has_visible_issue:
+        return normalized
+    alpha = 0.2 if low_end_display_mode else 0.28
     return smooth_graph_series(normalized, alpha=alpha)
 
 
@@ -6547,6 +6576,8 @@ class GraphPanel(ttk.Frame):
         self.points: list[tuple[float, float, str]] = []
         self.view_start = 0.0
         self.view_seconds = 10.0
+        self.smoothing_enabled = True
+        self.low_end_display_mode = False
         self.header = ttk.Frame(self, style="PanelBody.TFrame")
         self.header.pack(fill="x")
         ttk.Label(self.header, text=title, style="PanelTitle.TLabel").pack(side="left")
@@ -6562,6 +6593,13 @@ class GraphPanel(ttk.Frame):
         self.points.append((max(0.0, float(elapsed)), float(value), quality))
         self.points = self.points[-self.max_points :]
         self.value_var.set(self._format(value))
+        self.redraw()
+
+    def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
+        if self.smoothing_enabled == smoothing_enabled and self.low_end_display_mode == low_end_display_mode:
+            return
+        self.smoothing_enabled = smoothing_enabled
+        self.low_end_display_mode = low_end_display_mode
         self.redraw()
 
     def reset(self) -> None:
@@ -6637,7 +6675,9 @@ class GraphPanel(ttk.Frame):
         canvas.create_text(width / 2, height - 4, anchor="center", text=self._format_time(mid), fill=text_color, font=("Helvetica", 9))
         canvas.create_text(width - pad_right, height - 4, anchor="e", text=self._format_time(view_end), fill=text_color, font=("Helvetica", 9))
         visible_points = self._visible_points(view_start, view_end)
-        self.quality_badge_var.set(graph_quality_badge_text(visible_points))
+        self.quality_badge_var.set(
+            graph_quality_badge_text_for_context(visible_points, self.smoothing_enabled, self.low_end_display_mode)
+        )
         if len(visible_points) < 2:
             canvas.create_text(
                 width / 2,
@@ -6647,7 +6687,12 @@ class GraphPanel(ttk.Frame):
                 font=("Helvetica", 12),
             )
             return
-        display_values = graph_display_series([(elapsed, value) for elapsed, value, _quality in visible_points], smooth=False)
+        display_values = graph_display_series_for_context(
+            [(elapsed, value) for elapsed, value, _quality in visible_points],
+            smoothing_enabled=self.smoothing_enabled,
+            low_end_display_mode=self.low_end_display_mode,
+            qualities=[quality for _elapsed, _value, quality in visible_points],
+        )
         display_by_elapsed = {elapsed: value for elapsed, value in display_values}
         values = [
             display_by_elapsed.get(elapsed, value)
@@ -8127,6 +8172,8 @@ class App:
         conservative_display = self.live_quality.low_end_display_mode()
         display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample
         self._refresh_quality_mode()
+        for graph in self.graphs.values():
+            graph.set_display_context(self.smoothing_var.get(), conservative_display)
         self.cards["fps"].set_value(display_sample.fps, "越高越流畅")
         self.cards["jank_percent"].set_value(display_sample.jank_percent, "越低越稳")
         self.cards["cpu_percent"].set_value(display_sample.cpu_percent, "进程占用")

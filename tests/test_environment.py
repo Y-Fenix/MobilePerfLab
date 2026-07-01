@@ -9,7 +9,9 @@ from mobileperflab import (
     format_graph_view_height,
     format_quality_mode_label,
     graph_quality_badge_text,
+    graph_quality_badge_text_for_context,
     graph_display_series,
+    graph_display_series_for_context,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
     live_recent_window_summary,
@@ -91,6 +93,24 @@ class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_is_empty_for_trusted_points(self) -> None:
         self.assertEqual(graph_quality_badge_text([(0.0, 60.0, "ok"), (1.0, 59.0, "ok")]), "")
 
+    def test_graph_quality_badge_shows_steady_display_context(self) -> None:
+        self.assertEqual(
+            graph_quality_badge_text_for_context(
+                [(0.0, 60.0, "ok"), (1.0, 35.0, "issue")],
+                smoothing_enabled=True,
+                low_end_display_mode=True,
+            ),
+            "异常 1 · 稳态",
+        )
+        self.assertEqual(
+            graph_quality_badge_text_for_context(
+                [(0.0, 60.0, "ok"), (1.0, 58.0, "ok")],
+                smoothing_enabled=True,
+                low_end_display_mode=False,
+            ),
+            "",
+        )
+
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)
         self.assertEqual(graph_scroll_row_step(-1), -1)
@@ -122,6 +142,47 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         display = graph_display_series(stabilized, smooth=False)
 
         self.assertEqual(display, stabilized)
+
+    def test_graph_context_series_smooths_low_end_display_without_changing_length(self) -> None:
+        raw = [(0.0, 60.0), (1.0, 34.0), (2.0, 64.0), (3.0, 31.0), (4.0, 62.0)]
+
+        display = graph_display_series_for_context(
+            raw,
+            smoothing_enabled=True,
+            low_end_display_mode=True,
+            qualities=["ok"] * len(raw),
+        )
+
+        raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
+        display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
+        self.assertEqual(len(display), len(raw))
+        self.assertLess(display_range, raw_range * 0.65)
+
+    def test_graph_context_series_keeps_trusted_standard_display_responsive(self) -> None:
+        stabilized = [(0.0, 60.0), (1.0, 54.0), (2.0, 50.0)]
+
+        display = graph_display_series_for_context(
+            stabilized,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+            qualities=["ok", "ok", "ok"],
+        )
+
+        self.assertEqual(display, stabilized)
+
+    def test_graph_context_series_smooths_visible_quality_issues_before_low_end_mode(self) -> None:
+        raw = [(0.0, 60.0), (1.0, 0.0), (2.0, 58.0), (3.0, 30.0)]
+
+        display = graph_display_series_for_context(
+            raw,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+            qualities=["ok", "issue", "ok", "fallback"],
+        )
+
+        raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
+        display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
+        self.assertLess(display_range, raw_range)
 
 
 class QualityModeLabelTest(unittest.TestCase):
@@ -243,6 +304,12 @@ class QualityModeLabelTest(unittest.TestCase):
                 pass
 
         class FakeGraph:
+            def __init__(self) -> None:
+                self.smoothing_contexts: list[tuple[bool, bool]] = []
+
+            def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
+                self.smoothing_contexts.append((smoothing_enabled, low_end_display_mode))
+
             def append(self, _elapsed: float, _value: float, _quality: str) -> None:
                 pass
 
@@ -287,6 +354,7 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertIn("性能结论：先修采集链路", app.performance_conclusion_var.value)
         self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
+        self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
