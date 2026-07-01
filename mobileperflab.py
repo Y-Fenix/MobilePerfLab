@@ -458,6 +458,7 @@ def format_live_proxy_summary(
     snapshot: ProxyTrafficSnapshot,
     app_rx_kbps: float = 0.0,
     app_tx_kbps: float = 0.0,
+    diagnostics: WeakNetworkDiagnostics | dict[str, object] | None = None,
 ) -> str:
     if not running:
         return "弱网 OFF · 未启动"
@@ -466,7 +467,7 @@ def format_live_proxy_summary(
     effectiveness = build_weak_network_effectiveness(
         running,
         state,
-        diagnostics=None,
+        diagnostics=diagnostics,
         app_rx_kbps=app_rx_kbps,
         app_tx_kbps=app_tx_kbps,
     )
@@ -6560,6 +6561,7 @@ class App:
         self.last_quality_event_tag = "ok"
         self.weak_proxy = WeakNetworkProxy(self._threadsafe_log)
         self.weak_registry = WeakProxyDeviceRegistry()
+        self.last_weak_diagnostics: WeakNetworkDiagnostics | None = None
 
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
@@ -7400,6 +7402,7 @@ class App:
             current_proxy=current_proxy or "",
             proxy_reachable=proxy_reachable,
         )
+        self.last_weak_diagnostics = diagnostics
         self.weak_diagnostic_summary_var.set(diagnostics.summary)
         for index, variables in enumerate(self.weak_diagnostic_row_vars):
             name_var, state_var, detail_var = variables
@@ -7444,12 +7447,11 @@ class App:
         )
 
     def _refresh_proxy_traffic(self) -> None:
-        if not self.weak_traffic_vars:
-            return
         snapshot = self.weak_proxy.traffic_snapshot()
         values = format_proxy_traffic_snapshot(snapshot)
+        weak_traffic_vars = getattr(self, "weak_traffic_vars", {})
         for key, text in values.items():
-            variable = self.weak_traffic_vars.get(key)
+            variable = weak_traffic_vars.get(key)
             if variable:
                 variable.set(text)
         if hasattr(self, "weak_live_summary_var"):
@@ -7460,6 +7462,7 @@ class App:
                     snapshot,
                     self.last_app_rx_kbps,
                     self.last_app_tx_kbps,
+                    self.last_weak_diagnostics,
                 )
             )
         if hasattr(self, "weak_traffic_chart"):

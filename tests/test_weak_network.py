@@ -119,6 +119,47 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.android.cleared, ["serial-2"])
         self.assertIn("退出前已清理 Android 代理：serial-2", app.logs)
 
+    def test_refresh_proxy_traffic_uses_latest_link_diagnostics(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot()
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_traffic_vars = {}
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.last_weak_diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=False,
+        )
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertIn("端口不可达", app.weak_live_summary_var.value)
+
 
 class AndroidProxyVerificationTest(unittest.TestCase):
     def test_confirms_proxy_when_device_state_matches_expected_endpoint(self) -> None:
@@ -444,6 +485,25 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("疑似绕过系统代理", text)
         self.assertIn("疑似绕过代理", text)
         self.assertIn("App ↑↓有流量", text)
+
+    def test_formats_live_proxy_summary_with_link_diagnostics(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=False,
+        )
+
+        text = format_live_proxy_summary(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(),
+            diagnostics=diagnostics,
+        )
+
+        self.assertIn("端口不可达", text)
+        self.assertIn("等待目标流量", text)
 
     def test_formats_running_proxy_with_connections_as_traffic_hit(self) -> None:
         text = format_live_proxy_summary(
