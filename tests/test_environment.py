@@ -119,7 +119,8 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
     def test_graph_view_rows_adapt_to_fullscreen_height(self) -> None:
         self.assertEqual(graph_visible_rows_for_height(760), 2)
-        self.assertEqual(graph_visible_rows_for_height(980), 3)
+        self.assertEqual(graph_visible_rows_for_height(900), 3)
+        self.assertEqual(graph_visible_rows_for_height(980), 4)
         self.assertEqual(graph_visible_rows_for_height(1400), 4)
 
     def test_graph_view_height_matches_visible_rows_and_scrollbar(self) -> None:
