@@ -874,6 +874,7 @@ class LiveQualityTracker:
         self.foreground_issue_count = 0
         self.slow_sample_count = 0
         self.network_source = "等待数据"
+        self._last_elapsed: float | None = None
 
     def reset(self) -> None:
         self.sample_count = 0
@@ -883,6 +884,7 @@ class LiveQualityTracker:
         self.foreground_issue_count = 0
         self.slow_sample_count = 0
         self.network_source = "等待数据"
+        self._last_elapsed = None
 
     def update(self, sample: PerfSample) -> str:
         self.sample_count += 1
@@ -896,8 +898,9 @@ class LiveQualityTracker:
             self.network_missing_count += 1
         if "目标应用不在前台" in note:
             self.foreground_issue_count += 1
-        if "采样耗时" in note:
+        if "采样耗时" in note or self._is_slow_elapsed_interval(sample.elapsed):
             self.slow_sample_count += 1
+        self._last_elapsed = float(sample.elapsed)
         self.network_source = self._network_source(sample, note)
         return self.status_text()
 
@@ -926,6 +929,14 @@ class LiveQualityTracker:
     @staticmethod
     def _has_quality_issue(note: str) -> bool:
         return note_has_quality_issue(note)
+
+    def _is_slow_elapsed_interval(self, elapsed: float) -> bool:
+        previous = self._last_elapsed
+        if previous is None:
+            return False
+        interval = float(elapsed) - previous
+        threshold = max(DEFAULT_INTERVAL_SECONDS * 1.25, DEFAULT_INTERVAL_SECONDS + 0.25)
+        return interval > threshold
 
     @staticmethod
     def _network_source(sample: PerfSample, note: str) -> str:

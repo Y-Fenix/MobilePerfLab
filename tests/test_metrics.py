@@ -275,6 +275,16 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("前台 1", text)
         self.assertIn("慢采样 1", text)
 
+    def test_summarizes_slow_sampling_from_elapsed_intervals_without_note(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(PerfSample(timestamp=2.7, elapsed=2.7, fps=55.0))
+        tracker.update(PerfSample(timestamp=4.5, elapsed=4.5, fps=54.0))
+        text = tracker.update(PerfSample(timestamp=5.5, elapsed=5.5, fps=53.0))
+
+        self.assertIn("不可信", text)
+        self.assertIn("慢采样 2", text)
+
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)
 
