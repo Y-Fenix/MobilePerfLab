@@ -206,6 +206,93 @@ class PerfSample:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class ProxyVerificationResult:
+    confirmed: bool
+    expected: str
+    actual: str
+    status_text: str
+    log_text: str
+
+
+@dataclass(frozen=True)
+class WeakNetworkDiagnostics:
+    overall_state: str
+    summary: str
+    rows: list[tuple[str, str, str]]
+
+
+def normalize_android_proxy_value(value: str) -> str:
+    proxy = (value or "").strip()
+    if not proxy or proxy.lower() in {"null", "none", ":0", "0.0.0.0:0"}:
+        return ""
+    return proxy
+
+
+def verify_android_proxy_state(expected_proxy: str, actual_proxy: str) -> ProxyVerificationResult:
+    expected = normalize_android_proxy_value(expected_proxy)
+    actual = normalize_android_proxy_value(actual_proxy)
+    actual_label = actual or "未设置"
+    if expected and actual == expected:
+        return ProxyVerificationResult(
+            confirmed=True,
+            expected=expected,
+            actual=actual,
+            status_text=f"Android 代理已确认生效：{expected}",
+            log_text=f"Android 代理读回确认：{expected}",
+        )
+    return ProxyVerificationResult(
+        confirmed=False,
+        expected=expected,
+        actual=actual,
+        status_text=f"Android 代理写入后未确认：期望 {expected or '未设置'}，当前{actual_label}",
+        log_text=f"Android 代理写入后读回不一致：期望 {expected or '未设置'}，实际 {actual_label}",
+    )
+
+
+def build_weak_network_diagnostics(
+    proxy_running: bool,
+    endpoint: str,
+    device: DeviceInfo | None,
+    current_proxy: str,
+    proxy_reachable: bool | None = None,
+) -> WeakNetworkDiagnostics:
+    rows: list[tuple[str, str, str]] = []
+    normalized_proxy = normalize_android_proxy_value(current_proxy)
+    endpoint = endpoint.strip()
+
+    if proxy_running:
+        rows.append(("本机代理", "运行中", endpoint))
+    else:
+        rows.append(("本机代理", "未启动", "先点击启动代理"))
+
+    if device and device.platform == "Android":
+        rows.append(("Android 设备", "已选择", device.name or device.serial))
+        if not proxy_running:
+            rows.append(("设备代理", "未检查", "启动代理后刷新状态"))
+            rows.append(("端口连通", "未检查", "启动代理后检测"))
+            return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
+        verification = verify_android_proxy_state(endpoint, normalized_proxy)
+        if verification.confirmed:
+            rows.append(("设备代理", "已确认", normalized_proxy))
+            if proxy_reachable is True:
+                rows.append(("端口连通", "可达", "Android 可连接本机代理端口"))
+                return WeakNetworkDiagnostics("ok", "弱网代理已确认生效，端口可达", rows)
+            if proxy_reachable is False:
+                rows.append(("端口连通", "不可达", "检查手机和电脑是否同一网络/防火墙"))
+                return WeakNetworkDiagnostics("warning", "Android 已写入代理，但端口不可达", rows)
+            rows.append(("端口连通", "未检查", "点击刷新状态检测"))
+            return WeakNetworkDiagnostics("warning", "Android 代理已确认，端口未检查", rows)
+        rows.append(("设备代理", "不一致", normalized_proxy or "未设置"))
+        rows.append(("端口连通", "未检查", "代理读回一致后检测"))
+        return WeakNetworkDiagnostics("warning", "Android 代理未确认", rows)
+
+    rows.append(("Android 设备", "未选择", "请选择 Android 设备"))
+    rows.append(("设备代理", "未检查", "选择设备后刷新状态"))
+    rows.append(("端口连通", "未检查", "启动代理并选择设备后检测"))
+    return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
+
+
 def sample_quality_tag(sample: PerfSample) -> str:
     note = sample.note or ""
     if "设备级网络兜底" in note:
@@ -213,6 +300,38 @@ def sample_quality_tag(sample: PerfSample) -> str:
     if LiveQualityTracker._has_quality_issue(note):
         return "issue"
     return "ok"
+
+
+def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[str, float | str]]:
+    intervals: list[dict[str, float | str]] = []
+    active_quality = "ok"
+    active_start: float | None = None
+    active_end: float | None = None
+    for elapsed, quality in sorted(points, key=lambda item: item[0]):
+        tag = quality if quality in ("issue", "fallback") else "ok"
+        current = float(elapsed)
+        if tag == "ok":
+            if active_start is not None and active_end is not None:
+                intervals.append({"start": active_start, "end": active_end, "quality": active_quality})
+            active_quality = "ok"
+            active_start = None
+            active_end = None
+            continue
+        if active_start is None or active_quality != tag:
+            if active_start is not None and active_end is not None:
+                intervals.append({"start": active_start, "end": active_end, "quality": active_quality})
+            active_quality = tag
+            active_start = current
+            active_end = current
+        else:
+            active_end = current
+    if active_start is not None and active_end is not None:
+        intervals.append({"start": active_start, "end": active_end, "quality": active_quality})
+    return intervals
+
+
+def format_report_seconds(value: float) -> str:
+    return f"{float(value):.1f}s"
 
 
 @dataclass(frozen=True)
@@ -402,6 +521,13 @@ class MetricStabilizer:
         "rx_kbps": 0.9,
         "tx_kbps": 0.9,
     }
+    MAX_STEP_RATIO_BY_METRIC = {
+        "fps": (0.14, 0.22),
+        "cpu_percent": (0.28, 0.55),
+        "power_w": (0.35, 0.55),
+        "rx_kbps": (0.75, 1.2),
+        "tx_kbps": (0.75, 1.2),
+    }
 
     def __init__(self) -> None:
         self._values: dict[str, float] = {}
@@ -436,9 +562,19 @@ class MetricStabilizer:
         if delta_ratio > 0.35:
             keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
             blended = blended * (1.0 - keep) + value * keep
+        blended = self._limit_display_step(metric, previous, blended)
         self._values[metric] = blended
         self._timestamps[metric] = timestamp
         return max(blended, 0.0)
+
+    def _limit_display_step(self, metric: str, previous: float, value: float) -> float:
+        limits = self.MAX_STEP_RATIO_BY_METRIC.get(metric)
+        if not limits or previous <= 0 or value <= 0:
+            return value
+        down_ratio, up_ratio = limits
+        lower = previous * max(0.0, 1.0 - down_ratio)
+        upper = previous * (1.0 + up_ratio)
+        return min(max(value, lower), upper)
 
 
 class WeakNetworkProxy:
@@ -547,6 +683,16 @@ class WeakNetworkProxy:
                 return
             method = parts[0].upper()
             target = parts[1]
+            if self._is_health_check_request(header):
+                client.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/plain; charset=utf-8\r\n"
+                    b"Content-Length: 16\r\n"
+                    b"Connection: close\r\n"
+                    b"\r\n"
+                    b"mobileperflab-ok"
+                )
+                return
             if self._should_drop_connection():
                 self.log_callback(f"弱网丢弃连接：{address[0]} -> {target}")
                 return
@@ -577,6 +723,15 @@ class WeakNetworkProxy:
     def _short_error(text: str) -> str:
         text = text.strip().replace("\n", " ")
         return text[:120] if text else "未知错误"
+
+    @staticmethod
+    def _is_health_check_request(header: bytes) -> bool:
+        first_line = header.split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+        parts = first_line.split()
+        if len(parts) < 2:
+            return False
+        method, target = parts[0].upper(), parts[1]
+        return method == "GET" and target.startswith("/__mobileperflab_health")
 
     @staticmethod
     def _recv_header(sock: socket.socket) -> bytes:
@@ -803,6 +958,33 @@ class AndroidAdapter(BaseAdapter):
 
     def current_http_proxy(self, device: DeviceInfo) -> str:
         return self._shell(device.serial, "settings get global http_proxy", timeout=3.0).strip()
+
+    def probe_tcp_connectivity(self, device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+        safe_host = shlex.quote(host)
+        safe_port = int(port)
+        health_url = shlex.quote(f"http://{host}:{safe_port}/__mobileperflab_health")
+        tcp_probes = [
+            f"toybox nc -z -w 2 {safe_host} {safe_port}",
+            f"nc -z -w 2 {safe_host} {safe_port}",
+        ]
+        last_output = ""
+        for command in tcp_probes:
+            code, output = self._adb(device.serial, ["shell", command], timeout=4.0)
+            last_output = output or last_output
+            if code == 0:
+                return True, f"{host}:{safe_port}"
+        http_probes = [
+            f"curl -fsS --max-time 3 {health_url}",
+            f"toybox wget -T 3 -q -O - {health_url}",
+            f"wget -T 3 -q -O - {health_url}",
+        ]
+        for command in http_probes:
+            code, output = self._adb(device.serial, ["shell", command], timeout=5.0)
+            last_output = output or last_output
+            if code == 0 and "mobileperflab-ok" in output:
+                return True, f"{host}:{safe_port}"
+        detail = WeakNetworkProxy._short_error(last_output) if last_output else f"{host}:{safe_port} unreachable"
+        return False, detail
 
     def _shell(self, serial: str, command: str, timeout: float = 8.0) -> str:
         code, output = self._adb(serial, ["shell", command], timeout=timeout)
@@ -3153,6 +3335,18 @@ class SessionRecorder:
             for issue in quality.get("issues", [])
             if isinstance(issue, dict)
         ) or "<tr><td colspan='4'>未发现明显采集异常或兜底说明</td></tr>"
+        quality_intervals = quality_intervals_from_points(
+            [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
+        )
+        interval_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape('采集异常' if str(interval.get('quality')) == 'issue' else '设备级兜底')}</td>"
+            f"<td>{html.escape(format_report_seconds(float(interval.get('start', 0.0))))}</td>"
+            f"<td>{html.escape(format_report_seconds(float(interval.get('end', 0.0))))}</td>"
+            f"<td>{html.escape(format_report_seconds(max(0.0, float(interval.get('end', 0.0)) - float(interval.get('start', 0.0)))))}</td>"
+            "</tr>"
+            for interval in quality_intervals
+        ) or "<tr><td colspan='4'>未发现连续异常或兜底区间</td></tr>"
         chart_cards = "".join(
             f"<section class='chart-card' data-metric='{key}'><div class='chart-head'><div><h3>{title}</h3><p>{desc}</p></div><div class='chart-stat' id='stat-{key}'>--</div></div><div class='chart-scroll'><canvas id='chart-{key}'></canvas></div></section>"
             for key, title, desc in [
@@ -3249,12 +3443,15 @@ class SessionRecorder:
     <h2>采集质量</h2>
     <div class="quality-grid">__QUALITY_CARDS__</div>
     <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
+    <h2>异常区间</h2>
+    <table class="issue-table"><tr><th>类型</th><th>开始</th><th>结束</th><th>持续</th></tr>__INTERVAL_ROWS__</table>
     <h2>曲线</h2>
     <div class="hint">每张图使用独立单位和坐标轴；虚线为参考阈值，标记会显示为竖线。</div>
     <div class="legend" aria-label="曲线标识">
       <span class="legend-item"><span class="legend-dot"></span>正常样本</span>
       <span class="legend-item"><span class="legend-ring"></span>设备级网络兜底</span>
       <span class="legend-item"><span class="legend-triangle"></span>采集异常样本</span>
+      <span class="legend-item">浅橙/浅红背景表示连续兜底或异常区间</span>
     </div>
     <div class="chart-grid">__CHART_CARDS__</div>
     <h2>标记</h2>
@@ -3407,6 +3604,42 @@ class SessionRecorder:
       }
     }
 
+    function qualityIntervals(points) {
+      const intervals = [];
+      let active = null;
+      points
+        .map(point => ({ elapsed: Number(point.elapsed || 0), quality: sampleQualityTag(point) }))
+        .sort((left, right) => left.elapsed - right.elapsed)
+        .forEach(point => {
+          const tag = point.quality === 'issue' || point.quality === 'fallback' ? point.quality : 'ok';
+          if (tag === 'ok') {
+            if (active) intervals.push(active);
+            active = null;
+            return;
+          }
+          if (!active || active.quality !== tag) {
+            if (active) intervals.push(active);
+            active = { start: point.elapsed, end: point.elapsed, quality: tag };
+          } else {
+            active.end = point.elapsed;
+          }
+        });
+      if (active) intervals.push(active);
+      return intervals;
+    }
+
+    function drawQualityIntervals(ctx, intervals, xFor, pad, plotH, width) {
+      intervals.forEach(interval => {
+        const x1 = Math.max(pad.left, xFor(interval.start));
+        let x2 = Math.min(width - pad.right, xFor(interval.end));
+        if (x2 <= x1) x2 = Math.min(width - pad.right, x1 + 4);
+        ctx.save();
+        ctx.fillStyle = interval.quality === 'issue' ? 'rgba(239, 68, 68, 0.10)' : 'rgba(245, 158, 11, 0.14)';
+        ctx.fillRect(x1, pad.top, x2 - x1, plotH);
+        ctx.restore();
+      });
+    }
+
     function drawChart(config) {
       const canvas = document.getElementById(`chart-${config.key}`);
       if (!canvas) return;
@@ -3515,6 +3748,7 @@ class SessionRecorder:
         ctx.stroke();
         ctx.setLineDash([]);
       }
+      drawQualityIntervals(ctx, qualityIntervals(samples), xFor, pad, plotH, width);
 
       if (!values.length || values.every(value => value === 0)) {
         ctx.fillStyle = '#94a3b8';
@@ -3603,6 +3837,7 @@ class SessionRecorder:
             .replace("__SUMMARY_ROWS__", rows)
             .replace("__QUALITY_CARDS__", quality_cards)
             .replace("__ISSUE_ROWS__", issue_rows)
+            .replace("__INTERVAL_ROWS__", interval_rows)
             .replace("__CHART_CARDS__", chart_cards)
             .replace("__MARKER_ROWS__", marker_rows)
             .replace("__DATA__", data)
@@ -3797,14 +4032,26 @@ class GraphPanel(ttk.Frame):
         points: list[float] = []
         last_visible: tuple[float, float] | None = None
         quality_points: list[tuple[float, float, str]] = []
+        interval_points: list[tuple[float, str]] = []
         for elapsed, value, quality in visible_points:
             x = pad_left + ((elapsed - view_start) / view_seconds) * plot_w
             y = pad_top + plot_h - min(value / max_value, 1.0) * plot_h
             points.extend([x, y])
             if view_start <= elapsed <= view_end:
                 last_visible = (x, y)
+                interval_points.append((elapsed, quality))
                 if quality != "ok":
                     quality_points.append((x, y, quality))
+        for interval in quality_intervals_from_points(interval_points):
+            start = float(interval["start"])
+            end = float(interval["end"])
+            quality = str(interval["quality"])
+            x1 = pad_left + ((max(start, view_start) - view_start) / view_seconds) * plot_w
+            x2 = pad_left + ((min(end, view_end) - view_start) / view_seconds) * plot_w
+            if x2 <= x1:
+                x2 = min(width - pad_right, x1 + 3)
+            fill = "#FEE2E2" if quality == "issue" else "#FEF3C7"
+            canvas.create_rectangle(x1, pad_top, x2, pad_top + plot_h, fill=fill, outline="")
         shadow = points.copy()
         canvas.create_line(*shadow, fill="#DCEBFF", width=5, smooth=True)
         canvas.create_line(*points, fill=self.color, width=2.2, smooth=True)
@@ -3870,6 +4117,8 @@ class App:
         self.weak_down_var = tk.StringVar(value="512")
         self.weak_up_var = tk.StringVar(value="256")
         self.weak_status_var = tk.StringVar(value="弱网代理未启动")
+        self.weak_diagnostic_summary_var = tk.StringVar(value="弱网代理未就绪")
+        self.weak_diagnostic_row_vars: list[tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = []
         self.metric_health_vars: dict[str, tk.StringVar] = {}
 
         self._configure_styles()
@@ -4135,7 +4384,15 @@ class App:
         guide = ttk.Frame(content, style="Panel.TFrame", padding=(16, 14))
         guide.grid(row=0, column=1, sticky="nsew")
         guide.columnconfigure(0, weight=1)
-        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(guide, text="链路诊断", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(guide, textvariable=self.weak_diagnostic_summary_var, style="GraphValue.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(6, 0),
+        )
+        self._build_weak_diagnostic_rows(guide, row=2)
+        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=3, column=0, sticky="w", pady=(18, 0))
         text = (
             "1. 选择一台 Android 设备，并确认手机和电脑在同一网络。\n"
             "2. 选择弱网预设或手动配置参数。\n"
@@ -4153,7 +4410,7 @@ class App:
             font=("Helvetica", 12),
             borderwidth=0,
             justify="left",
-        ).grid(row=1, column=0, sticky="new", pady=(12, 0))
+        ).grid(row=4, column=0, sticky="new", pady=(12, 0))
         self.proxy_preview_text = tk.Text(
             guide,
             height=8,
@@ -4164,12 +4421,33 @@ class App:
             fg="#243044",
             font=("Menlo", 11),
         )
-        self.proxy_preview_text.grid(row=2, column=0, sticky="ew", pady=(16, 0))
+        self.proxy_preview_text.grid(row=5, column=0, sticky="ew", pady=(16, 0))
         self.proxy_preview_text.insert(
             "1.0",
             "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
         )
         self.proxy_preview_text.configure(state="disabled")
+        self._refresh_weak_diagnostics()
+
+    def _build_weak_diagnostic_rows(self, master: tk.Widget, row: int) -> None:
+        table = ttk.Frame(master, style="Panel.TFrame")
+        table.grid(row=row, column=0, sticky="ew", pady=(10, 0))
+        table.columnconfigure(2, weight=1)
+        self.weak_diagnostic_row_vars = []
+        for index in range(4):
+            name_var = tk.StringVar(value="-")
+            state_var = tk.StringVar(value="-")
+            detail_var = tk.StringVar(value="-")
+            self.weak_diagnostic_row_vars.append((name_var, state_var, detail_var))
+            ttk.Label(table, textvariable=name_var, style="Muted.TLabel").grid(row=index, column=0, sticky="w", pady=(4, 0))
+            ttk.Label(table, textvariable=state_var, style="Quality.TLabel").grid(row=index, column=1, sticky="w", padx=(14, 0), pady=(4, 0))
+            ttk.Label(table, textvariable=detail_var, style="Muted.TLabel", wraplength=520).grid(
+                row=index,
+                column=2,
+                sticky="ew",
+                padx=(14, 0),
+                pady=(4, 0),
+            )
 
     def _build_dashboard(self, master: tk.Widget) -> None:
         master.columnconfigure(0, weight=1)
@@ -4484,6 +4762,7 @@ class App:
             return
         self.weak_status_var.set(f"代理运行中：{self.weak_proxy.local_endpoint()}")
         self._refresh_proxy_preview()
+        self._refresh_weak_diagnostics()
         self.append_log(
             f"弱网配置：延迟 {latency}ms，抖动 {jitter}ms，丢包 {loss:g}%，"
             f"下行 {down:g}KB/s，上行 {up:g}KB/s。"
@@ -4493,6 +4772,7 @@ class App:
         self.weak_proxy.stop()
         self.weak_status_var.set("弱网代理未启动")
         self._refresh_proxy_preview()
+        self._refresh_weak_diagnostics()
 
     def _refresh_proxy_preview(self) -> None:
         if not hasattr(self, "proxy_preview_text"):
@@ -4508,6 +4788,48 @@ class App:
         self.proxy_preview_text.delete("1.0", tk.END)
         self.proxy_preview_text.insert("1.0", text)
         self.proxy_preview_text.configure(state="disabled")
+
+    def _refresh_weak_diagnostics(
+        self,
+        current_proxy: str | None = None,
+        probe_connectivity: bool = False,
+    ) -> None:
+        if not hasattr(self, "weak_diagnostic_summary_var"):
+            return
+        device = self.selected_device if self.selected_device and self.selected_device.platform == "Android" else None
+        endpoint = self.weak_proxy.local_endpoint()
+        if current_proxy is None and device:
+            current_proxy = self.android.current_http_proxy(device)
+        proxy_reachable: bool | None = None
+        if probe_connectivity and device and self.weak_proxy.is_running():
+            host, port_text = endpoint.rsplit(":", 1)
+            try:
+                proxy_reachable, detail = self.android.probe_tcp_connectivity(device, host, int(port_text))
+            except Exception as exc:
+                proxy_reachable = False
+                detail = str(exc)
+            self.append_log(
+                f"Android 到弱网代理端口{'可达' if proxy_reachable else '不可达'}：{detail}"
+            )
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=self.weak_proxy.is_running(),
+            endpoint=endpoint,
+            device=device,
+            current_proxy=current_proxy or "",
+            proxy_reachable=proxy_reachable,
+        )
+        self.weak_diagnostic_summary_var.set(diagnostics.summary)
+        for index, variables in enumerate(self.weak_diagnostic_row_vars):
+            name_var, state_var, detail_var = variables
+            if index < len(diagnostics.rows):
+                name, state, detail = diagnostics.rows[index]
+                name_var.set(name)
+                state_var.set(state)
+                detail_var.set(detail)
+            else:
+                name_var.set("-")
+                state_var.set("-")
+                detail_var.set("-")
 
     def _selected_android_device(self) -> DeviceInfo | None:
         device = self.selected_device
@@ -4525,13 +4847,23 @@ class App:
         host, port_text = self.weak_proxy.local_endpoint().rsplit(":", 1)
         ok, detail = self.android.set_http_proxy(device, host, int(port_text))
         if ok:
-            self.append_log(f"已给 Android 设备设置弱网代理：{detail}")
-            self.weak_registry.mark_applied(device, detail)
-            self.weak_status_var.set(f"已应用到 {device.name}：{detail}")
+            expected_proxy = detail or f"{host}:{port_text}"
+            current_proxy = self.android.current_http_proxy(device)
+            verification = verify_android_proxy_state(expected_proxy, current_proxy)
+            self.append_log(verification.log_text)
+            if verification.confirmed:
+                self.append_log(f"已给 Android 设备设置弱网代理：{expected_proxy}")
+                self.weak_registry.mark_applied(device, expected_proxy)
+            else:
+                self.weak_registry.mark_cleared(device)
+                messagebox.showwarning(APP_NAME, verification.status_text)
+            self.weak_status_var.set(f"{device.name}：{verification.status_text}")
+            self._refresh_weak_diagnostics(current_proxy, probe_connectivity=verification.confirmed)
             if hasattr(self, "workspace_tabs"):
                 self.workspace_tabs.select(self.network_tab)
         else:
             messagebox.showerror(APP_NAME, f"设置 Android 代理失败：{detail}")
+            self._refresh_weak_diagnostics()
 
     def clear_android_proxy(self) -> None:
         device = self._selected_android_device()
@@ -4542,20 +4874,24 @@ class App:
             self.append_log(f"已清除 Android 设备代理：{device.name}")
             self.weak_registry.mark_cleared(device)
             self.weak_status_var.set("已清除 Android 代理")
+            self._refresh_weak_diagnostics("")
         else:
             messagebox.showwarning(APP_NAME, f"清除 Android 代理可能未完全成功：{detail}")
+            self._refresh_weak_diagnostics()
 
     def refresh_android_proxy_status(self) -> None:
         device = self._selected_android_device()
         if not device:
             return
-        proxy = self.android.current_http_proxy(device)
-        if proxy and proxy not in ("null", ":0"):
+        raw_proxy = self.android.current_http_proxy(device)
+        proxy = normalize_android_proxy_value(raw_proxy)
+        if proxy:
             self.weak_status_var.set(f"{device.name} 当前代理：{proxy}")
             self.append_log(f"Android 当前代理：{proxy}")
         else:
             self.weak_status_var.set(f"{device.name} 当前未设置系统代理")
             self.append_log("Android 当前未设置系统代理。")
+        self._refresh_weak_diagnostics(raw_proxy, probe_connectivity=bool(proxy))
 
     def _cleanup_weak_proxy_devices(self) -> None:
         cleared = self.weak_registry.cleanup(self.android)
@@ -4623,6 +4959,7 @@ class App:
                 self.app_hint_var.set("该 iOS 设备当前离线或不可连接，请解锁设备、信任电脑并确认 USB/网络连接。")
             else:
                 self.app_hint_var.set("iOS 请填写 Bundle ID；电量/温度可直接采集，CPU/内存需要启动 iOS 采集服务。")
+        self._refresh_weak_diagnostics()
 
     def _on_app_selected(self, _event: tk.Event | None = None) -> None:
         selection = self.app_list.curselection()

@@ -1,6 +1,13 @@
 import unittest
 
-from mobileperflab import LiveQualityTracker, MetricHealthAnalyzer, MetricStabilizer, PerfSample, sample_quality_tag
+from mobileperflab import (
+    LiveQualityTracker,
+    MetricHealthAnalyzer,
+    MetricStabilizer,
+    PerfSample,
+    quality_intervals_from_points,
+    sample_quality_tag,
+)
 
 
 class MetricStabilizerTest(unittest.TestCase):
@@ -29,6 +36,24 @@ class MetricStabilizerTest(unittest.TestCase):
         display = stabilizer.smooth_sample(PerfSample(timestamp=12.0, elapsed=12.0, fps=0.0))
 
         self.assertEqual(display.fps, 0.0)
+
+    def test_dampens_single_frame_fps_dip_for_low_end_device_display(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=58.0))
+        raw_dip = PerfSample(timestamp=2.0, elapsed=2.0, fps=20.0)
+
+        display = stabilizer.smooth_sample(raw_dip)
+
+        self.assertEqual(raw_dip.fps, 20.0)
+        self.assertGreater(display.fps, 42.0)
+
+    def test_dampens_single_sample_cpu_spike_for_display(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, cpu_percent=18.0))
+
+        display = stabilizer.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, cpu_percent=88.0))
+
+        self.assertLess(display.cpu_percent, 55.0)
 
 
 class MetricHealthAnalyzerTest(unittest.TestCase):
@@ -117,6 +142,29 @@ class SampleQualityTagTest(unittest.TestCase):
             "issue",
         )
         self.assertEqual(sample_quality_tag(PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)), "ok")
+
+
+class QualityIntervalsTest(unittest.TestCase):
+    def test_groups_contiguous_non_ok_points_into_intervals(self) -> None:
+        intervals = quality_intervals_from_points(
+            [
+                (0.0, "ok"),
+                (1.0, "issue"),
+                (2.0, "issue"),
+                (3.0, "ok"),
+                (4.0, "fallback"),
+                (5.0, "fallback"),
+                (6.0, "ok"),
+            ]
+        )
+
+        self.assertEqual(
+            intervals,
+            [
+                {"start": 1.0, "end": 2.0, "quality": "issue"},
+                {"start": 4.0, "end": 5.0, "quality": "fallback"},
+            ],
+        )
 
 
 if __name__ == "__main__":
