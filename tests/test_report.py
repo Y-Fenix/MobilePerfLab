@@ -368,6 +368,17 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(quality["cadence"]["slow_intervals"], 0)
         self.assertEqual(quality["display_strategy"]["mode"], "standard")
 
+    def test_quality_summary_recommends_next_interval_from_current_interval(self) -> None:
+        recorder = SessionRecorder(expected_interval=1.5)
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        recorder.append(PerfSample(timestamp=3.2, elapsed=3.2, fps=50.0))
+        recorder.append(PerfSample(timestamp=5.4, elapsed=5.4, fps=24.0, note="Android FPS 当前无帧增量"))
+
+        quality = recorder.quality_summary()
+
+        self.assertIn("采样间隔调到 2.0s", quality["recent_window"]["action"])
+
     def test_quality_summary_includes_recent_window_health(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
@@ -384,12 +395,12 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["recent_window"]["state"], "bad")
         self.assertEqual(payload["quality"]["recent_window"]["label"], "窗口：节拍失稳")
         self.assertEqual(payload["quality"]["recent_window"]["trend_source"], "collection")
-        self.assertIn("采样间隔调到 1.5s/2s", payload["quality"]["recent_window"]["action"])
+        self.assertIn("采样间隔调到 1.5s", payload["quality"]["recent_window"]["action"])
         self.assertIn("最近窗口", html_text)
         self.assertIn("窗口：节拍失稳", html_text)
         self.assertIn("趋势：采集波动", html_text)
         self.assertIn("采样建议", html_text)
-        self.assertIn("采样间隔调到 1.5s/2s", html_text)
+        self.assertIn("采样间隔调到 1.5s", html_text)
 
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()

@@ -388,7 +388,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
 
         self.assertIn("趋势：性能波动", text)
 
-    def test_live_sampling_action_recommends_interval_for_low_end_collection_jitter(self) -> None:
+    def test_live_sampling_action_recommends_next_interval_for_low_end_collection_jitter(self) -> None:
         recent_window = {
             "state": "bad",
             "label": "窗口：节拍失稳",
@@ -398,8 +398,12 @@ class LiveQualityTrackerTest(unittest.TestCase):
         }
 
         self.assertEqual(
-            live_sampling_action_label(recent_window, low_end_display_mode=True),
-            "建议：采样间隔调到 1.5s/2s，优先看稳定展示",
+            live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.0),
+            "建议：采样间隔调到 1.5s，优先看稳定展示",
+        )
+        self.assertEqual(
+            live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.5),
+            "建议：采样间隔调到 2.0s，优先看稳定展示",
         )
 
     def test_status_text_includes_live_sampling_action(self) -> None:
@@ -409,7 +413,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, note="Android FPS 当前无帧增量"))
         text = tracker.update(PerfSample(timestamp=6.5, elapsed=6.5, fps=52.0))
 
-        self.assertIn("建议：采样间隔调到 1.5s/2s", text)
+        self.assertIn("建议：采样间隔调到 1.5s", text)
 
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)

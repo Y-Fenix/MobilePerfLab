@@ -1079,7 +1079,17 @@ def build_recent_window_health(
     }
 
 
-def live_sampling_action_label(recent_window: dict[str, object], low_end_display_mode: bool = False) -> str:
+def next_low_end_interval_label(expected_interval: float) -> str:
+    current = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
+    target = 1.5 if current < 1.5 else 2.0
+    return f"{target:.1f}s"
+
+
+def live_sampling_action_label(
+    recent_window: dict[str, object],
+    low_end_display_mode: bool = False,
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> str:
     state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
     trend_source = str(recent_window.get("trend_source", "waiting") if isinstance(recent_window, dict) else "waiting")
     slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
@@ -1088,7 +1098,7 @@ def live_sampling_action_label(recent_window: dict[str, object], low_end_display
     if state == "waiting":
         return "建议：等待更多样本"
     if trend_source == "collection" or slow_samples or issue_samples or low_end_display_mode:
-        return "建议：采样间隔调到 1.5s/2s，优先看稳定展示"
+        return f"建议：采样间隔调到 {next_low_end_interval_label(expected_interval)}，优先看稳定展示"
     if fallback_samples:
         return "建议：先确认网络来源"
     if trend_source == "performance":
@@ -1746,7 +1756,7 @@ class LiveQualityTracker:
         metric_summary = live_metric_availability_summary(self.last_metric_health)
         display_label = "低端机保守" if self.low_end_display_mode() else "标准稳定"
         recent_window = self.recent_window_health()
-        sampling_action = live_sampling_action_label(recent_window, self.low_end_display_mode())
+        sampling_action = live_sampling_action_label(recent_window, self.low_end_display_mode(), self.expected_interval)
         return (
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
@@ -5255,6 +5265,7 @@ class SessionRecorder:
                 quality["recent_window"]["action"] = live_sampling_action_label(
                     quality["recent_window"],
                     isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
+                    self.expected_interval,
                 )
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
@@ -5353,6 +5364,7 @@ class SessionRecorder:
             quality["recent_window"]["action"] = live_sampling_action_label(
                 quality["recent_window"],
                 isinstance(quality["display_strategy"], dict) and quality["display_strategy"].get("mode") == "conservative",
+                self.expected_interval,
             )
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
@@ -5367,7 +5379,7 @@ class SessionRecorder:
         if not isinstance(recent_window, dict) or not isinstance(recommendations, list):
             return
         action = str(recent_window.get("action", ""))
-        if "采样间隔调到 1.5s/2s" not in action:
+        if "采样间隔调到" not in action:
             return
         if any(isinstance(item, dict) and item.get("key") == "sampling_action" for item in recommendations):
             return
@@ -5377,7 +5389,7 @@ class SessionRecorder:
                 "severity": "warning",
                 "title": "优化低端机采样",
                 "reason": action,
-                "action": "把采样间隔调到 1.5s 或 2s，优先看稳定展示曲线；复测后再用原始曲线确认真实性能波动。",
+                "action": f"{action.replace('建议：', '')}曲线；复测后再用原始曲线确认真实性能波动。",
             }
         )
 
@@ -5438,7 +5450,7 @@ class SessionRecorder:
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
         recent_window = quality.get("recent_window", {})
         if isinstance(recent_window, dict):
-            recent_window["action"] = live_sampling_action_label(recent_window, conservative_display)
+            recent_window["action"] = live_sampling_action_label(recent_window, conservative_display, self.expected_interval)
         self._add_sampling_action_recommendation(quality)
         display_samples = build_display_samples(self.samples, conservative=conservative_display)
         payload = {
