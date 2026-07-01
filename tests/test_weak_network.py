@@ -10,6 +10,7 @@ from mobileperflab import (
     WeakNetworkProxy,
     WeakProxyDeviceRegistry,
     build_weak_network_diagnostics,
+    build_weak_network_effectiveness,
     build_weak_network_report_payload,
     format_weak_network_config,
     format_live_proxy_summary,
@@ -199,6 +200,72 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(diagnostics.overall_state, "warning")
         self.assertEqual(diagnostics.summary, "Android 已写入代理，但端口不可达")
+
+    def test_scores_weak_network_effectiveness_when_proxy_hits_real_traffic(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="hit",
+            diagnostics=diagnostics,
+            app_rx_kbps=12.0,
+            app_tx_kbps=3.0,
+        )
+
+        self.assertEqual(result["state"], "effective")
+        self.assertEqual(result["label"], "弱网已生效")
+        self.assertEqual(result["score"], 100)
+        self.assertIn("代理已捕获真实流量", result["detail"])
+
+    def test_scores_possible_proxy_bypass_when_app_has_traffic_but_proxy_waits(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+            app_rx_kbps=20.0,
+            app_tx_kbps=0.0,
+        )
+
+        self.assertEqual(result["state"], "bypass")
+        self.assertEqual(result["label"], "疑似绕过代理")
+        self.assertLess(result["score"], 60)
+        self.assertIn("App 有流量但代理未捕获", result["detail"])
+        self.assertIn("QUIC/UDP", result["action"])
+
+    def test_scores_unreachable_proxy_before_traffic_checks(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=False,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+
+        self.assertEqual(result["state"], "unreachable")
+        self.assertEqual(result["label"], "端口不可达")
+        self.assertIn("手机无法连接本机代理端口", result["detail"])
         self.assertEqual(diagnostics.rows[-1], ("端口连通", "不可达", "检查手机和电脑是否同一网络/防火墙"))
 
 
@@ -375,6 +442,7 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         )
 
         self.assertIn("疑似绕过系统代理", text)
+        self.assertIn("疑似绕过代理", text)
         self.assertIn("App ↑↓有流量", text)
 
     def test_formats_running_proxy_with_connections_as_traffic_hit(self) -> None:
@@ -436,12 +504,15 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["history"][1]["elapsed"], 1.5)
         self.assertIn("↓8.0 KB/s", payload["summary"])
         self.assertEqual(payload["traffic_state"], "hit")
+        self.assertEqual(payload["effectiveness"]["state"], "effective")
+        self.assertEqual(payload["effectiveness"]["label"], "弱网已生效")
 
     def test_builds_report_payload_with_waiting_proxy_traffic_state(self) -> None:
         payload = build_weak_network_report_payload(True, "127.0.0.1:18888", ProxyTrafficSnapshot(), [])
 
         self.assertEqual(payload["traffic_state"], "waiting")
         self.assertIn("等待目标流量", payload["summary"])
+        self.assertEqual(payload["effectiveness"]["state"], "waiting")
 
     def test_builds_report_payload_with_dropped_proxy_traffic_state(self) -> None:
         payload = build_weak_network_report_payload(

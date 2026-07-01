@@ -542,6 +542,13 @@ class ReportExportTest(unittest.TestCase):
                 {"elapsed": 1.0, "down_kbps": 12.3, "up_kbps": 4.5},
                 {"elapsed": 2.0, "down_kbps": 18.0, "up_kbps": 5.8},
             ],
+            "effectiveness": {
+                "state": "effective",
+                "label": "弱网已生效",
+                "score": 100,
+                "detail": "代理已捕获真实流量，弱网规则有命中证据。",
+                "action": "继续执行业务场景并观察代理真实流量曲线。",
+            },
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -562,6 +569,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("丢包 2.0%", html_text)
         self.assertIn("流量状态", html_text)
         self.assertIn("已命中目标流量", html_text)
+        self.assertIn("弱网命中结论", html_text)
+        self.assertIn("弱网已生效", html_text)
         self.assertIn("设备代理", html_text)
         self.assertIn("端口连通", html_text)
         self.assertIn("Android 可连接本机代理端口", html_text)

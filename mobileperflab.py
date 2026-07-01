@@ -463,6 +463,14 @@ def format_live_proxy_summary(
         return "弱网 OFF · 未启动"
     values = format_proxy_traffic_snapshot(snapshot)
     state, traffic_label = proxy_traffic_state(running, snapshot)
+    effectiveness = build_weak_network_effectiveness(
+        running,
+        state,
+        diagnostics=None,
+        app_rx_kbps=app_rx_kbps,
+        app_tx_kbps=app_tx_kbps,
+    )
+    effectiveness_label = str(effectiveness.get("label", ""))
     if state == "waiting":
         traffic_label = f"{traffic_label}/未捕获请求"
         if app_rx_kbps > 0.0 or app_tx_kbps > 0.0:
@@ -472,6 +480,7 @@ def format_live_proxy_summary(
     app_traffic = f" · App ↑↓有流量 {app_rx_kbps:.1f}/{app_tx_kbps:.1f} KB/s" if state == "waiting" and (app_rx_kbps > 0.0 or app_tx_kbps > 0.0) else ""
     return (
         f"弱网 ON · {endpoint} · "
+        f"{effectiveness_label} · "
         f"{traffic_label} · "
         f"↓{values['down_rate']} ↑{values['up_rate']} · "
         f"{snapshot.active_connections}/{snapshot.total_connections} 连接 · "
@@ -488,6 +497,85 @@ def weak_network_diagnostics_payload(diagnostics: WeakNetworkDiagnostics) -> dic
             {"name": name, "state": state, "detail": detail}
             for name, state, detail in diagnostics.rows
         ],
+    }
+
+
+def build_weak_network_effectiveness(
+    running: bool,
+    traffic_state: str,
+    diagnostics: WeakNetworkDiagnostics | dict[str, object] | None = None,
+    app_rx_kbps: float = 0.0,
+    app_tx_kbps: float = 0.0,
+) -> dict[str, object]:
+    app_has_traffic = max(float(app_rx_kbps or 0.0), 0.0) > 0.0 or max(float(app_tx_kbps or 0.0), 0.0) > 0.0
+    diagnostic_summary = ""
+    diagnostic_rows: list[tuple[str, str, str]] = []
+    if isinstance(diagnostics, WeakNetworkDiagnostics):
+        diagnostic_summary = diagnostics.summary
+        diagnostic_rows = list(diagnostics.rows)
+    elif isinstance(diagnostics, dict):
+        diagnostic_summary = str(diagnostics.get("summary", ""))
+        raw_rows = diagnostics.get("rows", [])
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if isinstance(row, dict):
+                    diagnostic_rows.append((str(row.get("name", "")), str(row.get("state", "")), str(row.get("detail", ""))))
+    port_unreachable = "端口不可达" in diagnostic_summary or any(state == "不可达" for _name, state, _detail in diagnostic_rows)
+    proxy_unconfirmed = "代理未确认" in diagnostic_summary or any(name == "设备代理" and state in {"不一致", "未检查"} for name, state, _detail in diagnostic_rows)
+    if not running or traffic_state == "off":
+        return {
+            "state": "off",
+            "label": "弱网未启动",
+            "score": 0,
+            "detail": "弱网代理未启动，当前没有弱网生效证据。",
+            "action": "点击启动代理，并应用到 Android 后刷新状态。",
+        }
+    if port_unreachable:
+        return {
+            "state": "unreachable",
+            "label": "端口不可达",
+            "score": 25,
+            "detail": "Android 代理已配置但手机无法连接本机代理端口。",
+            "action": "确认手机和电脑在同一网络，检查防火墙、USB 网络或热点隔离。",
+        }
+    if proxy_unconfirmed:
+        return {
+            "state": "unconfirmed",
+            "label": "代理未确认",
+            "score": 35,
+            "detail": "Android 当前代理未确认等于本机弱网代理。",
+            "action": "点击应用到 Android，再刷新状态确认设备代理读回一致。",
+        }
+    if traffic_state == "hit":
+        return {
+            "state": "effective",
+            "label": "弱网已生效",
+            "score": 100,
+            "detail": "代理已捕获真实流量，弱网规则有命中证据。",
+            "action": "继续执行业务场景并观察代理真实流量曲线。",
+        }
+    if traffic_state == "dropped":
+        return {
+            "state": "dropped",
+            "label": "弱网已丢弃",
+            "score": 80,
+            "detail": "代理记录到丢弃连接，丢包规则已有命中迹象。",
+            "action": "结合业务日志确认这些丢弃连接属于目标请求。",
+        }
+    if traffic_state == "waiting" and app_has_traffic:
+        return {
+            "state": "bypass",
+            "label": "疑似绕过代理",
+            "score": 45,
+            "detail": "App 有流量但代理未捕获请求，弱网可能没有命中目标链路。",
+            "action": "检查 QUIC/UDP、自建网络栈、代理白名单、证书或系统代理配置。",
+        }
+    return {
+        "state": "waiting",
+        "label": "等待目标流量",
+        "score": 60,
+        "detail": "弱网链路已就绪，但代理还没有捕获目标请求。",
+        "action": "在目标 App 内触发明确 HTTP/HTTPS 请求，再观察代理真实流量。",
     }
 
 
@@ -522,11 +610,17 @@ def build_weak_network_report_payload(
                 }
             )
     traffic_state, traffic_state_label = proxy_traffic_state(running, snapshot)
+    effectiveness = build_weak_network_effectiveness(
+        running,
+        traffic_state,
+        diagnostics,
+    )
     payload: dict[str, object] = {
         "running": running,
         "endpoint": endpoint,
         "traffic_state": traffic_state,
         "traffic_state_label": traffic_state_label,
+        "effectiveness": effectiveness,
         "risk_message": weak_network_risk_message(traffic_state),
         "summary": format_live_proxy_summary(running, endpoint, snapshot),
         "config": dict(config or {}),
@@ -550,6 +644,14 @@ def enrich_weak_network_with_app_traffic(
     app_tx_peak = max((float(sample.tx_kbps or 0.0) for sample in samples), default=0.0)
     app_has_traffic = app_rx_peak > 0.0 or app_tx_peak > 0.0
     payload["app_network_peak"] = {"rx_kbps": round(app_rx_peak, 3), "tx_kbps": round(app_tx_peak, 3)}
+    diagnostics = payload.get("diagnostics")
+    payload["effectiveness"] = build_weak_network_effectiveness(
+        bool(payload.get("running", False)),
+        traffic_state,
+        diagnostics if isinstance(diagnostics, dict) else None,
+        app_rx_kbps=app_rx_peak,
+        app_tx_kbps=app_tx_peak,
+    )
     if traffic_state == "waiting" and app_has_traffic:
         bypass_risk = (
             "报告期间 App 上下行已有流量，但弱网代理没有捕获请求，疑似绕过系统代理；"
@@ -5434,6 +5536,9 @@ class SessionRecorder:
             weak_config = weak_network.get("config", {})
             if not isinstance(weak_config, dict):
                 weak_config = {}
+            weak_effectiveness = weak_network.get("effectiveness", {})
+            if not isinstance(weak_effectiveness, dict):
+                weak_effectiveness = {}
             weak_diagnostics = weak_network.get("diagnostics", {})
             if not isinstance(weak_diagnostics, dict):
                 weak_diagnostics = {}
@@ -5460,6 +5565,10 @@ class SessionRecorder:
                     "<h2>弱网真实流量</h2>",
                     "<table><tr><th>项目</th><th>值</th></tr>",
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
+                    f"<tr><th>弱网命中结论</th><td>{html.escape(str(weak_effectiveness.get('label', '未知')))}</td></tr>",
+                    f"<tr><th>命中评分</th><td>{html.escape(str(weak_effectiveness.get('score', '-')))} / 100</td></tr>",
+                    f"<tr><th>结论说明</th><td>{html.escape(str(weak_effectiveness.get('detail', '')))}</td></tr>",
+                    f"<tr><th>下一步</th><td>{html.escape(str(weak_effectiveness.get('action', '')))}</td></tr>",
                     f"<tr><th>弱网配置</th><td>{html.escape(format_weak_network_config(weak_config))}</td></tr>",
                     f"<tr><th>流量状态</th><td>{html.escape(str(weak_network.get('traffic_state_label', '未知')))}</td></tr>",
                     f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",
