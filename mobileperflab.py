@@ -529,6 +529,28 @@ def build_weak_network_report_payload(
     return payload
 
 
+def enrich_weak_network_with_app_traffic(
+    weak_network: dict[str, object],
+    samples: list[PerfSample],
+) -> dict[str, object]:
+    payload = dict(weak_network)
+    traffic_state = str(payload.get("traffic_state", "off"))
+    current_risk = str(payload.get("risk_message", "") or weak_network_risk_message(traffic_state))
+    app_rx_peak = max((float(sample.rx_kbps or 0.0) for sample in samples), default=0.0)
+    app_tx_peak = max((float(sample.tx_kbps or 0.0) for sample in samples), default=0.0)
+    app_has_traffic = app_rx_peak > 0.0 or app_tx_peak > 0.0
+    payload["app_network_peak"] = {"rx_kbps": round(app_rx_peak, 3), "tx_kbps": round(app_tx_peak, 3)}
+    if traffic_state == "waiting" and app_has_traffic:
+        bypass_risk = (
+            "报告期间 App 上下行已有流量，但弱网代理没有捕获请求，疑似绕过系统代理；"
+            "请检查 QUIC/UDP、自建网络栈、代理白名单或证书/代理配置。"
+        )
+        payload["risk_message"] = f"{current_risk} {bypass_risk}".strip() if current_risk else bypass_risk
+    else:
+        payload["risk_message"] = current_risk
+    return payload
+
+
 def format_weak_network_config(config: dict[str, object]) -> str:
     if not config:
         return "未记录"
@@ -4995,8 +5017,13 @@ class SessionRecorder:
                 row = asdict(sample)
                 row["timestamp"] = datetime.fromtimestamp(sample.timestamp).isoformat(timespec="seconds")
                 writer.writerow(row)
+        weak_network_payload = (
+            enrich_weak_network_with_app_traffic(weak_network, self.samples)
+            if weak_network is not None
+            else None
+        )
         quality = self.quality_summary()
-        quality["validation_checklist"] = build_validation_checklist(self.samples, quality, weak_network)
+        quality["validation_checklist"] = build_validation_checklist(self.samples, quality, weak_network_payload)
         collection_diagnostics_payload = (
             android_collection_diagnostics_payload(self.collection_diagnostics)
             if self.collection_diagnostics is not None
@@ -5004,7 +5031,7 @@ class SessionRecorder:
         )
         quality["recommendations"] = build_quality_recommendations(
             quality["validation_checklist"],
-            weak_network,
+            weak_network_payload,
             collection_diagnostics_payload,
         )
         quality["metric_availability"] = build_metric_availability(
@@ -5027,8 +5054,8 @@ class SessionRecorder:
         }
         if collection_diagnostics_payload is not None:
             payload["collection_diagnostics"] = collection_diagnostics_payload
-        if weak_network is not None:
-            payload["weak_network"] = weak_network
+        if weak_network_payload is not None:
+            payload["weak_network"] = weak_network_payload
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         html_path.write_text(self._render_html(payload), encoding="utf-8")
         return csv_path, json_path, html_path

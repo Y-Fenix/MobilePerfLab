@@ -525,6 +525,46 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("等待目标流量", html_text)
         self.assertIn("报告导出时弱网代理没有捕获到目标请求", html_text)
 
+    def test_report_flags_possible_proxy_bypass_when_app_has_network_but_proxy_waits(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=52.0, cpu_percent=24.0, memory_mb=520.0))
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=53.0,
+                cpu_percent=25.0,
+                memory_mb=522.0,
+                rx_kbps=128.0,
+                tx_kbps=16.0,
+            )
+        )
+
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "waiting",
+            "traffic_state_label": "等待目标流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 等待目标流量 · ↓0.0 KB/s ↑0.0 KB/s · 0/0 连接 · 丢弃 0",
+            "config": {"profile": "弱网", "port": 18888},
+            "snapshot": {"down_kbps": 0.0, "up_kbps": 0.0, "total_connections": 0},
+            "snapshot_display": {},
+            "history": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+
+        self.assertIn("疑似绕过系统代理", payload["weak_network"]["risk_message"])
+        self.assertIn("App 上下行已有流量", recommendations["weak_network"]["reason"])
+        self.assertIn("QUIC/UDP", recommendations["weak_network"]["action"])
+        self.assertIn("疑似绕过系统代理", html_text)
+
     def test_export_bundle_includes_actionable_quality_recommendations(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
