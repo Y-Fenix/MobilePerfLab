@@ -1080,10 +1080,13 @@ def build_recent_window_health(
     }
 
 
-def next_low_end_interval_label(expected_interval: float) -> str:
+def recommended_sampling_interval(expected_interval: float) -> float:
     current = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
-    target = 1.5 if current < 1.5 else 2.0
-    return f"{target:.1f}s"
+    return 1.5 if current < 1.5 else 2.0
+
+
+def next_low_end_interval_label(expected_interval: float) -> str:
+    return f"{recommended_sampling_interval(expected_interval):.1f}s"
 
 
 def live_sampling_action_label(

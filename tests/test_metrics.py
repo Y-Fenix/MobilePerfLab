@@ -5,8 +5,10 @@ from mobileperflab import (
     MetricHealthAnalyzer,
     MetricStabilizer,
     PerfSample,
+    SAMPLING_INTERVAL_OPTIONS,
     build_recent_window_health,
     live_sampling_action_label,
+    recommended_sampling_interval,
     session_quality_gate,
     sampling_cadence_summary,
     append_sampling_latency_note,
@@ -405,6 +407,12 @@ class LiveQualityTrackerTest(unittest.TestCase):
             live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.5),
             "建议：采样间隔调到 2.0s，优先看稳定展示",
         )
+
+    def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
+        self.assertEqual(recommended_sampling_interval(1.0), 1.5)
+        self.assertEqual(recommended_sampling_interval(1.5), 2.0)
+        self.assertEqual(recommended_sampling_interval(2.0), 2.0)
+        self.assertIn(f"{recommended_sampling_interval(1.0):.1f}", SAMPLING_INTERVAL_OPTIONS)
 
     def test_status_text_includes_live_sampling_action(self) -> None:
         tracker = LiveQualityTracker()
