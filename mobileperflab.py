@@ -1737,7 +1737,7 @@ def build_display_samples(
     display_rows: list[dict[str, object]] = []
     quality_tags = sample_quality_tags_with_cadence(samples, expected_interval)
     for sample, quality_tag in zip(samples, quality_tags):
-        display = stabilizer.smooth_sample(sample, conservative=conservative)
+        display = stabilizer.smooth_sample(sample, conservative=conservative, quality_tag=quality_tag)
         row = asdict(display)
         row["qualityTag"] = quality_tag
         display_rows.append(row)
@@ -2114,7 +2114,7 @@ class MetricStabilizer:
         self._raw_values.clear()
         self._volatility.clear()
 
-    def smooth_sample(self, sample: PerfSample, conservative: bool = False) -> PerfSample:
+    def smooth_sample(self, sample: PerfSample, conservative: bool = False, quality_tag: str = "ok") -> PerfSample:
         payload = asdict(sample)
         for metric in self.ALPHA_BY_METRIC:
             payload[metric] = self._smooth(
@@ -2123,19 +2123,32 @@ class MetricStabilizer:
                 sample.timestamp,
                 sample.note,
                 conservative=conservative,
+                quality_tag=quality_tag,
             )
         return PerfSample(**payload)
 
-    def _smooth(self, metric: str, value: float, timestamp: float, note: str = "", conservative: bool = False) -> float:
+    def _smooth(
+        self,
+        metric: str,
+        value: float,
+        timestamp: float,
+        note: str = "",
+        conservative: bool = False,
+        quality_tag: str = "ok",
+    ) -> float:
         previous = self._values.get(metric)
         previous_timestamp = self._timestamps.get(metric, timestamp)
         elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
         historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
-            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(metric, note, conservative)
+            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(
+                metric, note, conservative, quality_tag
+            )
             if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
-                held = previous * self._quality_hold_decay(metric, note, conservative)
-                self._values[metric] = held
+                held = previous * self._quality_hold_decay(metric, note, conservative, quality_tag)
+                if not self._should_isolate_quality_sample(quality_tag):
+                    self._values[metric] = held
+                    self._timestamps[metric] = timestamp
                 self._remember_raw_volatility(metric, value)
                 return held
         if previous is None or previous <= 0 or value <= 0:
@@ -2144,17 +2157,18 @@ class MetricStabilizer:
             self._remember_raw_volatility(metric, value)
             return value
         alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
-        alpha *= self._quality_alpha_factor(metric, note, conservative)
+        alpha *= self._quality_alpha_factor(metric, note, conservative, quality_tag)
         alpha = self._time_adjusted_alpha(alpha, elapsed_delta)
         blended = previous + alpha * (value - previous)
         delta_ratio = abs(value - previous) / max(abs(previous), 1.0)
         if delta_ratio > 0.35:
             keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7) * self._conservative_spike_keep_factor(metric, conservative)
             blended = blended * (1.0 - keep) + value * keep
-        blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta, conservative)
+        blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta, conservative, quality_tag)
         blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility, conservative)
-        self._values[metric] = blended
-        self._timestamps[metric] = timestamp
+        if not self._should_isolate_quality_sample(quality_tag):
+            self._values[metric] = blended
+            self._timestamps[metric] = timestamp
         self._remember_raw_volatility(metric, value)
         return max(blended, 0.0)
 
@@ -2179,12 +2193,13 @@ class MetricStabilizer:
         note: str = "",
         elapsed_delta: float = 1.0,
         conservative: bool = False,
+        quality_tag: str = "ok",
     ) -> float:
         limits = self.MAX_STEP_RATIO_BY_METRIC.get(metric)
         if not limits or previous <= 0 or value <= 0:
             return value
         down_ratio, up_ratio = limits
-        factor = self._quality_step_factor(metric, note, conservative)
+        factor = self._quality_step_factor(metric, note, conservative, quality_tag)
         factor *= self._time_step_factor(elapsed_delta)
         down_ratio *= factor
         up_ratio *= factor
@@ -2229,9 +2244,14 @@ class MetricStabilizer:
         self._volatility[metric] = prior * 0.65 + change_ratio * 0.35
 
     @staticmethod
-    def _quality_weight(note: str) -> float:
+    def _quality_weight(note: str, quality_tag: str = "ok") -> float:
+        weight = 0.0
+        if quality_tag == "issue":
+            weight = 1.0
+        elif quality_tag == "fallback":
+            weight = 0.65
         if not note:
-            return 0.0
+            return weight
         tokens = (
             "采样耗时",
             "FPS 当前无帧增量",
@@ -2241,10 +2261,16 @@ class MetricStabilizer:
             "目标应用不在前台",
             "低端机",
         )
-        return min(sum(1 for token in tokens if token in note) / 3.0, 1.0)
+        return max(weight, min(sum(1 for token in tokens if token in note) / 3.0, 1.0))
 
-    def _quality_hold_extension(self, metric: str, note: str, conservative: bool = False) -> float:
-        weight = self._quality_weight(note)
+    @staticmethod
+    def _should_isolate_quality_sample(quality_tag: str) -> bool:
+        return quality_tag in {"issue", "fallback"}
+
+    def _quality_hold_extension(
+        self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok"
+    ) -> float:
+        weight = self._quality_weight(note, quality_tag)
         if conservative:
             weight = max(weight, 0.5)
         if weight <= 0:
@@ -2255,8 +2281,8 @@ class MetricStabilizer:
             return 2.0 * weight
         return 0.0
 
-    def _quality_hold_decay(self, metric: str, note: str, conservative: bool = False) -> float:
-        weight = self._quality_weight(note)
+    def _quality_hold_decay(self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok") -> float:
+        weight = self._quality_weight(note, quality_tag)
         if conservative:
             weight = max(weight, 0.5)
         if metric == "fps" and weight > 0:
@@ -2265,8 +2291,8 @@ class MetricStabilizer:
             return 0.86
         return 0.82
 
-    def _quality_alpha_factor(self, metric: str, note: str, conservative: bool = False) -> float:
-        weight = self._quality_weight(note)
+    def _quality_alpha_factor(self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok") -> float:
+        weight = self._quality_weight(note, quality_tag)
         if conservative:
             weight = max(weight, 0.5)
         if weight <= 0:
@@ -2277,8 +2303,8 @@ class MetricStabilizer:
             return 1.0 - 0.25 * weight
         return 1.0
 
-    def _quality_step_factor(self, metric: str, note: str, conservative: bool = False) -> float:
-        weight = self._quality_weight(note)
+    def _quality_step_factor(self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok") -> float:
+        weight = self._quality_weight(note, quality_tag)
         if conservative:
             weight = max(weight, 0.5)
         if weight <= 0:
@@ -8482,7 +8508,11 @@ class App:
         )
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()
-        display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample
+        display_sample = (
+            self.stabilizer.smooth_sample(sample, conservative=conservative_display, quality_tag=quality_tag)
+            if self.smoothing_var.get()
+            else sample
+        )
         self._refresh_quality_mode()
         for graph in self.graphs.values():
             graph.set_display_context(self.smoothing_var.get(), conservative_display)

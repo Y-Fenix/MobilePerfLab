@@ -375,6 +375,23 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["display_samples"][2]["qualityTag"], "issue")
         self.assertIn('"qualityTag": "issue"', html_text)
 
+    def test_export_bundle_uses_quality_tags_to_isolate_bad_display_samples(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=0.0, cpu_percent=92.0, memory_mb=521.0))
+        recorder.append(PerfSample(timestamp=3.8, elapsed=3.8, fps=58.0, cpu_percent=20.0, memory_mb=522.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, _html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["samples"][1]["fps"], 0.0)
+        self.assertEqual(payload["display_samples"][1]["qualityTag"], "issue")
+        self.assertEqual(payload["quality"]["display_strategy"]["mode"], "standard")
+        self.assertGreater(payload["display_samples"][1]["fps"], 50.0)
+        self.assertGreater(payload["display_samples"][2]["fps"], 55.0)
+
     def test_quality_summary_respects_custom_expected_interval_for_low_end_runs(self) -> None:
         recorder = SessionRecorder(expected_interval=2.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

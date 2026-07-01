@@ -140,6 +140,19 @@ class MetricStabilizerTest(unittest.TestCase):
         self.assertGreater(issue_display.fps, normal_display.fps + 2.0)
         self.assertLess(issue_display.cpu_percent, normal_display.cpu_percent - 2.0)
 
+    def test_quality_tag_isolates_single_bad_fps_sample_from_stable_display(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+
+        bad_display = stabilizer.smooth_sample(
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=0.0, note="Android FPS 当前无帧增量"),
+            quality_tag="issue",
+        )
+        recovered_display = stabilizer.smooth_sample(PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0), quality_tag="ok")
+
+        self.assertGreater(bad_display.fps, 50.0)
+        self.assertGreater(recovered_display.fps, 55.0)
+
     def test_low_end_quality_notes_reduce_display_oscillation_range(self) -> None:
         normal = MetricStabilizer()
         low_end = MetricStabilizer()
