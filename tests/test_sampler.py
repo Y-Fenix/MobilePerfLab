@@ -61,7 +61,7 @@ class SamplerThreadTest(unittest.TestCase):
 
         self.assertEqual(sampler.interval, 1.5)
 
-    def test_sampler_catches_up_to_fixed_cadence_after_slow_low_end_sample(self) -> None:
+    def test_sampler_resets_cadence_after_slow_low_end_sample(self) -> None:
         clock = FakeClock()
         adapter = ScriptedAdapter(clock, [0.2, 1.6, 0.2])
         sampler = SamplerThread(adapter, DeviceInfo("Android", "serial", "LowEnd", "", "", "ready"), "com.example", 1.0, queue.Queue())
@@ -71,7 +71,7 @@ class SamplerThreadTest(unittest.TestCase):
             sampler.run()
 
         self.assertEqual(len(clock.waits), 3)
-        for actual, expected in zip(clock.waits, [0.8, 0.0, 0.2]):
+        for actual, expected in zip(clock.waits, [0.8, 1.0, 0.8]):
             self.assertAlmostEqual(actual, expected)
 
 

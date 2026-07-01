@@ -6528,8 +6528,11 @@ class SamplerThread(threading.Thread):
                 self.output.put(("log", f"采样失败：{exc}"))
                 spent = time.time() - loop_start
                 interval = self.current_interval()
+            now = time.time()
             next_tick += interval
-            delay = max(next_tick - time.time(), 0.0)
+            if next_tick <= now:
+                next_tick = now + interval
+            delay = max(next_tick - now, 0.0)
             self.stop_event.wait(delay)
         try:
             self.adapter.stop_session(self.device, self.app_id)
