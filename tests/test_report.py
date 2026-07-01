@@ -202,6 +202,15 @@ class ReportExportTest(unittest.TestCase):
             "traffic_state": "hit",
             "traffic_state_label": "已命中目标流量",
             "summary": "弱网 ON · 127.0.0.1:18888 · 已命中目标流量 · ↓12.3 KB/s ↑4.5 KB/s · 2/8 连接 · 丢弃 1",
+            "config": {
+                "profile": "弱网",
+                "port": 18888,
+                "latency_ms": 300,
+                "jitter_ms": 120,
+                "loss_percent": 2.0,
+                "down_kbps": 512.0,
+                "up_kbps": 256.0,
+            },
             "snapshot": {
                 "down_bytes": 123456,
                 "up_bytes": 45678,
@@ -227,8 +236,12 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("weak_network", payload)
         self.assertEqual(payload["weak_network"]["endpoint"], "127.0.0.1:18888")
         self.assertEqual(payload["weak_network"]["traffic_state"], "hit")
+        self.assertEqual(payload["weak_network"]["config"]["profile"], "弱网")
         self.assertEqual(payload["weak_network"]["history"][1]["down_kbps"], 12.3)
         self.assertIn("弱网真实流量", html_text)
+        self.assertIn("弱网配置", html_text)
+        self.assertIn("延迟 300ms", html_text)
+        self.assertIn("丢包 2.0%", html_text)
         self.assertIn("流量状态", html_text)
         self.assertIn("已命中目标流量", html_text)
         self.assertIn("proxyTrafficHistory", html_text)

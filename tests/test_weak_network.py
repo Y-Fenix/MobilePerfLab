@@ -11,6 +11,7 @@ from mobileperflab import (
     WeakProxyDeviceRegistry,
     build_weak_network_diagnostics,
     build_weak_network_report_payload,
+    format_weak_network_config,
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
     verify_android_proxy_state,
@@ -228,6 +229,25 @@ class WeakNetworkProxyHealthTest(unittest.TestCase):
 
 
 class WeakNetworkProxyTrafficTest(unittest.TestCase):
+    def test_runtime_config_reflects_last_configured_proxy_values(self) -> None:
+        proxy = WeakNetworkProxy(lambda _text: None)
+
+        proxy.configure(18888, 300, 120, 2.0, 512.0, 256.0)
+        proxy.configure(19999, 500, 250, 4.0, 384.0, 128.0)
+
+        self.assertEqual(
+            proxy.runtime_config("地铁"),
+            {
+                "profile": "地铁",
+                "port": 19999,
+                "latency_ms": 500,
+                "jitter_ms": 250,
+                "loss_percent": 4.0,
+                "down_kbps": 384.0,
+                "up_kbps": 128.0,
+            },
+        )
+
     def test_tracks_real_proxy_bytes_and_recent_rates(self) -> None:
         proxy = WeakNetworkProxy(lambda _text: None)
         proxy.reset_traffic(now=10.0)
@@ -302,6 +322,21 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(values["up_total"], "0 B")
         self.assertEqual(values["activity"], "无")
 
+    def test_formats_weak_network_config_for_reports(self) -> None:
+        text = format_weak_network_config(
+            {
+                "profile": "地铁",
+                "port": 18888,
+                "latency_ms": 500,
+                "jitter_ms": 250,
+                "loss_percent": 4,
+                "down_kbps": 384,
+                "up_kbps": 128,
+            }
+        )
+
+        self.assertEqual(text, "地铁 · 端口 18888 · 延迟 500ms · 抖动 250ms · 丢包 4.0% · ↓384 KB/s · ↑128 KB/s")
+
     def test_formats_live_proxy_summary_for_performance_dashboard(self) -> None:
         text = format_live_proxy_summary(
             running=True,
@@ -369,9 +404,19 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
             "127.0.0.1:18888",
             snapshot,
             [(100.0, 0.0, 0.0), (101.5, 8.0, 2.0)],
+            {
+                "profile": "地铁",
+                "latency_ms": 500,
+                "jitter_ms": 250,
+                "loss_percent": 4.0,
+                "down_kbps": 384.0,
+                "up_kbps": 128.0,
+            },
         )
 
         self.assertEqual(payload["endpoint"], "127.0.0.1:18888")
+        self.assertEqual(payload["config"]["profile"], "地铁")
+        self.assertEqual(payload["config"]["latency_ms"], 500)
         self.assertEqual(payload["snapshot"]["down_kbps"], 8.0)
         self.assertEqual(payload["history"][0]["elapsed"], 0.0)
         self.assertEqual(payload["history"][1]["elapsed"], 1.5)

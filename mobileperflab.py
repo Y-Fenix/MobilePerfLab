@@ -471,6 +471,7 @@ def build_weak_network_report_payload(
     endpoint: str,
     snapshot: ProxyTrafficSnapshot,
     history: list[tuple[float, float, float]],
+    config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_history: list[dict[str, float]] = []
     history_points = [(float(elapsed), float(down_kbps), float(up_kbps)) for elapsed, down_kbps, up_kbps in history]
@@ -491,10 +492,28 @@ def build_weak_network_report_payload(
         "traffic_state": traffic_state,
         "traffic_state_label": traffic_state_label,
         "summary": format_live_proxy_summary(running, endpoint, snapshot),
+        "config": dict(config or {}),
         "snapshot": asdict(snapshot),
         "snapshot_display": format_proxy_traffic_snapshot(snapshot),
         "history": normalized_history,
     }
+
+
+def format_weak_network_config(config: dict[str, object]) -> str:
+    if not config:
+        return "未记录"
+    profile = str(config.get("profile") or "自定义")
+    port = int(float(config.get("port", 0) or 0))
+    latency = float(config.get("latency_ms", 0.0) or 0.0)
+    jitter = float(config.get("jitter_ms", 0.0) or 0.0)
+    loss = float(config.get("loss_percent", 0.0) or 0.0)
+    down = float(config.get("down_kbps", 0.0) or 0.0)
+    up = float(config.get("up_kbps", 0.0) or 0.0)
+    port_text = f" · 端口 {port}" if port > 0 else ""
+    return (
+        f"{profile}{port_text} · 延迟 {latency:g}ms · 抖动 {jitter:g}ms · "
+        f"丢包 {loss:.1f}% · ↓{down:g} KB/s · ↑{up:g} KB/s"
+    )
 
 
 def format_quality_mode_label(smoothing_enabled: bool, low_end_bias: bool) -> str:
@@ -1213,6 +1232,18 @@ class WeakNetworkProxy:
             self.loss_percent = max(0.0, min(float(loss_percent), 100.0))
             self.down_kbps = max(0.0, float(down_kbps))
             self.up_kbps = max(0.0, float(up_kbps))
+
+    def runtime_config(self, profile: str = "") -> dict[str, object]:
+        with self._lock:
+            return {
+                "profile": profile or "自定义",
+                "port": self.port,
+                "latency_ms": self.latency_ms,
+                "jitter_ms": self.jitter_ms,
+                "loss_percent": self.loss_percent,
+                "down_kbps": self.down_kbps,
+                "up_kbps": self.up_kbps,
+            }
 
     def start(self) -> None:
         if self.is_running():
@@ -4594,11 +4625,15 @@ class SessionRecorder:
             weak_snapshot = weak_network.get("snapshot", {})
             weak_display = weak_network.get("snapshot_display", {})
             weak_history = weak_network.get("history", [])
+            weak_config = weak_network.get("config", {})
+            if not isinstance(weak_config, dict):
+                weak_config = {}
             weak_network_section = "".join(
                 [
                     "<h2>弱网真实流量</h2>",
                     "<table><tr><th>项目</th><th>值</th></tr>",
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
+                    f"<tr><th>弱网配置</th><td>{html.escape(format_weak_network_config(weak_config))}</td></tr>",
                     f"<tr><th>流量状态</th><td>{html.escape(str(weak_network.get('traffic_state_label', '未知')))}</td></tr>",
                     f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",
                     f"<tr><th>下行速率</th><td>{html.escape(str(weak_display.get('down_rate', '0.0 KB/s')))}</td></tr>",
@@ -6877,6 +6912,7 @@ class App:
             self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>",
             proxy_snapshot,
             self.weak_proxy.traffic_history(),
+            self.weak_proxy.runtime_config(self.weak_profile_var.get()),
         )
         csv_path, json_path, html_path = self.recorder.export_bundle(Path(folder), weak_network=weak_network)
         self.last_export_folder = html_path.parent
