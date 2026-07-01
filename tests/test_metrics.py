@@ -347,6 +347,28 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(health["slow_samples"], 3)
         self.assertIn("最近 4 个样本", health["detail"])
 
+    def test_recent_window_health_distinguishes_real_fps_volatility_from_collection_jitter(self) -> None:
+        performance_samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0),
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=42.0),
+            PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0),
+            PerfSample(timestamp=4.0, elapsed=4.0, fps=40.0),
+        ]
+        collection_samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0),
+            PerfSample(timestamp=2.8, elapsed=2.8, fps=20.0, note="Android FPS 当前无帧增量"),
+            PerfSample(timestamp=4.6, elapsed=4.6, fps=58.0),
+            PerfSample(timestamp=6.5, elapsed=6.5, fps=22.0, note="采样耗时 1.60s 超过采样间隔 1.00s"),
+        ]
+
+        performance = build_recent_window_health(performance_samples, expected_interval=1.0, window_size=4)
+        collection = build_recent_window_health(collection_samples, expected_interval=1.0, window_size=4)
+
+        self.assertEqual(performance["trend_source"], "performance")
+        self.assertEqual(performance["trend_label"], "趋势：性能波动")
+        self.assertEqual(collection["trend_source"], "collection")
+        self.assertEqual(collection["trend_label"], "趋势：采集波动")
+
     def test_status_text_includes_recent_window_health(self) -> None:
         tracker = LiveQualityTracker()
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
@@ -355,6 +377,15 @@ class LiveQualityTrackerTest(unittest.TestCase):
         text = tracker.update(PerfSample(timestamp=6.5, elapsed=6.5, fps=53.0))
 
         self.assertIn("窗口：节拍失稳", text)
+
+    def test_status_text_includes_recent_window_trend_source(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(PerfSample(timestamp=2.0, elapsed=2.0, fps=42.0))
+        tracker.update(PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0))
+        text = tracker.update(PerfSample(timestamp=4.0, elapsed=4.0, fps=40.0))
+
+        self.assertIn("趋势：性能波动", text)
 
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)

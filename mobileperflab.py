@@ -860,6 +860,8 @@ def build_recent_window_health(
         return {
             "state": "waiting",
             "label": "窗口：等待数据",
+            "trend_source": "waiting",
+            "trend_label": "趋势：等待数据",
             "sample_count": 0,
             "issue_samples": 0,
             "fallback_samples": 0,
@@ -876,9 +878,25 @@ def build_recent_window_health(
     slow_samples = min(slow_samples, total)
     issue_samples = sum(1 for sample in window if sample_quality_tag(sample) == "issue")
     fallback_samples = sum(1 for sample in window if "设备级网络兜底" in sample.note)
+    fps_values = [float(sample.fps) for sample in window if float(sample.fps or 0.0) > 0.0]
+    fps_range = max(fps_values) - min(fps_values) if len(fps_values) >= 2 else 0.0
+    fps_average = sum(fps_values) / len(fps_values) if fps_values else 0.0
+    fps_variation_percent = fps_range / max(fps_average, 1.0) * 100.0 if fps_values else 0.0
     issue_ratio = issue_samples / total
     fallback_ratio = fallback_samples / total
     slow_ratio = slow_samples / total
+    if fps_variation_percent >= 25.0 and (slow_samples or issue_samples):
+        trend_source = "collection"
+        trend_label = "趋势：采集波动"
+    elif fps_variation_percent >= 25.0:
+        trend_source = "performance"
+        trend_label = "趋势：性能波动"
+    elif slow_samples or issue_samples:
+        trend_source = "collection"
+        trend_label = "趋势：采集波动"
+    else:
+        trend_source = "stable"
+        trend_label = "趋势：平稳"
     if issue_ratio >= 0.5 or slow_ratio >= 0.5:
         state = "bad"
         label = "窗口：节拍失稳" if slow_ratio >= issue_ratio else "窗口：采集异常"
@@ -893,15 +911,19 @@ def build_recent_window_health(
         label = "窗口：稳定"
     detail = (
         f"最近 {total} 个样本：慢采样 {slow_samples}，"
-        f"异常 {issue_samples}，网络兜底 {fallback_samples}。"
+        f"异常 {issue_samples}，网络兜底 {fallback_samples}，"
+        f"FPS 波动 {fps_variation_percent:.1f}%。"
     )
     return {
         "state": state,
         "label": label,
+        "trend_source": trend_source,
+        "trend_label": trend_label,
         "sample_count": total,
         "issue_samples": issue_samples,
         "fallback_samples": fallback_samples,
         "slow_samples": slow_samples,
+        "fps_variation_percent": round(fps_variation_percent, 1),
         "detail": detail,
     }
 
@@ -1556,6 +1578,7 @@ class LiveQualityTracker:
             f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
             f"{recent_window.get('label', '窗口：等待数据')} · "
+            f"{recent_window.get('trend_label', '趋势：等待数据')} · "
             f"展示：{display_label} · "
             f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
@@ -5309,7 +5332,7 @@ class SessionRecorder:
                 (
                     "最近窗口",
                     str(recent_window.get("label", "窗口：等待数据")),
-                    str(recent_window.get("detail", "最近窗口暂无样本。")),
+                    f"{recent_window.get('trend_label', '趋势：等待数据')}。{recent_window.get('detail', '最近窗口暂无样本。')}",
                 ),
                 (
                     "展示策略",
