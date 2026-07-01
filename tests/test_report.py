@@ -548,6 +548,11 @@ class ReportExportTest(unittest.TestCase):
                 "score": 100,
                 "detail": "代理已捕获真实流量，弱网规则有命中证据。",
                 "action": "继续执行业务场景并观察代理真实流量曲线。",
+                "test_readiness": {
+                    "state": "ready",
+                    "label": "可以开始测试",
+                    "detail": "弱网链路和真实流量均已确认。",
+                },
             },
         }
 
@@ -571,6 +576,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("已命中目标流量", html_text)
         self.assertIn("弱网命中结论", html_text)
         self.assertIn("弱网已生效", html_text)
+        self.assertIn("测试就绪", html_text)
+        self.assertIn("可以开始测试", html_text)
         self.assertIn("设备代理", html_text)
         self.assertIn("端口连通", html_text)
         self.assertIn("Android 可连接本机代理端口", html_text)

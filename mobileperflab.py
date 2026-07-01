@@ -501,6 +501,49 @@ def weak_network_diagnostics_payload(diagnostics: WeakNetworkDiagnostics) -> dic
     }
 
 
+def weak_network_test_readiness(effectiveness_state: str) -> dict[str, str]:
+    if effectiveness_state == "effective":
+        return {
+            "state": "ready",
+            "label": "可以开始测试",
+            "detail": "弱网链路和真实流量均已确认。",
+        }
+    if effectiveness_state == "dropped":
+        return {
+            "state": "ready",
+            "label": "可以开始测试",
+            "detail": "弱网规则已有丢弃命中，建议结合业务日志确认目标请求。",
+        }
+    if effectiveness_state == "waiting":
+        return {
+            "state": "attention",
+            "label": "先触发业务请求",
+            "detail": "代理链路已就绪，但还没有目标请求命中证据。",
+        }
+    return {
+        "state": "blocked",
+        "label": "先修弱网链路",
+        "detail": "弱网代理、Android 代理或端口连通仍未确认。",
+    }
+
+
+def _weak_network_effectiveness_result(
+    state: str,
+    label: str,
+    score: int,
+    detail: str,
+    action: str,
+) -> dict[str, object]:
+    return {
+        "state": state,
+        "label": label,
+        "score": score,
+        "detail": detail,
+        "action": action,
+        "test_readiness": weak_network_test_readiness(state),
+    }
+
+
 def build_weak_network_effectiveness(
     running: bool,
     traffic_state: str,
@@ -524,60 +567,60 @@ def build_weak_network_effectiveness(
     port_unreachable = "端口不可达" in diagnostic_summary or any(state == "不可达" for _name, state, _detail in diagnostic_rows)
     proxy_unconfirmed = "代理未确认" in diagnostic_summary or any(name == "设备代理" and state in {"不一致", "未检查"} for name, state, _detail in diagnostic_rows)
     if not running or traffic_state == "off":
-        return {
-            "state": "off",
-            "label": "弱网未启动",
-            "score": 0,
-            "detail": "弱网代理未启动，当前没有弱网生效证据。",
-            "action": "点击启动代理，并应用到 Android 后刷新状态。",
-        }
+        return _weak_network_effectiveness_result(
+            state="off",
+            label="弱网未启动",
+            score=0,
+            detail="弱网代理未启动，当前没有弱网生效证据。",
+            action="点击启动代理，并应用到 Android 后刷新状态。",
+        )
     if port_unreachable:
-        return {
-            "state": "unreachable",
-            "label": "端口不可达",
-            "score": 25,
-            "detail": "Android 代理已配置但手机无法连接本机代理端口。",
-            "action": "确认手机和电脑在同一网络，检查防火墙、USB 网络或热点隔离。",
-        }
+        return _weak_network_effectiveness_result(
+            state="unreachable",
+            label="端口不可达",
+            score=25,
+            detail="Android 代理已配置但手机无法连接本机代理端口。",
+            action="确认手机和电脑在同一网络，检查防火墙、USB 网络或热点隔离。",
+        )
     if proxy_unconfirmed:
-        return {
-            "state": "unconfirmed",
-            "label": "代理未确认",
-            "score": 35,
-            "detail": "Android 当前代理未确认等于本机弱网代理。",
-            "action": "点击应用到 Android，再刷新状态确认设备代理读回一致。",
-        }
+        return _weak_network_effectiveness_result(
+            state="unconfirmed",
+            label="代理未确认",
+            score=35,
+            detail="Android 当前代理未确认等于本机弱网代理。",
+            action="点击应用到 Android，再刷新状态确认设备代理读回一致。",
+        )
     if traffic_state == "hit":
-        return {
-            "state": "effective",
-            "label": "弱网已生效",
-            "score": 100,
-            "detail": "代理已捕获真实流量，弱网规则有命中证据。",
-            "action": "继续执行业务场景并观察代理真实流量曲线。",
-        }
+        return _weak_network_effectiveness_result(
+            state="effective",
+            label="弱网已生效",
+            score=100,
+            detail="代理已捕获真实流量，弱网规则有命中证据。",
+            action="继续执行业务场景并观察代理真实流量曲线。",
+        )
     if traffic_state == "dropped":
-        return {
-            "state": "dropped",
-            "label": "弱网已丢弃",
-            "score": 80,
-            "detail": "代理记录到丢弃连接，丢包规则已有命中迹象。",
-            "action": "结合业务日志确认这些丢弃连接属于目标请求。",
-        }
+        return _weak_network_effectiveness_result(
+            state="dropped",
+            label="弱网已丢弃",
+            score=80,
+            detail="代理记录到丢弃连接，丢包规则已有命中迹象。",
+            action="结合业务日志确认这些丢弃连接属于目标请求。",
+        )
     if traffic_state == "waiting" and app_has_traffic:
-        return {
-            "state": "bypass",
-            "label": "疑似绕过代理",
-            "score": 45,
-            "detail": "App 有流量但代理未捕获请求，弱网可能没有命中目标链路。",
-            "action": "检查 QUIC/UDP、自建网络栈、代理白名单、证书或系统代理配置。",
-        }
-    return {
-        "state": "waiting",
-        "label": "等待目标流量",
-        "score": 60,
-        "detail": "弱网链路已就绪，但代理还没有捕获目标请求。",
-        "action": "在目标 App 内触发明确 HTTP/HTTPS 请求，再观察代理真实流量。",
-    }
+        return _weak_network_effectiveness_result(
+            state="bypass",
+            label="疑似绕过代理",
+            score=45,
+            detail="App 有流量但代理未捕获请求，弱网可能没有命中目标链路。",
+            action="检查 QUIC/UDP、自建网络栈、代理白名单、证书或系统代理配置。",
+        )
+    return _weak_network_effectiveness_result(
+        state="waiting",
+        label="等待目标流量",
+        score=60,
+        detail="弱网链路已就绪，但代理还没有捕获目标请求。",
+        action="在目标 App 内触发明确 HTTP/HTTPS 请求，再观察代理真实流量。",
+    )
 
 
 def weak_network_risk_message(traffic_state: str) -> str:
@@ -5540,6 +5583,9 @@ class SessionRecorder:
             weak_effectiveness = weak_network.get("effectiveness", {})
             if not isinstance(weak_effectiveness, dict):
                 weak_effectiveness = {}
+            weak_readiness = weak_effectiveness.get("test_readiness", {})
+            if not isinstance(weak_readiness, dict):
+                weak_readiness = {}
             weak_diagnostics = weak_network.get("diagnostics", {})
             if not isinstance(weak_diagnostics, dict):
                 weak_diagnostics = {}
@@ -5570,6 +5616,8 @@ class SessionRecorder:
                     f"<tr><th>命中评分</th><td>{html.escape(str(weak_effectiveness.get('score', '-')))} / 100</td></tr>",
                     f"<tr><th>结论说明</th><td>{html.escape(str(weak_effectiveness.get('detail', '')))}</td></tr>",
                     f"<tr><th>下一步</th><td>{html.escape(str(weak_effectiveness.get('action', '')))}</td></tr>",
+                    f"<tr><th>测试就绪</th><td>{html.escape(str(weak_readiness.get('label', '未知')))}</td></tr>",
+                    f"<tr><th>就绪说明</th><td>{html.escape(str(weak_readiness.get('detail', '')))}</td></tr>",
                     f"<tr><th>弱网配置</th><td>{html.escape(format_weak_network_config(weak_config))}</td></tr>",
                     f"<tr><th>流量状态</th><td>{html.escape(str(weak_network.get('traffic_state_label', '未知')))}</td></tr>",
                     f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",

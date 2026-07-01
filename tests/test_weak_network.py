@@ -262,6 +262,8 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["state"], "effective")
         self.assertEqual(result["label"], "弱网已生效")
         self.assertEqual(result["score"], 100)
+        self.assertEqual(result["test_readiness"]["state"], "ready")
+        self.assertEqual(result["test_readiness"]["label"], "可以开始测试")
         self.assertIn("代理已捕获真实流量", result["detail"])
 
     def test_scores_possible_proxy_bypass_when_app_has_traffic_but_proxy_waits(self) -> None:
@@ -283,6 +285,8 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(result["state"], "bypass")
         self.assertEqual(result["label"], "疑似绕过代理")
+        self.assertEqual(result["test_readiness"]["state"], "blocked")
+        self.assertEqual(result["test_readiness"]["label"], "先修弱网链路")
         self.assertLess(result["score"], 60)
         self.assertIn("App 有流量但代理未捕获", result["detail"])
         self.assertIn("QUIC/UDP", result["action"])
@@ -306,8 +310,30 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(result["state"], "unreachable")
         self.assertEqual(result["label"], "端口不可达")
+        self.assertEqual(result["test_readiness"]["state"], "blocked")
         self.assertIn("手机无法连接本机代理端口", result["detail"])
         self.assertEqual(diagnostics.rows[-1], ("端口连通", "不可达", "检查手机和电脑是否同一网络/防火墙"))
+
+    def test_marks_waiting_proxy_as_attention_before_business_traffic(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        result = build_weak_network_effectiveness(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+
+        self.assertEqual(result["state"], "waiting")
+        self.assertEqual(result["test_readiness"]["state"], "attention")
+        self.assertEqual(result["test_readiness"]["label"], "先触发业务请求")
 
 
 class WeakNetworkProxyHealthTest(unittest.TestCase):
