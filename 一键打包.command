@@ -27,6 +27,16 @@ fi
 
 PYTHON_IN_VENV="$VENV_DIR/bin/python"
 PIP_IN_VENV="$VENV_DIR/bin/pip"
+APP_VERSION="$("$PYTHON_BIN" - "$SCRIPT_DIR/mobileperflab.py" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.MULTILINE)
+print(match.group(1) if match else "0.0.0")
+PY
+)"
 
 if [ ! -x "$PYTHON_IN_VENV" ]; then
   echo "虚拟环境损坏，正在重建..."
@@ -47,7 +57,14 @@ cd "$SCRIPT_DIR" || pause_on_error 1
   --name MobilePerfLab \
   "$SCRIPT_DIR/mobileperflab.py" || pause_on_error 1
 
-echo
-echo "打包完成：$SCRIPT_DIR/dist/MobilePerfLab.app"
-open "$SCRIPT_DIR/dist" >/dev/null 2>&1
+PLIST="$SCRIPT_DIR/dist/MobilePerfLab.app/Contents/Info.plist"
+if [ -f "$PLIST" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST" >/dev/null 2>&1 || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$PLIST" >/dev/null 2>&1
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$PLIST" >/dev/null 2>&1 || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$PLIST" >/dev/null 2>&1
+fi
 
+echo
+echo "打包完成：$SCRIPT_DIR/dist/MobilePerfLab.app · version $APP_VERSION"
+open "$SCRIPT_DIR/dist" >/dev/null 2>&1

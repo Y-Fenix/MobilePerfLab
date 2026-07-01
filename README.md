@@ -6,12 +6,15 @@ MobilePerfLab 是一款原创桌面移动端性能测试工具，工作流参考
 
 - Android 设备发现：通过 `adb devices -l` 自动识别真机。
 - Android 应用选择：读取第三方包名列表，或自动识别前台应用。
-- Android 实时采样：FPS/Jank、CPU、内存、电量、温度、估算功耗、网络速率；前台应用识别会组合 `dumpsys window`、`dumpsys activity` 等多路结果，CPU 会汇总同一包名的多个 PID，网络会优先读取 per-UID 统计，失败时使用设备级上下行兜底并在日志中标注。
+- Android 实时采样：FPS/Jank、CPU、内存、电量、温度、估算功耗、网络速率；前台应用识别会组合 `dumpsys window`、`dumpsys activity` 等多路结果，CPU 会汇总同一包名的多个 PID，网络会优先读取 per-UID 统计，兼容 `uid_stat`、`xt_qtaguid` 和多种 `dumpsys netstats` 输出格式，失败时使用设备级上下行兜底并在日志中标注。
 - Android 弱网工具：内置本机 HTTP/HTTPS 弱网代理，可一键设置/清除 Android 系统代理，支持延迟、抖动、丢包、上下行限速，并提供电梯、地铁、高速、隧道等场景预设。
 - 弱网链路诊断：工具会读回 Android 当前系统代理，并从设备侧探测本机代理端口；若设备缺少 `nc`，会使用内置 HTTP 健康检查端点兜底，弱网页签会显示本机代理、Android 设备、设备代理和端口连通状态。
 - 弱网安全清理：工具会记录自己写入过代理的 Android 设备，退出时自动尝试清理系统代理；弱网页签也可刷新当前代理状态。
-- 低端机友好曲线：实时窗口默认开启展示层平滑，短暂缺采不会把曲线直接拉到 0；导出的 CSV/JSON/HTML 仍保存原始采样值。
+- 低端机友好曲线：实时窗口默认开启展示层平滑，短暂缺采不会把曲线直接拉到 0；采样线程会按固定节拍尽量回到原有采样相位，导出的 CSV/JSON/HTML 仍保存原始采样值。
 - 采集健康状态：性能页会标出 FPS、CPU、内存、电量、温度、功耗、上下行网络的“正常 / 等待 / 无流量 / 异常”状态，并实时显示网络来源、异常样本占比和设备级网络兜底占比。
+- 网络可信标注：当 per-UID 和设备级网络计数都不可读时，工具会标注“网络采集不可用”；当目标 App UID 已识别但当前没有请求时，会按普通 0 流量/无流量处理，避免把空闲误报成采集异常。
+- 采集链路自检：Android 可一键检查前台 App、PID、UID、FPS 来源和网络来源；开始采集前也会自动记录自检结果，用于定位“只有温度/内存”“FPS 取不到”“上下行取不到”等问题。
+- 质量门禁：实时采集会按异常样本、设备级网络兜底、前台异常和慢采样给出“高可信 / 谨慎参考 / 不可信”的会话级判断。
 - 实时质量事件：性能页底部会列出最新采集异常和设备级网络兜底事件，现场测试时无需等待报告即可定位不可信数据段。
 - 曲线质量标识：实时曲线和 HTML 报告会标出异常样本与设备级网络兜底样本；橙色圆环表示网络数据来自设备级兜底，红色三角表示该采样点存在采集异常说明，浅橙/浅红背景表示连续兜底或异常区间。
 - iOS 设备发现：优先使用 `pymobiledevice3 usbmux` 识别真实在线设备，再用 Xcode `devicectl`/`xctrace` 补充状态。
@@ -20,7 +23,7 @@ MobilePerfLab 是一款原创桌面移动端性能测试工具，工作流参考
 - iOS FPS 采样：启动 tunnel 后通过 `pymobiledevice3 developer dvt graphics` 读取 `CoreAnimationFramesPerSecond`，设备必须能被 `pymobiledevice3 usbmux list` 识别。
 - iOS Jank：当前按 FPS 相对 60 FPS 的掉帧比例估算，用于趋势参考。
 - 演示模式：没有真机时可预览完整 UI、实时曲线、标记和导出流程。
-- 报告导出：一次导出 CSV、JSON、HTML 三份结果；HTML 报告包含采集质量摘要、异常/兜底样本占比、异常区间摘要和网络数据来源，设备级网络兜底会明确标注“非目标 App 独占流量”。
+- 报告导出：一次导出 CSV、JSON、HTML 三份结果；HTML 报告包含质量门禁、采样节拍、异常/兜底样本占比、异常区间摘要和网络数据来源，设备级网络兜底会明确标注“非目标 App 独占流量”。
 
 ## 运行
 
@@ -54,6 +57,28 @@ dist/MobilePerfLab.app
 设备需开启 USB 调试并授权当前电脑。
 
 启动后侧栏会显示环境自检结果，日志里会列出 Python、Android ADB、iOS `pymobiledevice3`、Xcode `xcrun` 的可用状态。缺少 `adb` 时仍可使用演示模式和 iOS 基础能力，但 Android 真机采集不可用。
+
+### Android 采集自检
+
+选择 Android 设备并填写目标包名后，可以点击“采集自检”。工具会检查：
+
+- 前台：当前前台 App 是否等于目标包名。
+- PID：是否能通过 `pidof` / `pgrep` / `ps` 找到目标进程。
+- UID：是否能通过 `dumpsys package`、`/proc/<pid>/status` 或 `pm list packages -U` 找到 App UID。
+- FPS：当前可用的帧率来源，例如 `gfxinfo counters`、`gfxinfo framestats` 或 `SurfaceFlinger`。
+- 网络：是否能使用目标 App per-UID 上下行；工具会依次尝试 `uid_stat`、`xt_qtaguid` 和 `dumpsys netstats`，如果只能使用设备级网络兜底，界面和报告都会标注“非目标 App 独占流量”。
+
+如果只看到温度、内存等少数指标，先看“采集链路”和“采集健康”两行状态。常见原因是目标 App 不在前台、目标 PID/UID 无法识别、系统限制 `/proc` 或 `netstats`、页面静止导致 FPS 没有新增帧。
+
+### 数据可信度
+
+实时界面和报告使用同一套质量规则：
+
+- 高可信：采集链路稳定，异常样本和兜底样本较少。
+- 谨慎参考：存在一定比例的异常样本、设备级网络兜底或采样节拍波动。
+- 不可信：前台异常、慢采样过多、异常样本过多或可信度过低。
+
+实时曲线默认会做展示层平滑，目的是降低低端机短暂缺采造成的视觉抖动；CSV/JSON/HTML 仍保存原始采样点。采样线程按固定节拍调度，单次 adb 慢命令结束后会尽量追回原采样相位，避免后续曲线持续漂移。Android FPS 计数器和上下行网络这类 delta 指标会按实际计数器读取时刻计算速率，减少低端机 adb 慢命令导致的 FPS/网络速率误放大。报告中的“采样节拍”会根据样本间隔判断“节拍稳定 / 节拍波动 / 节拍失稳”，用于区分真实性能波动和采集慢命令造成的曲线波动。
 
 ## 弱网工具
 
@@ -92,3 +117,35 @@ iOS 真机需要先信任电脑。基础识别可使用 Xcode 命令行工具；
 ## 说明
 
 本项目不使用 PerfDog 的品牌、图标、界面素材或私有协议；只复刻移动性能测试工具的通用工作流和信息架构。
+
+## GitHub 上传建议
+
+建议上传：
+
+- `.gitignore`
+- `README.md`
+- `mobileperflab.py`
+- `requirements-build.txt`
+- `tests/`
+- `一键启动.command`
+- `一键打包.command`
+- `安装iOS依赖.command`
+- `启动iOS采集服务.command`
+
+不要上传：
+
+- `.venv/`
+- `build/`
+- `dist/`
+- `reports/`
+- `screenshots/`
+- `__pycache__/`
+- `.DS_Store`
+- `MobilePerfLab.spec`
+
+上传前建议执行：
+
+```bash
+python3 -m unittest discover -s tests
+python3 -m py_compile mobileperflab.py
+```

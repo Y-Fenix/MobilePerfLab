@@ -10,6 +10,7 @@ It intentionally uses original branding and artwork.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import csv
 import html
 import json
@@ -27,7 +28,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -40,6 +41,7 @@ SAMPLE_LIMIT = 7200
 DEFAULT_INTERVAL_SECONDS = 1.0
 CHART_VIEW_SECONDS = 30 * 60
 PROXY_BUFFER_SIZE = 16 * 1024
+ANDROID_FOREGROUND_CACHE_SECONDS = 2.0
 WEAK_NETWORK_PROFILES: dict[str, tuple[int, int, float, float, float]] = {
     "不限速": (0, 0, 0.0, 0.0, 0.0),
     "4G 良好": (40, 10, 0.0, 12_000.0, 4_000.0),
@@ -223,6 +225,29 @@ class WeakNetworkDiagnostics:
 
 
 @dataclass(frozen=True)
+class AndroidCollectionDiagnostics:
+    overall_state: str
+    summary: str
+    rows: list[tuple[str, str, str]]
+    foreground_app: str = ""
+    foreground_state: str = "unknown"
+    pid_source: str = "missing"
+    pids: list[int] = field(default_factory=list)
+    uid_source: str = "missing"
+    uid: int | None = None
+    fps_source: str = "missing"
+    network_source: str = "missing"
+
+
+@dataclass(frozen=True)
+class SessionQualityGate:
+    state: str
+    label: str
+    confidence_percent: float
+    detail: str
+
+
+@dataclass(frozen=True)
 class EnvironmentCheck:
     key: str
     name: str
@@ -242,6 +267,22 @@ class ProxyTrafficSnapshot:
     total_connections: int = 0
     dropped_connections: int = 0
     last_activity_age: float | None = None
+
+
+class ProxyTrafficHistory:
+    def __init__(self, limit: int = 120) -> None:
+        self.limit = max(1, int(limit))
+        self._points: list[tuple[float, float, float]] = []
+
+    def append(self, elapsed: float, snapshot: ProxyTrafficSnapshot) -> None:
+        self._points.append((float(elapsed), float(snapshot.down_kbps), float(snapshot.up_kbps)))
+        self._points = self._points[-self.limit :]
+
+    def points(self) -> list[tuple[float, float, float]]:
+        return list(self._points)
+
+    def reset(self) -> None:
+        self._points.clear()
 
 
 def normalize_android_proxy_value(value: str) -> str:
@@ -401,6 +442,151 @@ def format_proxy_traffic_snapshot(snapshot: ProxyTrafficSnapshot) -> dict[str, s
     }
 
 
+def format_live_proxy_summary(running: bool, endpoint: str, snapshot: ProxyTrafficSnapshot) -> str:
+    if not running:
+        return "弱网 OFF · 未启动"
+    values = format_proxy_traffic_snapshot(snapshot)
+    return (
+        f"弱网 ON · {endpoint} · "
+        f"↓{values['down_rate']} ↑{values['up_rate']} · "
+        f"{snapshot.active_connections}/{snapshot.total_connections} 连接 · "
+        f"丢弃 {snapshot.dropped_connections}"
+    )
+
+
+def build_weak_network_report_payload(
+    running: bool,
+    endpoint: str,
+    snapshot: ProxyTrafficSnapshot,
+    history: list[tuple[float, float, float]],
+) -> dict[str, object]:
+    normalized_history: list[dict[str, float]] = []
+    history_points = [(float(elapsed), float(down_kbps), float(up_kbps)) for elapsed, down_kbps, up_kbps in history]
+    if history_points:
+        base_elapsed = history_points[0][0]
+        for elapsed, down_kbps, up_kbps in history_points:
+            normalized_history.append(
+                {
+                    "elapsed": round(max(elapsed - base_elapsed, 0.0), 3),
+                    "down_kbps": round(down_kbps, 3),
+                    "up_kbps": round(up_kbps, 3),
+                }
+            )
+    return {
+        "running": running,
+        "endpoint": endpoint,
+        "summary": format_live_proxy_summary(running, endpoint, snapshot),
+        "snapshot": asdict(snapshot),
+        "snapshot_display": format_proxy_traffic_snapshot(snapshot),
+        "history": normalized_history,
+    }
+
+
+def format_quality_mode_label(smoothing_enabled: bool, low_end_bias: bool) -> str:
+    smoothing_text = "稳定曲线：开" if smoothing_enabled else "稳定曲线：关"
+    if smoothing_enabled and low_end_bias:
+        return f"{smoothing_text} · 低端机保守模式"
+    return f"{smoothing_text} · 报告：原始采样"
+
+
+def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
+    detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
+    return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
+
+
+def collection_diagnostic_status_rows(diagnostics: AndroidCollectionDiagnostics) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    for name, status, hint in diagnostics.rows:
+        if status in {"匹配", "已找到", "可用", "per-UID"}:
+            label = "正常"
+            state = "ok"
+        elif status == "设备级兜底":
+            label = "兜底"
+            state = "fallback"
+        else:
+            label = "异常"
+            state = "issue"
+        rows.append((name, label, hint, state))
+    return rows
+
+
+def session_quality_gate(
+    sample_count: int,
+    issue_count: int,
+    fallback_count: int,
+    foreground_count: int,
+    slow_count: int,
+) -> SessionQualityGate:
+    total = max(int(sample_count), 1)
+    issues = max(int(issue_count), 0)
+    fallbacks = max(int(fallback_count), 0)
+    foreground = max(int(foreground_count), 0)
+    slow = max(int(slow_count), 0)
+    confidence = round(max(0.0, (total - issues - fallbacks) / total * 100.0), 1)
+    issue_percent = issues / total * 100.0
+    fallback_percent = fallbacks / total * 100.0
+    foreground_percent = foreground / total * 100.0
+    slow_percent = slow / total * 100.0
+    reasons: list[str] = []
+    if foreground_percent >= 10.0 or foreground >= 2:
+        reasons.append("前台异常")
+    if slow_percent >= 20.0 or slow >= 3:
+        reasons.append("慢采样")
+    if issue_percent >= 35.0:
+        reasons.append("异常样本过多")
+    if confidence < 50.0:
+        reasons.append("可信度低")
+    if reasons:
+        return SessionQualityGate("bad", "不可信", confidence, "、".join(dict.fromkeys(reasons)))
+    if issue_percent >= 15.0 or fallback_percent >= 15.0 or confidence < 80.0:
+        caution_reasons: list[str] = []
+        if issue_percent >= 15.0:
+            caution_reasons.append("异常样本偏多")
+        if fallback_percent >= 15.0:
+            caution_reasons.append("存在设备级兜底")
+        if confidence < 80.0:
+            caution_reasons.append("可信度下降")
+        return SessionQualityGate("caution", "谨慎参考", confidence, "、".join(caution_reasons))
+    return SessionQualityGate("good", "高可信", confidence, "采集链路稳定")
+
+
+def graph_scroll_row_step(wheel_units: int) -> int:
+    if wheel_units > 0:
+        return 1
+    if wheel_units < 0:
+        return -1
+    return 0
+
+
+def graph_visible_rows_for_height(screen_height: int, min_rows: int = 2, max_rows: int = 4) -> int:
+    if screen_height >= 1200:
+        return min(max_rows, 4)
+    if screen_height >= 920:
+        return min(max_rows, max(min_rows, 3))
+    return min_rows
+
+
+def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, scrollbar_height: int) -> int:
+    rows = max(1, int(visible_rows))
+    return row_height * rows + row_gap * max(rows - 1, 0) + scrollbar_height
+
+
+def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) -> list[tuple[float, float]]:
+    if len(points) < 2:
+        return list(points)
+    alpha = min(max(alpha, 0.0), 1.0)
+    if alpha <= 0:
+        return list(points)
+    if alpha >= 1:
+        return list(points)
+    smoothed: list[tuple[float, float]] = []
+    previous = float(points[0][1])
+    for elapsed, value in points:
+        previous = previous + alpha * (float(value) - previous)
+        smoothed.append((float(elapsed), previous))
+    return smoothed
+
+
 def sample_quality_tag(sample: PerfSample) -> str:
     note = sample.note or ""
     if "设备级网络兜底" in note:
@@ -426,6 +612,70 @@ def append_sampling_latency_note(sample: PerfSample, spent_seconds: float, inter
     note = str(payload.get("note") or "")
     payload["note"] = f"{note}；{latency_note}" if note else latency_note
     return PerfSample(**payload)
+
+
+def sampling_cadence_summary(samples: list[PerfSample], expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> dict[str, object]:
+    if len(samples) < 2:
+        return {
+            "state": "waiting",
+            "label": "等待数据",
+            "avg_interval": 0.0,
+            "max_interval": 0.0,
+            "jitter_seconds": 0.0,
+            "slow_intervals": 0,
+            "interval_count": 0,
+            "slow_percent": 0.0,
+            "detail": "至少需要 2 个样本才能判断采样节拍。",
+        }
+    expected = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
+    elapsed_values = sorted(float(sample.elapsed) for sample in samples)
+    intervals = [
+        round(max(current - previous, 0.0), 6)
+        for previous, current in zip(elapsed_values, elapsed_values[1:])
+        if current >= previous
+    ]
+    if not intervals:
+        return {
+            "state": "waiting",
+            "label": "等待数据",
+            "avg_interval": 0.0,
+            "max_interval": 0.0,
+            "jitter_seconds": 0.0,
+            "slow_intervals": 0,
+            "interval_count": 0,
+            "slow_percent": 0.0,
+            "detail": "样本时间戳不足，暂无法判断采样节拍。",
+        }
+    avg_interval = sum(intervals) / len(intervals)
+    max_interval = max(intervals)
+    jitter_seconds = max(abs(value - expected) for value in intervals)
+    slow_threshold = max(expected * 1.25, expected + 0.25)
+    slow_intervals = sum(1 for value in intervals if value > slow_threshold)
+    slow_percent = slow_intervals / len(intervals) * 100.0
+    if slow_percent >= 50.0 or jitter_seconds > expected * 1.2:
+        state = "bad"
+        label = "节拍失稳"
+    elif slow_percent >= 20.0 or jitter_seconds >= expected * 0.5:
+        state = "caution"
+        label = "节拍波动"
+    else:
+        state = "good"
+        label = "节拍稳定"
+    detail = (
+        f"平均间隔 {avg_interval:.2f}s，最大间隔 {max_interval:.2f}s，"
+        f"慢间隔 {slow_intervals}/{len(intervals)}。"
+    )
+    return {
+        "state": state,
+        "label": label,
+        "avg_interval": round(avg_interval, 3),
+        "max_interval": round(max_interval, 3),
+        "jitter_seconds": round(jitter_seconds, 3),
+        "slow_intervals": slow_intervals,
+        "interval_count": len(intervals),
+        "slow_percent": round(slow_percent, 1),
+        "detail": detail,
+    }
 
 
 def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[str, float | str]]:
@@ -548,16 +798,18 @@ class MetricHealthAnalyzer:
         if metric in ("fps", "jank_percent"):
             return "FPS 未采集" in note or "FPS 当前无帧增量" in note or "FPS 采集失败" in note
         if metric == "cpu_percent":
-            return "CPU 当前无进程增量" in note or "CPU/内存" in note and "需要启动" in note
+            return "CPU 当前无进程增量" in note or "CPU 采集失败" in note or "CPU/内存" in note and "需要启动" in note
         if metric == "memory_mb":
-            return "未匹配到目标 PID" in note or "未找到运行中的" in note
+            return "未匹配到目标 PID" in note or "未找到运行中的" in note or "内存 采集失败" in note
+        if metric in ("battery_percent", "temperature_c"):
+            return "电量/温度/功耗 采集失败" in note
         if metric in ("rx_kbps", "tx_kbps"):
             if "设备级网络兜底" in note:
                 return False
             network_tokens = ("网络未匹配", "无法按应用统计", "网络采集失败", "网络采集不可用")
             return any(token in note for token in network_tokens)
         if metric == "power_w":
-            return "功耗" in note and ("失败" in note or "不可用" in note)
+            return "电量/温度/功耗 采集失败" in note or "功耗" in note and ("失败" in note or "不可用" in note)
         return False
 
     @staticmethod
@@ -619,13 +871,22 @@ class LiveQualityTracker:
         total = max(self.sample_count, 1)
         issue_percent = self.issue_count / total * 100.0
         fallback_percent = self.network_fallback_count / total * 100.0
-        confidence_percent = max(0.0, (self.sample_count - self.issue_count - self.network_fallback_count) / total * 100.0)
+        gate = self.quality_gate()
         return (
-            f"可信度 {confidence_percent:.1f}% · "
+            f"{gate.label} {gate.confidence_percent:.1f}% · "
             f"网络来源：{self.network_source} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
             f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%) · "
             f"前台 {self.foreground_issue_count} · 慢采样 {self.slow_sample_count}"
+        )
+
+    def quality_gate(self) -> SessionQualityGate:
+        return session_quality_gate(
+            self.sample_count,
+            self.issue_count,
+            self.network_fallback_count,
+            self.foreground_issue_count,
+            self.slow_sample_count,
         )
 
     @staticmethod
@@ -722,17 +983,17 @@ class MetricStabilizer:
     def smooth_sample(self, sample: PerfSample) -> PerfSample:
         payload = asdict(sample)
         for metric in self.ALPHA_BY_METRIC:
-            payload[metric] = self._smooth(metric, float(payload.get(metric, 0.0) or 0.0), sample.timestamp)
+            payload[metric] = self._smooth(metric, float(payload.get(metric, 0.0) or 0.0), sample.timestamp, sample.note)
         return PerfSample(**payload)
 
-    def _smooth(self, metric: str, value: float, timestamp: float) -> float:
+    def _smooth(self, metric: str, value: float, timestamp: float, note: str = "") -> float:
         previous = self._values.get(metric)
         historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
             previous_timestamp = self._timestamps.get(metric, timestamp)
-            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0)
+            hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(metric, note)
             if hold_seconds and timestamp - previous_timestamp <= hold_seconds:
-                held = previous * 0.82
+                held = previous * self._quality_hold_decay(metric, note)
                 self._values[metric] = held
                 self._remember_raw_volatility(metric, value)
                 return held
@@ -742,23 +1003,27 @@ class MetricStabilizer:
             self._remember_raw_volatility(metric, value)
             return value
         alpha = self.ALPHA_BY_METRIC.get(metric, 0.35)
+        alpha *= self._quality_alpha_factor(metric, note)
         blended = previous + alpha * (value - previous)
         delta_ratio = abs(value - previous) / max(abs(previous), 1.0)
         if delta_ratio > 0.35:
             keep = self.SPIKE_KEEP_BY_METRIC.get(metric, 0.7)
             blended = blended * (1.0 - keep) + value * keep
-        blended = self._limit_display_step(metric, previous, blended)
+        blended = self._limit_display_step(metric, previous, blended, note)
         blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility)
         self._values[metric] = blended
         self._timestamps[metric] = timestamp
         self._remember_raw_volatility(metric, value)
         return max(blended, 0.0)
 
-    def _limit_display_step(self, metric: str, previous: float, value: float) -> float:
+    def _limit_display_step(self, metric: str, previous: float, value: float, note: str = "") -> float:
         limits = self.MAX_STEP_RATIO_BY_METRIC.get(metric)
         if not limits or previous <= 0 or value <= 0:
             return value
         down_ratio, up_ratio = limits
+        factor = self._quality_step_factor(metric, note)
+        down_ratio *= factor
+        up_ratio *= factor
         lower = previous * max(0.0, 1.0 - down_ratio)
         upper = previous * (1.0 + up_ratio)
         return min(max(value, lower), upper)
@@ -781,6 +1046,57 @@ class MetricStabilizer:
         change_ratio = abs(value - previous) / max(abs(previous), 1.0)
         prior = self._volatility.get(metric, 0.0)
         self._volatility[metric] = prior * 0.65 + change_ratio * 0.35
+
+    @staticmethod
+    def _quality_weight(note: str) -> float:
+        if not note:
+            return 0.0
+        tokens = (
+            "采样耗时",
+            "FPS 当前无帧增量",
+            "FPS 未采集",
+            "CPU 当前无进程增量",
+            "目标应用刚回到前台",
+            "目标应用不在前台",
+            "低端机",
+        )
+        return min(sum(1 for token in tokens if token in note) / 3.0, 1.0)
+
+    def _quality_hold_extension(self, metric: str, note: str) -> float:
+        weight = self._quality_weight(note)
+        if weight <= 0:
+            return 0.0
+        if metric == "fps":
+            return 4.0 * weight
+        if metric == "cpu_percent":
+            return 2.0 * weight
+        return 0.0
+
+    def _quality_hold_decay(self, metric: str, note: str) -> float:
+        weight = self._quality_weight(note)
+        if metric == "fps" and weight > 0:
+            return 0.9 - 0.08 * (1.0 - weight)
+        if metric == "cpu_percent" and weight > 0:
+            return 0.86
+        return 0.82
+
+    def _quality_alpha_factor(self, metric: str, note: str) -> float:
+        weight = self._quality_weight(note)
+        if weight <= 0:
+            return 1.0
+        if metric in ("fps", "cpu_percent", "power_w"):
+            return 1.0 - 0.6 * weight
+        if metric in ("rx_kbps", "tx_kbps"):
+            return 1.0 - 0.25 * weight
+        return 1.0
+
+    def _quality_step_factor(self, metric: str, note: str) -> float:
+        weight = self._quality_weight(note)
+        if weight <= 0:
+            return 1.0
+        if metric in ("fps", "cpu_percent", "power_w"):
+            return 1.0 - 0.55 * weight
+        return 1.0
 
 
 class WeakNetworkProxy:
@@ -808,6 +1124,7 @@ class WeakNetworkProxy:
         self._traffic_rate_base_time = time.time()
         self._traffic_rate_base_up = 0
         self._traffic_rate_base_down = 0
+        self._traffic_history = ProxyTrafficHistory()
 
     def configure(
         self,
@@ -874,8 +1191,9 @@ class WeakNetworkProxy:
             self._traffic_rate_base_time = timestamp
             self._traffic_rate_base_up = 0
             self._traffic_rate_base_down = 0
+            self._traffic_history.reset()
 
-    def traffic_snapshot(self, now: float | None = None) -> ProxyTrafficSnapshot:
+    def traffic_snapshot(self, now: float | None = None, record_history: bool = True) -> ProxyTrafficSnapshot:
         timestamp = time.time() if now is None else now
         with self._traffic_lock:
             elapsed = max(timestamp - self._traffic_rate_base_time, 0.0)
@@ -891,7 +1209,7 @@ class WeakNetworkProxy:
             self._traffic_rate_base_time = timestamp
             self._traffic_rate_base_up = up_bytes
             self._traffic_rate_base_down = down_bytes
-            return ProxyTrafficSnapshot(
+            snapshot = ProxyTrafficSnapshot(
                 up_bytes=up_bytes,
                 down_bytes=down_bytes,
                 up_kbps=up_kbps,
@@ -901,6 +1219,13 @@ class WeakNetworkProxy:
                 dropped_connections=self._traffic_dropped_connections,
                 last_activity_age=last_age,
             )
+            if record_history:
+                self._traffic_history.append(timestamp, snapshot)
+            return snapshot
+
+    def traffic_history(self) -> list[tuple[float, float, float]]:
+        with self._traffic_lock:
+            return self._traffic_history.points()
 
     def _record_connection_open(self, now: float | None = None) -> None:
         timestamp = time.time() if now is None else now
@@ -1195,6 +1520,7 @@ class AndroidAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self.adb_path = resolve_adb_path()
+        self._metric_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._frame_cache: dict[tuple[str, str], tuple[float, int, int]] = {}
         self._framestats_cache: dict[tuple[str, str], tuple[float, int]] = {}
         self._surface_frame_cache: dict[tuple[str, str], tuple[float, int]] = {}
@@ -1210,6 +1536,7 @@ class AndroidAdapter(BaseAdapter):
         self._sample_count: dict[tuple[str, str], int] = {}
         self._foreground_missing: set[tuple[str, str]] = set()
         self._foreground_recovery_remaining: dict[tuple[str, str], int] = {}
+        self._foreground_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
     def is_available(self) -> bool:
         return self.adb_path is not None
@@ -1330,6 +1657,71 @@ class AndroidAdapter(BaseAdapter):
                 return app_id
         return ""
 
+    def collection_diagnostics(self, device: DeviceInfo, app_id: str, now: float | None = None) -> AndroidCollectionDiagnostics:
+        now = time.time() if now is None else now
+        foreground_app = self.foreground_app(device)
+        foreground_state = self._diagnose_foreground_state(app_id, foreground_app)
+        pids, pid_source = self._diagnose_process_pids(device, app_id)
+        uid, uid_source = self._diagnose_app_uid(device, app_id, pids)
+        fps_source = self._diagnose_fps_source(device, app_id, now)
+        network_source = self._diagnose_network_source(device, app_id, uid)
+        rows = [
+            self._diagnostic_row(
+                "前台",
+                {
+                    "ok": ("匹配", f"当前前台 {foreground_app}"),
+                    "mismatch": ("前台不一致", f"当前前台 {foreground_app or '未识别'}"),
+                    "missing": ("未识别", "请解锁设备并让目标 App 停留在前台"),
+                    "empty": ("未填写", "请填写包名或点击前台应用"),
+                }[foreground_state],
+            ),
+            self._diagnostic_row(
+                "PID",
+                ("已找到", f"{pid_source}: {', '.join(str(pid) for pid in pids)}")
+                if pids
+                else ("未找到", "App 可能未运行、未在前台，或系统限制进程查询"),
+            ),
+            self._diagnostic_row(
+                "UID",
+                ("已找到", f"{uid_source}: {uid}") if uid is not None else ("未找到", "上下行网络无法按 App 统计"),
+            ),
+            self._diagnostic_row(
+                "FPS",
+                ("可用", fps_source) if fps_source != "missing" else ("不可用", "未发现 gfxinfo/framestats/SurfaceFlinger 帧数据"),
+            ),
+            self._diagnostic_row(
+                "网络",
+                {
+                    "per-UID": ("per-UID", "目标 App 独占上下行"),
+                    "device": ("设备级兜底", "非目标 App 独占流量，仅作趋势参考"),
+                    "missing": ("不可用", "未读取到 per-UID 或设备级网络计数"),
+                }[network_source],
+            ),
+        ]
+        risk_states = {
+            "foreground": foreground_state not in ("ok", "empty"),
+            "pid": not pids,
+            "uid": uid is None,
+            "fps": fps_source == "missing",
+            "network": network_source != "per-UID",
+        }
+        risk_count = sum(1 for value in risk_states.values() if value)
+        overall_state = "ok" if risk_count == 0 else "warning"
+        summary = "Android 采集自检通过" if risk_count == 0 else f"Android 采集自检发现 {risk_count} 项风险"
+        return AndroidCollectionDiagnostics(
+            overall_state=overall_state,
+            summary=summary,
+            rows=rows,
+            foreground_app=foreground_app,
+            foreground_state=foreground_state,
+            pid_source=pid_source if pids else "missing",
+            pids=pids,
+            uid_source=uid_source if uid is not None else "missing",
+            uid=uid,
+            fps_source=fps_source,
+            network_source=network_source,
+        )
+
     @classmethod
     def _parse_foreground_app(cls, output: str) -> str:
         preferred_tokens = (
@@ -1353,6 +1745,7 @@ class AndroidAdapter(BaseAdapter):
         patterns = (
             r"\bu\d+\s+([a-zA-Z][\w.]+)/[A-Za-z0-9_.$]+",
             r"\b([a-zA-Z][\w.]+)/(?:[A-Za-z0-9_.$]+)",
+            r"ActivityRecord\{[^}]*\bu\d+\s+([a-zA-Z][\w.]+)(?:\s|}|$)",
             r"Splash Screen\s+([a-zA-Z][\w.]+)",
             r"\bpackageName=([a-zA-Z][\w.]+)",
             r"\bcmp=([a-zA-Z][\w.]+)/[A-Za-z0-9_.$]+",
@@ -1366,7 +1759,111 @@ class AndroidAdapter(BaseAdapter):
                 return package
         return ""
 
+    @staticmethod
+    def _diagnose_foreground_state(app_id: str, foreground_app: str) -> str:
+        if not app_id:
+            return "empty"
+        if not foreground_app:
+            return "missing"
+        return "ok" if foreground_app == app_id else "mismatch"
+
+    @staticmethod
+    def _diagnostic_row(name: str, payload: tuple[str, str]) -> tuple[str, str, str]:
+        status, hint = payload
+        return name, status, hint
+
+    def _diagnose_process_pids(self, device: DeviceInfo, app_id: str) -> tuple[list[int], str]:
+        if not app_id:
+            return [], "missing"
+        key = (device.serial, app_id)
+        cached = self._pid_list_cache.get(key)
+        if cached:
+            return list(cached), "cache"
+        commands = [
+            ("pidof", f"pidof {shlex.quote(app_id)}", self._parse_pid_list, 2.0),
+            ("pgrep", f"pgrep -f {shlex.quote(app_id)}", self._parse_pid_list, 2.0),
+            ("ps -A -o PID=,NAME=", "ps -A -o PID=,NAME=", lambda output: self._parse_ps_pids(output, app_id), 3.0),
+            ("ps -A", "ps -A", lambda output: self._parse_ps_table_pids(output, app_id), 4.0),
+        ]
+        for source, command, parser, timeout in commands:
+            output = self._shell(device.serial, command, timeout=timeout)
+            pids = parser(output)
+            if pids:
+                self._pid_list_cache[key] = pids
+                self._pid_cache[key] = pids[0]
+                return pids, source
+        return [], "missing"
+
+    def _diagnose_app_uid(self, device: DeviceInfo, app_id: str, pids: list[int] | None = None) -> tuple[int | None, str]:
+        if not app_id:
+            return None, "missing"
+        key = (device.serial, app_id)
+        if key in self._uid_cache:
+            return self._uid_cache[key], "cache"
+        output = self._shell(device.serial, f"dumpsys package {shlex.quote(app_id)}", timeout=5.0)
+        match = re.search(r"userId=(\d+)", output) or re.search(r"appId=(\d+)", output)
+        if match:
+            uid = int(match.group(1))
+            self._uid_cache[key] = uid
+            return uid, "dumpsys package"
+        for pid in pids or []:
+            output = self._shell(device.serial, f"cat /proc/{pid}/status", timeout=2.0)
+            match = re.search(r"(?m)^Uid:\s*(\d+)", output)
+            if match:
+                uid = int(match.group(1))
+                self._uid_cache[key] = uid
+                return uid, "/proc status"
+        for source, command in (
+            ("pm list packages -U", f"pm list packages -U {shlex.quote(app_id)}"),
+            ("cmd package list packages -U", f"cmd package list packages -U {shlex.quote(app_id)}"),
+        ):
+            output = self._shell(device.serial, command, timeout=4.0)
+            uid = self._parse_pm_package_uid(output, app_id)
+            if uid is not None:
+                self._uid_cache[key] = uid
+                return uid, source
+        return None, "missing"
+
+    def _diagnose_fps_source(self, device: DeviceInfo, app_id: str, now: float) -> str:
+        if not app_id:
+            return "missing"
+        output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)}", timeout=5.0)
+        total_frames = int(parse_first_float(r"Total frames rendered:\s*(\d+)", output, 0.0))
+        if total_frames > 0:
+            key = (device.serial, app_id)
+            previous = self._frame_cache.get(key)
+            janky_frames = int(parse_first_float(r"Janky frames:\s*(\d+)", output, 0.0))
+            self._frame_cache[key] = (now, total_frames, janky_frames)
+            if previous is None or total_frames >= previous[1]:
+                return "gfxinfo counters"
+        output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)} framestats", timeout=5.0)
+        if self._parse_gfxinfo_framestats(output):
+            return "gfxinfo framestats"
+        surfaces = self._surface_latency_candidates(device, app_id)
+        if surfaces:
+            return f"SurfaceFlinger: {surfaces[0]}"
+        return "missing"
+
+    def _diagnose_network_source(self, device: DeviceInfo, app_id: str, uid: int | None) -> str:
+        if not app_id:
+            return "missing"
+        if uid is not None:
+            rx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_rcv", timeout=2.0).strip()
+            tx_text = self._shell(device.serial, f"cat /proc/uid_stat/{uid}/tcp_snd", timeout=2.0).strip()
+            if re.search(r"\d+", rx_text) and re.search(r"\d+", tx_text):
+                return "per-UID"
+            output = self._shell(device.serial, "cat /proc/net/xt_qtaguid/stats", timeout=4.0)
+            if self._parse_qtaguid_stats(output, uid) != (0, 0):
+                return "per-UID"
+            if self._net_totals_from_netstats(device, uid) != (0, 0):
+                return "per-UID"
+        if self._device_net_totals(device) != (0, 0):
+            return "device"
+        return "missing"
+
     def start_session(self, device: DeviceInfo, app_id: str) -> None:
+        if self._metric_executor is None:
+            self._metric_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         if app_id:
             self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)} reset", timeout=4.0)
         key = (device.serial, app_id)
@@ -1383,9 +1880,35 @@ class AndroidAdapter(BaseAdapter):
         self._sample_count.pop(key, None)
         self._foreground_missing.discard(key)
         self._foreground_recovery_remaining.pop(key, None)
+        self._foreground_cache.pop(key, None)
         surface = self._surface_name(device, app_id) if app_id else ""
         if surface:
             self._shell(device.serial, f"dumpsys SurfaceFlinger --latency-clear {shlex.quote(surface)}", timeout=3.0)
+
+    def stop_session(self, device: DeviceInfo, app_id: str) -> None:
+        self._shutdown_metric_executor()
+        key = (device.serial, app_id)
+        self._frame_cache.pop(key, None)
+        self._framestats_cache.pop(key, None)
+        self._surface_frame_cache.pop(key, None)
+        self._surface_cache.pop(key, None)
+        self._net_cache.pop(key, None)
+        self._device_net_cache.pop(key, None)
+        self._network_note_cache.pop(key, None)
+        self._pid_cache.pop(key, None)
+        self._pid_list_cache.pop(key, None)
+        self._cpu_proc_cache.pop(key, None)
+        self._sample_count.pop(key, None)
+        self._foreground_missing.discard(key)
+        self._foreground_recovery_remaining.pop(key, None)
+        self._foreground_cache.pop(key, None)
+
+    def _shutdown_metric_executor(self) -> None:
+        executor = self._metric_executor
+        if executor is None:
+            return
+        self._metric_executor = None
+        executor.shutdown(wait=False, cancel_futures=True)
 
     def _cpu_percent(self, device: DeviceInfo, app_id: str) -> float:
         if not app_id:
@@ -1394,19 +1917,113 @@ class AndroidAdapter(BaseAdapter):
         if proc_cpu is not None:
             return proc_cpu
         output = self._shell(device.serial, f"dumpsys cpuinfo {app_id}", timeout=5.0)
-        best = 0.0
-        escaped = re.escape(app_id)
-        for line in output.splitlines():
-            if app_id not in line:
+        cpuinfo_value = self._parse_cpuinfo_for_app(output, app_id)
+        if cpuinfo_value > 0:
+            return cpuinfo_value
+        return self._cpu_percent_from_top(device, app_id)
+
+    def _cpu_percent_from_top(self, device: DeviceInfo, app_id: str) -> float:
+        for command in ("top -b -n 1 -o PID,CPU,ARGS", "top -b -n 1", "top -n 1"):
+            output = self._shell(device.serial, command, timeout=5.0)
+            value = self._parse_top_cpu_for_app(output, app_id)
+            if value > 0:
+                return value
+        return 0.0
+
+    @classmethod
+    def _parse_cpuinfo_for_app(cls, output: str, app_id: str) -> float:
+        total = 0.0
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if app_id not in line or "TOTAL" in line:
                 continue
-            match = re.search(r"(\d+(?:\.\d+)?)%\s+\d+/" + escaped, line)
-            if match:
-                best = max(best, float(match.group(1)))
+            match = re.match(r"(\d+(?:\.\d+)?)%\s+\d+/(.+)", line)
+            if not match:
                 continue
-            match = re.search(r"(\d+(?:\.\d+)?)%", line)
-            if match:
-                best = max(best, float(match.group(1)))
-        return best
+            process_name = cls._process_name_before_cpuinfo_stats(match.group(2))
+            if not cls._process_name_matches_app(process_name, app_id):
+                continue
+            total += float(match.group(1))
+        return min(total, 1000.0)
+
+    @staticmethod
+    def _process_name_before_cpuinfo_stats(value: str) -> str:
+        process_part = re.split(r":\s+\d+(?:\.\d+)?%\s+", value.strip(), maxsplit=1)[0]
+        return process_part.strip().rstrip(":")
+
+    @classmethod
+    def _parse_top_cpu_for_app(cls, output: str, app_id: str) -> float:
+        total = 0.0
+        header: list[str] = []
+        cpu_index: int | None = None
+        name_index: int | None = None
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            upper_parts = [part.upper() for part in parts]
+            if "PID" in upper_parts and any(part in {"CPU", "%CPU", "[%CPU]"} for part in upper_parts):
+                header = upper_parts
+                cpu_index = next(
+                    (index for index, part in enumerate(header) if part in {"CPU", "%CPU", "[%CPU]"}),
+                    None,
+                )
+                name_index = cls._top_process_name_index(header)
+                continue
+            if not cls._line_mentions_app_process(parts, app_id):
+                continue
+            cpu_value = cls._cpu_value_from_top_parts(parts, cpu_index)
+            if cpu_value is None:
+                cpu_value = cls._cpu_value_from_unstructured_top_line(parts, app_id)
+            if cpu_value is None:
+                continue
+            total += cpu_value
+        return min(total, 1000.0)
+
+    @staticmethod
+    def _top_process_name_index(header: list[str]) -> int | None:
+        for name in ("ARGS", "CMDLINE", "COMMAND", "CMD", "NAME", "COMM"):
+            if name in header:
+                return header.index(name)
+        return None
+
+    @classmethod
+    def _line_mentions_app_process(cls, parts: list[str], app_id: str) -> bool:
+        return any(cls._process_name_matches_app(part, app_id) for part in parts)
+
+    @staticmethod
+    def _process_name_matches_app(process_name: str, app_id: str) -> bool:
+        cleaned = process_name.strip().strip("'\"")
+        if cleaned.endswith(":") and not cleaned.startswith(f"{app_id}:"):
+            cleaned = cleaned.rstrip(":")
+        return cleaned == app_id or cleaned.startswith(f"{app_id}:")
+
+    @staticmethod
+    def _cpu_value_from_top_parts(parts: list[str], cpu_index: int | None) -> float | None:
+        if cpu_index is None or cpu_index >= len(parts):
+            return None
+        return AndroidAdapter._parse_top_cpu_token(parts[cpu_index])
+
+    @classmethod
+    def _cpu_value_from_unstructured_top_line(cls, parts: list[str], app_id: str) -> float | None:
+        app_index = next((index for index, part in enumerate(parts) if cls._process_name_matches_app(part, app_id)), -1)
+        if app_index <= 0:
+            return None
+        candidates: list[float] = []
+        for part in parts[1:app_index]:
+            value = cls._parse_top_cpu_token(part)
+            if value is not None:
+                candidates.append(value)
+        return candidates[-1] if candidates else None
+
+    @staticmethod
+    def _parse_top_cpu_token(token: str) -> float | None:
+        cleaned = token.strip().strip("%")
+        match = re.match(r"\[?(\d+(?:\.\d+)?)\]?$", cleaned)
+        if not match:
+            return None
+        return float(match.group(1))
 
     def _process_pid(self, device: DeviceInfo, app_id: str) -> int | None:
         pids = self._process_pids(device, app_id)
@@ -1422,6 +2039,12 @@ class AndroidAdapter(BaseAdapter):
         if not pids:
             output = self._shell(device.serial, f"pgrep -f {shlex.quote(app_id)}", timeout=2.0)
             pids = self._parse_pid_list(output)
+        if not pids:
+            output = self._shell(device.serial, "ps -A -o PID=,NAME=", timeout=3.0)
+            pids = self._parse_ps_pids(output, app_id)
+        if not pids:
+            output = self._shell(device.serial, "ps -A", timeout=4.0)
+            pids = self._parse_ps_table_pids(output, app_id)
         if pids:
             self._pid_list_cache[key] = pids
             self._pid_cache[key] = pids[0]
@@ -1433,6 +2056,48 @@ class AndroidAdapter(BaseAdapter):
         seen: set[int] = set()
         for value in re.findall(r"\b\d+\b", output):
             pid = int(value)
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            pids.append(pid)
+        return pids
+
+    @staticmethod
+    def _parse_ps_pids(output: str, app_id: str) -> list[int]:
+        pids: list[int] = []
+        seen: set[int] = set()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            process_name = parts[1].strip()
+            if process_name != app_id and not process_name.startswith(f"{app_id}:"):
+                continue
+            pid = int(parts[0])
+            if pid <= 0 or pid in seen:
+                continue
+            seen.add(pid)
+            pids.append(pid)
+        return pids
+
+    @staticmethod
+    def _parse_ps_table_pids(output: str, app_id: str) -> list[int]:
+        pids: list[int] = []
+        seen: set[int] = set()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("USER", "PID")):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or not parts[1].isdigit():
+                continue
+            process_name = parts[-1]
+            if process_name != app_id and not process_name.startswith(f"{app_id}:"):
+                continue
+            pid = int(parts[1])
             if pid <= 0 or pid in seen:
                 continue
             seen.add(pid)
@@ -1539,11 +2204,50 @@ class AndroidAdapter(BaseAdapter):
         match = re.search(r"userId=(\d+)", output)
         if not match:
             match = re.search(r"appId=(\d+)", output)
-        if not match:
+        if match:
+            uid = int(match.group(1))
+            self._uid_cache[key] = uid
+            return uid
+        uid = self._app_uid_from_process_status(device, app_id)
+        if uid is None:
+            uid = self._app_uid_from_pm_list_packages(device, app_id)
+        if uid is None:
             return None
-        uid = int(match.group(1))
         self._uid_cache[key] = uid
         return uid
+
+    def _app_uid_from_process_status(self, device: DeviceInfo, app_id: str) -> int | None:
+        for pid in self._process_pids(device, app_id):
+            output = self._shell(device.serial, f"cat /proc/{pid}/status", timeout=2.0)
+            match = re.search(r"(?m)^Uid:\s*(\d+)", output)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _app_uid_from_pm_list_packages(self, device: DeviceInfo, app_id: str) -> int | None:
+        for command in (
+            f"pm list packages -U {shlex.quote(app_id)}",
+            f"cmd package list packages -U {shlex.quote(app_id)}",
+        ):
+            output = self._shell(device.serial, command, timeout=4.0)
+            uid = self._parse_pm_package_uid(output, app_id)
+            if uid is not None:
+                return uid
+        return None
+
+    @staticmethod
+    def _parse_pm_package_uid(output: str, app_id: str) -> int | None:
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if app_id not in line:
+                continue
+            package_match = re.search(r"package:([^\s]+)", line)
+            if package_match and package_match.group(1) != app_id:
+                continue
+            uid_match = re.search(r"\buid[:=](\d+)", line)
+            if uid_match:
+                return int(uid_match.group(1))
+        return None
 
     def _net_totals(self, device: DeviceInfo, app_id: str) -> tuple[int, int]:
         uid = self._app_uid(device, app_id) if app_id else None
@@ -1612,6 +2316,12 @@ class AndroidAdapter(BaseAdapter):
                 rx, tx = positional
                 rx_total += rx
                 tx_total += tx
+                continue
+            history_row = cls._rx_tx_from_netstats_history_row(line)
+            if history_row:
+                rx, tx = history_row
+                rx_total += rx
+                tx_total += tx
         return rx_total, tx_total
 
     @staticmethod
@@ -1634,6 +2344,13 @@ class AndroidAdapter(BaseAdapter):
         if len(tail) >= 2:
             return tail[0], tail[1]
         return None
+
+    @staticmethod
+    def _rx_tx_from_netstats_history_row(line: str) -> tuple[int, int] | None:
+        if not re.match(r"^\d+(?:\s+\d+){4,}\s*$", line):
+            return None
+        numbers = [int(value) for value in re.findall(r"\d+", line)]
+        return numbers[1], numbers[3]
 
     def _device_net_totals(self, device: DeviceInfo) -> tuple[int, int]:
         output = self._shell(device.serial, "cat /proc/net/dev", timeout=2.0)
@@ -1667,22 +2384,28 @@ class AndroidAdapter(BaseAdapter):
         rx_total, tx_total = self._net_totals(device, app_id)
         if rx_total <= 0 and tx_total <= 0:
             device_rx, device_tx = self._device_net_totals(device)
+            read_time = time.time()
+            if device_rx <= 0 and device_tx <= 0:
+                self._network_note_cache[key] = "Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"
+                return 0.0, 0.0
             previous_device = self._device_net_cache.get(key)
-            self._device_net_cache[key] = (now, device_rx, device_tx)
+            self._device_net_cache[key] = (read_time, device_rx, device_tx)
             if previous_device:
                 prev_time, prev_rx, prev_tx = previous_device
-                delta = max(now - prev_time, 0.1)
+                delta = max(read_time - prev_time, 0.1)
                 rx_kbps = max(device_rx - prev_rx, 0) / 1024.0 / delta
                 tx_kbps = max(device_tx - prev_tx, 0) / 1024.0 / delta
                 if rx_kbps > 0 or tx_kbps > 0:
                     self._network_note_cache[key] = "Android 网络使用设备级网络兜底，非目标 App 独占流量。"
                     return rx_kbps, tx_kbps
+            return 0.0, 0.0
+        read_time = time.time()
         previous = self._net_cache.get(key)
-        self._net_cache[key] = (now, rx_total, tx_total)
+        self._net_cache[key] = (read_time, rx_total, tx_total)
         if not previous:
             return 0.0, 0.0
         prev_time, prev_rx, prev_tx = previous
-        delta = max(now - prev_time, 0.1)
+        delta = max(read_time - prev_time, 0.1)
         rx_kbps = max(rx_total - prev_rx, 0) / 1024.0 / delta
         tx_kbps = max(tx_total - prev_tx, 0) / 1024.0 / delta
         return rx_kbps, tx_kbps
@@ -1702,17 +2425,18 @@ class AndroidAdapter(BaseAdapter):
 
     def _gfxinfo_counter_fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float] | None:
         output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)}", timeout=5.0)
+        read_time = time.time()
         total_frames = int(parse_first_float(r"Total frames rendered:\s*(\d+)", output, 0.0))
         janky_frames = int(parse_first_float(r"Janky frames:\s*(\d+)", output, 0.0))
         if not total_frames:
             return None
         key = (device.serial, app_id)
         previous = self._frame_cache.get(key)
-        self._frame_cache[key] = (now, total_frames, janky_frames)
+        self._frame_cache[key] = (read_time, total_frames, janky_frames)
         if not previous:
             return None
         prev_time, prev_frames, prev_janky = previous
-        seconds = max(now - prev_time, 0.1)
+        seconds = max(read_time - prev_time, 0.1)
         frame_delta = max(total_frames - prev_frames, 0)
         jank_delta = max(janky_frames - prev_janky, 0)
         if frame_delta <= 0:
@@ -1774,27 +2498,31 @@ class AndroidAdapter(BaseAdapter):
         return fps, jank_percent
 
     def _surface_latency_frames(self, device: DeviceInfo, app_id: str) -> tuple[int, list[int]]:
-        surface = self._surface_name(device, app_id)
-        if not surface:
+        surfaces = self._surface_latency_candidates(device, app_id)
+        if not surfaces:
             return 0, []
-        output = self._shell(
-            device.serial,
-            f"dumpsys SurfaceFlinger --latency {shlex.quote(surface)}",
-            timeout=4.0,
-        )
-        refresh_period_ns, frame_times = self._parse_surface_latency(output)
-        if frame_times:
-            return refresh_period_ns, frame_times
+        for surface in surfaces:
+            output = self._shell(
+                device.serial,
+                f"dumpsys SurfaceFlinger --latency {shlex.quote(surface)}",
+                timeout=4.0,
+            )
+            refresh_period_ns, frame_times = self._parse_surface_latency(output)
+            if frame_times:
+                self._surface_cache[(device.serial, app_id)] = surface
+                return refresh_period_ns, frame_times
         self._surface_cache.pop((device.serial, app_id), None)
-        surface = self._surface_name(device, app_id)
-        if not surface:
-            return 0, []
-        output = self._shell(
-            device.serial,
-            f"dumpsys SurfaceFlinger --latency {shlex.quote(surface)}",
-            timeout=4.0,
-        )
-        return self._parse_surface_latency(output)
+        return 0, []
+
+    def _surface_latency_candidates(self, device: DeviceInfo, app_id: str) -> list[str]:
+        candidates: list[str] = []
+        cached = self._surface_cache.get((device.serial, app_id))
+        if cached:
+            candidates.append(cached)
+        for surface in self._surface_name_candidates(device, app_id):
+            if surface not in candidates:
+                candidates.append(surface)
+        return candidates
 
     @staticmethod
     def _parse_gfxinfo_framestats(output: str) -> list[int]:
@@ -1939,13 +2667,15 @@ class AndroidAdapter(BaseAdapter):
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         if not lines:
             return 0, []
-        try:
-            refresh_period_ns = int(lines[0].split()[0])
-        except Exception:
-            refresh_period_ns = 0
+        refresh_period_ns = 0
+        for value in re.findall(r"\d+", lines[0]):
+            candidate = int(value)
+            if 1_000_000 <= candidate <= 100_000_000:
+                refresh_period_ns = candidate
+                break
         frame_times: list[int] = []
         for line in lines[1:]:
-            parts = line.split()
+            parts = re.split(r"[\s,]+", line.strip())
             if len(parts) < 3:
                 continue
             try:
@@ -1953,8 +2683,11 @@ class AndroidAdapter(BaseAdapter):
                 ready_time = int(parts[2])
             except ValueError:
                 continue
-            if present_time > 0 and ready_time > 0:
+            pending_present = present_time >= 9_000_000_000_000_000_000
+            if present_time > 0 and not pending_present:
                 frame_times.append(present_time)
+            elif ready_time > 0:
+                frame_times.append(ready_time)
         return refresh_period_ns, sorted(set(frame_times))
 
     @staticmethod
@@ -1978,14 +2711,24 @@ class AndroidAdapter(BaseAdapter):
         key = (device.serial, app_id)
         sample_count = self._sample_count.get(key, 0) + 1
         self._sample_count[key] = sample_count
-        foreground_app = self.foreground_app(device) if device.platform == "Android" else ""
-        fps, jank_percent = self._fps_and_jank(device, app_id, current)
-        battery, temperature, power = self._battery(device)
-        rx, tx = self._network_kbps(device, app_id, current)
-        cpu = self._cpu_percent(device, app_id)
-        memory = self._memory_mb(device, app_id)
-        note = self._android_sample_note(device, app_id, sample_count, fps, cpu, memory, rx, tx)
+        foreground_app = ""
+        foreground_metric_note = ""
+        try:
+            foreground_app = self._cached_foreground_app(device, app_id, current) if device.platform == "Android" else ""
+        except Exception as exc:
+            foreground_metric_note = f"Android 前台应用 采集失败：{WeakNetworkProxy._short_error(str(exc))}"
         foreground_note = self._foreground_session_note(device, app_id, foreground_app)
+        metrics, metric_notes = self._collect_android_metrics_parallel(device, app_id, current)
+        fps, jank_percent = metrics.get("fps_jank", (0.0, 0.0))
+        battery, temperature, power = metrics.get("battery", (0.0, 0.0, 0.0))
+        rx, tx = metrics.get("network", (0.0, 0.0))
+        cpu = float(metrics.get("cpu", 0.0) or 0.0)
+        memory = float(metrics.get("memory", 0.0) or 0.0)
+        note = self._android_sample_note(device, app_id, sample_count, fps, cpu, memory, rx, tx)
+        if foreground_metric_note:
+            metric_notes.insert(0, foreground_metric_note)
+        if metric_notes:
+            note = f"{note}；{'；'.join(metric_notes)}" if note else "；".join(metric_notes)
         if foreground_note:
             note = f"{foreground_note}；{note}" if note else foreground_note
         network_note = self._network_note_cache.get(key, "")
@@ -2006,6 +2749,52 @@ class AndroidAdapter(BaseAdapter):
             note=note,
         )
 
+    def _collect_android_metrics_parallel(
+        self,
+        device: DeviceInfo,
+        app_id: str,
+        current: float,
+    ) -> tuple[dict[str, object], list[str]]:
+        tasks = {
+            "fps_jank": lambda: self._fps_and_jank(device, app_id, current),
+            "battery": lambda: self._battery(device),
+            "network": lambda: self._network_kbps(device, app_id, current),
+            "cpu": lambda: self._cpu_percent(device, app_id),
+            "memory": lambda: self._memory_mb(device, app_id),
+        }
+        labels = {
+            "fps_jank": "FPS",
+            "battery": "电量/温度/功耗",
+            "network": "网络",
+            "cpu": "CPU",
+            "memory": "内存",
+        }
+        values: dict[str, object] = {}
+        notes: list[str] = []
+        executor = self._metric_executor
+        if executor is None:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks))
+            self._metric_executor = executor
+        futures = {executor.submit(task): key for key, task in tasks.items()}
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            try:
+                values[key] = future.result()
+            except Exception as exc:
+                notes.append(f"Android {labels[key]} 采集失败：{WeakNetworkProxy._short_error(str(exc))}")
+        return values, notes
+
+    def _cached_foreground_app(self, device: DeviceInfo, app_id: str, now: float) -> str:
+        key = (device.serial, app_id)
+        cached = self._foreground_cache.get(key)
+        if cached:
+            cached_time, cached_app = cached
+            if cached_app == app_id and now - cached_time < ANDROID_FOREGROUND_CACHE_SECONDS:
+                return cached_app
+        foreground = self.foreground_app(device)
+        self._foreground_cache[key] = (now, foreground)
+        return foreground
+
     def _foreground_session_note(self, device: DeviceInfo, app_id: str, foreground_app: str) -> str:
         if not app_id or not foreground_app:
             return ""
@@ -2017,12 +2806,26 @@ class AndroidAdapter(BaseAdapter):
         if key in self._foreground_missing:
             self._foreground_missing.discard(key)
             self._foreground_recovery_remaining[key] = 2
+            self._reset_foreground_delta_caches(key)
         remaining = self._foreground_recovery_remaining.get(key, 0)
         if remaining > 0:
             self._foreground_recovery_remaining[key] = remaining - 1
             return "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。"
         self._foreground_recovery_remaining.pop(key, None)
         return ""
+
+    def _reset_foreground_delta_caches(self, key: tuple[str, str]) -> None:
+        self._frame_cache.pop(key, None)
+        self._framestats_cache.pop(key, None)
+        self._surface_frame_cache.pop(key, None)
+        self._surface_cache.pop(key, None)
+        self._net_cache.pop(key, None)
+        self._device_net_cache.pop(key, None)
+        self._network_note_cache.pop(key, None)
+        self._pid_cache.pop(key, None)
+        self._pid_list_cache.pop(key, None)
+        self._cpu_proc_cache.pop(key, None)
+        self._foreground_cache.pop(key, None)
 
     def _android_sample_note(
         self,
@@ -2053,8 +2856,6 @@ class AndroidAdapter(BaseAdapter):
             uid = self._uid_cache.get((device.serial, app_id))
             if uid is None:
                 notes.append("Android 网络未匹配到 App UID，无法按应用统计上下行。")
-            else:
-                notes.append("Android 网络当前无流量或系统未开放 per-UID 统计；请触发网络请求后观察。")
         return "；".join(notes[:3])
 
     def capture_screenshot(self, device: DeviceInfo, target: Path) -> Path | None:
@@ -3489,6 +4290,8 @@ class SessionRecorder:
                 "sample_count": 0,
                 "noted_samples": 0,
                 "noted_percent": 0.0,
+                "quality_gate": asdict(session_quality_gate(0, 0, 0, 0, 0)),
+                "cadence": sampling_cadence_summary([]),
                 "network_source": "无数据",
                 "network_fallback_samples": 0,
                 "network_fallback_percent": 0.0,
@@ -3496,13 +4299,20 @@ class SessionRecorder:
             }
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
+        issue_count = sum(1 for sample in self.samples if sample_quality_tag(sample) == "issue")
+        foreground_count = sum(1 for sample in self.samples if "目标应用不在前台" in sample.note)
+        slow_count = sum(1 for sample in self.samples if "采样耗时" in sample.note)
         missing_tokens = {
             "FPS 未采集": ("FPS 未采集", "帧率数据缺失，通常与 Surface 识别、页面静止或系统输出受限有关。"),
             "FPS 当前无帧增量": ("FPS 无帧增量", "采样窗口内没有新增帧，低端机或静止页面可能更常见。"),
             "CPU 当前无进程增量": ("CPU 无进程增量", "CPU 进程计数未变化，可能是采样间隔过短或 /proc 读取受限。"),
+            "CPU 采集失败": ("CPU 采集失败", "CPU 采集通道失败，本轮仍保留其它可用指标。"),
+            "内存 采集失败": ("内存采集失败", "内存采集通道失败，本轮仍保留其它可用指标。"),
             "网络未匹配": ("网络未匹配 UID", "未拿到目标 App UID，无法确认 per-UID 上下行。"),
             "无法按应用统计": ("网络无法按应用统计", "系统未开放目标 App per-UID 网络统计。"),
             "网络采集失败": ("网络采集失败", "网络采集通道返回错误。"),
+            "网络采集不可用": ("网络采集不可用", "未读取到 per-UID 或设备级网络计数，无法判断目标 App 上下行。"),
+            "电量/温度/功耗 采集失败": ("电量/温度/功耗采集失败", "电池和功耗采集通道失败，本轮仍保留其它可用指标。"),
             "未匹配到目标 PID": ("PID 未匹配", "目标进程未匹配，CPU/内存/FPS 可能不可信。"),
             "目标应用不在前台": ("目标离开前台", "目标 App 不在前台时，FPS/CPU/网络曲线不应作为目标场景性能结论。"),
             "恢复窗口内": ("前台恢复窗口", "目标 App 刚回到前台，Surface/进程缓存重建会影响短时间样本。"),
@@ -3534,19 +4344,35 @@ class SessionRecorder:
             network_source = "设备级网络兜底"
         elif fallback_samples:
             network_source = "per-UID + 设备级兜底"
-        elif any("网络未匹配" in sample.note or "无法按应用统计" in sample.note for sample in self.samples):
+        elif any(
+            "网络未匹配" in sample.note
+            or "无法按应用统计" in sample.note
+            or "网络采集失败" in sample.note
+            or "网络采集不可用" in sample.note
+            for sample in self.samples
+        ):
             network_source = "per-UID 不可用"
         return {
             "sample_count": total,
             "noted_samples": len(noted_samples),
             "noted_percent": round(len(noted_samples) / total * 100.0, 1),
+            "quality_gate": asdict(
+                session_quality_gate(
+                    total,
+                    issue_count,
+                    len(fallback_samples),
+                    foreground_count,
+                    slow_count,
+                )
+            ),
+            "cadence": sampling_cadence_summary(self.samples),
             "network_source": network_source,
             "network_fallback_samples": len(fallback_samples),
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
             "issues": issues,
         }
 
-    def export_bundle(self, folder: Path) -> tuple[Path, Path, Path]:
+    def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
         device_label = safe_name(self.device.name if self.device else "device")
         app_label = safe_name(self.app_id or "app")
@@ -3586,6 +4412,8 @@ class SessionRecorder:
             "markers": self.markers,
             "samples": [asdict(sample) for sample in self.samples],
         }
+        if weak_network is not None:
+            payload["weak_network"] = weak_network
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         html_path.write_text(self._render_html(payload), encoding="utf-8")
         return csv_path, json_path, html_path
@@ -3593,6 +4421,7 @@ class SessionRecorder:
     def _render_html(self, payload: dict) -> str:
         summary = payload.get("summary", {})
         quality = payload.get("quality", {})
+        weak_network = payload.get("weak_network")
         summary_labels = {
             "device": "设备",
             "app_id": "目标应用",
@@ -3639,6 +4468,12 @@ class SessionRecorder:
             f"<tr><td>{index}</td><td>{html.escape(str(marker.get('elapsed', '')))}s</td><td>{html.escape(str(marker.get('label', '')))}</td></tr>"
             for index, marker in enumerate(self.markers, start=1)
         ) or "<tr><td colspan='3'>暂无标记</td></tr>"
+        quality_gate = quality.get("quality_gate", {})
+        if not isinstance(quality_gate, dict):
+            quality_gate = {}
+        cadence = quality.get("cadence", {})
+        if not isinstance(cadence, dict):
+            cadence = {}
         quality_cards = "".join(
             "<article class='quality-card'>"
             f"<span>{html.escape(label)}</span>"
@@ -3646,6 +4481,16 @@ class SessionRecorder:
             f"<p>{html.escape(detail)}</p>"
             "</article>"
             for label, value, detail in [
+                (
+                    "质量门禁",
+                    f"{quality_gate.get('label', '无数据')} / {quality_gate.get('confidence_percent', 0.0)}%",
+                    str(quality_gate.get("detail", "暂无采集质量结论。")),
+                ),
+                (
+                    "采样节拍",
+                    f"{cadence.get('label', '无数据')} / 慢间隔 {cadence.get('slow_percent', 0.0)}%",
+                    str(cadence.get("detail", "暂无采样节拍结论。")),
+                ),
                 ("样本数", str(quality.get("sample_count", 0)), "本次报告中的原始采样点数量。"),
                 ("带说明样本", f"{quality.get('noted_samples', 0)} / {quality.get('noted_percent', 0)}%", "出现采集说明、异常或兜底提示的样本。"),
                 ("网络来源", str(quality.get("network_source", "无数据")), "优先目标 App per-UID；不可用时可能使用设备级兜底。"),
@@ -3660,6 +4505,31 @@ class SessionRecorder:
         quality_intervals = quality_intervals_from_points(
             [(float(sample.elapsed), sample_quality_tag(sample)) for sample in self.samples]
         )
+
+        weak_network_section = ""
+        if isinstance(weak_network, dict):
+            weak_snapshot = weak_network.get("snapshot", {})
+            weak_display = weak_network.get("snapshot_display", {})
+            weak_history = weak_network.get("history", [])
+            weak_network_section = "".join(
+                [
+                    "<h2>弱网真实流量</h2>",
+                    "<table><tr><th>项目</th><th>值</th></tr>",
+                    f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
+                    f"<tr><th>端点</th><td>{html.escape(str(weak_network.get('endpoint', '')))}</td></tr>",
+                    f"<tr><th>下行速率</th><td>{html.escape(str(weak_display.get('down_rate', '0.0 KB/s')))}</td></tr>",
+                    f"<tr><th>上行速率</th><td>{html.escape(str(weak_display.get('up_rate', '0.0 KB/s')))}</td></tr>",
+                    f"<tr><th>下行累计</th><td>{html.escape(str(weak_display.get('down_total', '0 B')))}</td></tr>",
+                    f"<tr><th>上行累计</th><td>{html.escape(str(weak_display.get('up_total', '0 B')))}</td></tr>",
+                    f"<tr><th>连接</th><td>{html.escape(str(weak_display.get('connections', '0 活跃 / 0 总计')))}</td></tr>",
+                    f"<tr><th>丢弃</th><td>{html.escape(str(weak_display.get('drops', '0')))}</td></tr>",
+                    f"<tr><th>最近活跃</th><td>{html.escape(str(weak_display.get('activity', '无')))}</td></tr>",
+                    f"<tr><th>原始快照</th><td>{html.escape(str(weak_snapshot.get('down_kbps', 0.0)))} KB/s 下行 · {html.escape(str(weak_snapshot.get('up_kbps', 0.0)))} KB/s 上行</td></tr>",
+                    "</table>",
+                    "<div class='weak-traffic-chart'><canvas id='proxyTrafficHistory'></canvas></div>",
+                    f"<script>window.proxyTrafficHistory = {json.dumps(list(weak_history), ensure_ascii=False).replace('</', '<\\/')};</script>",
+                ]
+            )
 
         def interval_note(interval: dict[str, float | str]) -> str:
             start = float(interval.get("start", 0.0))
@@ -3754,6 +4624,8 @@ class SessionRecorder:
     .chart-stat { flex: 0 0 auto; color: #172033; font-weight: 700; text-align: right; white-space: nowrap; }
     .chart-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; scrollbar-gutter: stable; }
     .chart-scroll canvas { min-width: 100%; height: 250px; display: block; }
+    .weak-traffic-chart { margin-top: 14px; padding: 10px 12px 12px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
+    .weak-traffic-chart canvas { width: 100%; height: 220px; display: block; }
     .marker-table th, .marker-table td { width: auto; }
     .marker-table th:first-child, .marker-table td:first-child { width: 72px; }
     .marker-table th:nth-child(2), .marker-table td:nth-child(2) { width: 160px; }
@@ -3779,6 +4651,7 @@ class SessionRecorder:
     <table class="issue-table" style="margin-top: 16px;"><tr><th>类型</th><th>样本数</th><th>占比</th><th>说明</th></tr>__ISSUE_ROWS__</table>
     <h2>异常区间</h2>
     <table class="issue-table"><tr><th>类型</th><th>开始</th><th>结束</th><th>持续</th></tr>__INTERVAL_ROWS__</table>
+    __WEAK_NETWORK_SECTION__
     <h2>曲线</h2>
     <div class="hint">每张图使用独立单位和坐标轴；虚线为参考阈值，标记会显示为竖线。</div>
     <div class="legend" aria-label="曲线标识">
@@ -3791,10 +4664,11 @@ class SessionRecorder:
     <h2>标记</h2>
     <table class="marker-table"><tr><th>序号</th><th>Elapsed</th><th>Label</th></tr>__MARKER_ROWS__</table>
   </main>
-  <script>
+    <script>
     const samples = __DATA__;
     const markers = __MARKERS__;
     const chartConfigs = __CHARTS__;
+    const proxyTrafficHistory = window.proxyTrafficHistory || [];
     const VIEW_SECONDS = 30 * 60;
     const MIN_VIEW_SECONDS = 10;
     let syncingChartScroll = false;
@@ -4152,8 +5026,75 @@ class SessionRecorder:
       }
     }
 
+    function drawProxyTrafficHistory() {
+      const canvas = document.getElementById('proxyTrafficHistory');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const parent = canvas.parentElement;
+      const width = Math.max(640, Math.round(parent.getBoundingClientRect().width || 640));
+      const height = 220;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      const pad = { left: 48, right: 18, top: 18, bottom: 28 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+      if (!proxyTrafficHistory.length) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        ctx.fillText('暂无弱网真实流量历史', pad.left + 12, pad.top + plotH / 2);
+        return;
+      }
+      const values = proxyTrafficHistory.flatMap(point => [Number(point.down_kbps || 0), Number(point.up_kbps || 0)]);
+      const maxValue = Math.max(...values, 1);
+      const maxY = niceCeil(maxValue * 1.1);
+      const start = Number(proxyTrafficHistory[0].elapsed || 0);
+      const end = Math.max(Number(proxyTrafficHistory[proxyTrafficHistory.length - 1].elapsed || 0), start + 1);
+      const xFor = (seconds) => pad.left + ((Number(seconds || 0) - start) / Math.max(end - start, 1)) * plotW;
+      const yFor = (value) => pad.top + plotH - (Number(value || 0) / maxY) * plotH;
+      ctx.strokeStyle = '#e6edf5';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i++) {
+        const y = pad.top + (plotH / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(width - pad.right, y);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#64748b';
+      ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillText(`${fmt(maxY, 1)} KB/s`, 8, pad.top + 4);
+      ctx.fillText('0', 18, pad.top + plotH);
+      ctx.fillText('起点', pad.left, height - 6);
+      ctx.fillText('现在', width - pad.right, height - 6);
+      const drawLine = (key, color, widthPx) => {
+        const points = [];
+        proxyTrafficHistory.forEach(point => {
+          points.push(xFor(point.elapsed), yFor(point[key]));
+        });
+        if (points.length < 4) return;
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = widthPx;
+        ctx.moveTo(points[0], points[1]);
+        for (let i = 2; i < points.length; i += 2) {
+          ctx.lineTo(points[i], points[i + 1]);
+        }
+        ctx.stroke();
+      };
+      drawLine('down_kbps', '#16A34A', 2.4);
+      drawLine('up_kbps', '#0D9488', 2.0);
+    }
+
     function renderAll() {
       for (const config of chartConfigs) drawChart(config);
+      drawProxyTrafficHistory();
     }
     renderAll();
     window.addEventListener('resize', renderAll);
@@ -4172,6 +5113,7 @@ class SessionRecorder:
             .replace("__QUALITY_CARDS__", quality_cards)
             .replace("__ISSUE_ROWS__", issue_rows)
             .replace("__INTERVAL_ROWS__", interval_rows)
+            .replace("__WEAK_NETWORK_SECTION__", weak_network_section)
             .replace("__CHART_CARDS__", chart_cards)
             .replace("__MARKER_ROWS__", marker_rows)
             .replace("__DATA__", data)
@@ -4207,6 +5149,7 @@ class SamplerThread(threading.Thread):
             self.output.put(("log", "采集会话已初始化。"))
         except Exception as exc:
             self.output.put(("log", f"初始化采集失败：{exc}"))
+        next_tick = time.time()
         while not self.stop_event.is_set():
             loop_start = time.time()
             try:
@@ -4219,7 +5162,9 @@ class SamplerThread(threading.Thread):
             except Exception as exc:
                 self.output.put(("log", f"采样失败：{exc}"))
                 spent = time.time() - loop_start
-            self.stop_event.wait(max(self.interval - spent, 0.05))
+            next_tick += self.interval
+            delay = max(next_tick - time.time(), 0.0)
+            self.stop_event.wait(delay)
         try:
             self.adapter.stop_session(self.device, self.app_id)
         except Exception as exc:
@@ -4361,7 +5306,13 @@ class GraphPanel(ttk.Frame):
                 font=("Helvetica", 12),
             )
             return
-        values = [value for elapsed, value, _quality in visible_points if view_start <= elapsed <= view_end] or [value for _elapsed, value, _quality in visible_points]
+        display_values = smooth_graph_series([(elapsed, value) for elapsed, value, _quality in visible_points])
+        display_by_elapsed = {elapsed: value for elapsed, value in display_values}
+        values = [
+            display_by_elapsed.get(elapsed, value)
+            for elapsed, value, _quality in visible_points
+            if view_start <= elapsed <= view_end
+        ] or [value for _elapsed, value in display_values]
         max_value = max(max(values), 1.0)
         if self.metric == "fps":
             max_value = max(max_value, 60.0)
@@ -4370,8 +5321,9 @@ class GraphPanel(ttk.Frame):
         quality_points: list[tuple[float, float, str]] = []
         interval_points: list[tuple[float, str]] = []
         for elapsed, value, quality in visible_points:
+            display_value = display_by_elapsed.get(elapsed, value)
             x = pad_left + ((elapsed - view_start) / view_seconds) * plot_w
-            y = pad_top + plot_h - min(value / max_value, 1.0) * plot_h
+            y = pad_top + plot_h - min(display_value / max_value, 1.0) * plot_h
             points.extend([x, y])
             if view_start <= elapsed <= view_end:
                 last_visible = (x, y)
@@ -4398,6 +5350,76 @@ class GraphPanel(ttk.Frame):
                 canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill="#EF4444", outline="#FFFFFF")
         last_x, last_y = last_visible or (points[-2], points[-1])
         canvas.create_oval(last_x - 4, last_y - 4, last_x + 4, last_y + 4, fill=self.color, outline="#FFFFFF", width=2)
+
+
+class TrafficMiniChart(ttk.Frame):
+    def __init__(self, master: tk.Widget) -> None:
+        super().__init__(master, style="Panel.TFrame", padding=(10, 8))
+        header = ttk.Frame(self, style="Panel.TFrame")
+        header.pack(fill="x")
+        ttk.Label(header, text="实时流量曲线", style="PanelTitle.TLabel").pack(side="left")
+        ttk.Label(header, text="下行 / 上行", style="Muted.TLabel").pack(side="right")
+        self.canvas = tk.Canvas(self, height=156, background="#FFFFFF", highlightthickness=0)
+        self.canvas.pack(fill="x", expand=False, pady=(8, 0))
+        self.canvas.bind("<Configure>", lambda _event: self.redraw([]))
+        self._points: list[tuple[float, float, float]] = []
+
+    def set_points(self, points: list[tuple[float, float, float]]) -> None:
+        self._points = points[-120:]
+        self.redraw(self._points)
+
+    def redraw(self, points: list[tuple[float, float, float]] | None = None) -> None:
+        if points is None:
+            points = self._points
+        canvas = self.canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 420)
+        height = max(canvas.winfo_height(), 140)
+        pad_left, pad_right, pad_top, pad_bottom = 42, 16, 12, 24
+        plot_w = width - pad_left - pad_right
+        plot_h = height - pad_top - pad_bottom
+        grid_color = "#E8EDF4"
+        text_color = "#7A8594"
+        for index in range(4):
+            y = pad_top + index * plot_h / 3
+            canvas.create_line(pad_left, y, width - pad_right, y, fill=grid_color)
+        if len(points) < 2:
+            canvas.create_text(width / 2, height / 2, text="等待代理流量", fill="#A0A8B4", font=("Helvetica", 12))
+            self._draw_legend(canvas, width)
+            return
+        start = points[0][0]
+        end = max(points[-1][0], start + 1.0)
+        max_value = max(max(down, up) for _elapsed, down, up in points)
+        max_value = max(max_value, 1.0)
+        canvas.create_text(pad_left - 6, pad_top, anchor="e", text=f"{max_value:.1f}", fill=text_color, font=("Helvetica", 9))
+        canvas.create_text(pad_left - 6, pad_top + plot_h, anchor="e", text="0", fill=text_color, font=("Helvetica", 9))
+        canvas.create_text(pad_left, height - 4, anchor="w", text="-120s", fill=text_color, font=("Helvetica", 9))
+        canvas.create_text(width - pad_right, height - 4, anchor="e", text="now", fill=text_color, font=("Helvetica", 9))
+
+        def coords(index: int) -> list[float]:
+            data: list[float] = []
+            for elapsed, down, up in points:
+                value = down if index == 1 else up
+                x = pad_left + ((elapsed - start) / max(end - start, 1.0)) * plot_w
+                y = pad_top + plot_h - min(value / max_value, 1.0) * plot_h
+                data.extend([x, y])
+            return data
+
+        down_points = coords(1)
+        up_points = coords(2)
+        if len(down_points) >= 4:
+            canvas.create_line(*down_points, fill="#16A34A", width=2.4, smooth=True)
+        if len(up_points) >= 4:
+            canvas.create_line(*up_points, fill="#0D9488", width=2.0, smooth=True)
+        self._draw_legend(canvas, width)
+
+    @staticmethod
+    def _draw_legend(canvas: tk.Canvas, width: int) -> None:
+        y = 16
+        canvas.create_line(width - 148, y, width - 122, y, fill="#16A34A", width=3)
+        canvas.create_text(width - 116, y, anchor="w", text="下行", fill="#334155", font=("Helvetica", 10))
+        canvas.create_line(width - 72, y, width - 46, y, fill="#0D9488", width=3)
+        canvas.create_text(width - 40, y, anchor="w", text="上行", fill="#334155", font=("Helvetica", 10))
 
 
 class App:
@@ -4456,9 +5478,11 @@ class App:
         self.weak_up_var = tk.StringVar(value="256")
         self.weak_status_var = tk.StringVar(value="弱网代理未启动")
         self.weak_diagnostic_summary_var = tk.StringVar(value="弱网代理未就绪")
+        self.weak_live_summary_var = tk.StringVar(value="弱网 OFF · 未启动")
         self.weak_diagnostic_row_vars: list[tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = []
         self.weak_traffic_vars: dict[str, tk.StringVar] = {}
         self.metric_health_vars: dict[str, tk.StringVar] = {}
+        self.collection_link_vars: dict[str, tk.StringVar] = {}
 
         self._configure_styles()
         self._build_ui()
@@ -4590,6 +5614,7 @@ class App:
         app_actions.grid(row=2, column=0, sticky="ew")
         ttk.Button(app_actions, text="前台应用", style="Tool.TButton", command=self.detect_foreground_app).pack(side="left")
         ttk.Button(app_actions, text="应用列表", style="Tool.TButton", command=self.refresh_apps).pack(side="left", padx=(8, 0))
+        ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
         self.app_list = tk.Listbox(
             app_panel,
             height=8,
@@ -4626,6 +5651,21 @@ class App:
             pady=(12, 0),
         )
         ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+    def _set_graph_scrollbar_state(self) -> None:
+        if not hasattr(self, "graph_scrollbar"):
+            return
+        bbox = self.graph_canvas.bbox("all") if hasattr(self, "graph_canvas") else None
+        if not bbox:
+            self.graph_scrollbar.state(["disabled"])
+            return
+        content_height = max(bbox[3] - bbox[1], 0)
+        visible_rows = getattr(self, "graph_visible_rows", 2)
+        visible_height = max(self.graph_canvas.winfo_height(), self.graph_panel_row_height * visible_rows)
+        if content_height > visible_height + 4:
+            self.graph_scrollbar.state(["!disabled"])
+        else:
+            self.graph_scrollbar.state(["disabled"])
 
     def _build_weak_network_panel(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(10, 10))
@@ -4794,12 +5834,15 @@ class App:
     def _build_proxy_traffic_panel(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
         panel.grid(row=row, column=0, sticky="ew", pady=(18, 0))
-        ttk.Label(panel, text="代理真实流量", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        panel.columnconfigure(0, weight=1)
+        ttk.Label(panel, text="代理真实流量", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             panel,
             text="统计所有经过本机弱网代理的 HTTP/HTTPS 流量，用于验证弱网是否真实生效。",
             style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.weak_traffic_chart = TrafficMiniChart(panel)
+        self.weak_traffic_chart.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         metrics = [
             ("down_rate", "实时下行", "0.0 KB/s"),
             ("up_rate", "实时上行", "0.0 KB/s"),
@@ -4813,7 +5856,7 @@ class App:
             value_var = tk.StringVar(value=default)
             self.weak_traffic_vars[key] = value_var
             item = ttk.Frame(panel, style="Panel.TFrame", padding=(10, 8))
-            item.grid(row=2 + (index - 1) // 4, column=(index - 1) % 4, sticky="ew", padx=(0 if (index - 1) % 4 == 0 else 8, 0), pady=(10, 0))
+            item.grid(row=3 + (index - 1) // 4, column=(index - 1) % 4, sticky="ew", padx=(0 if (index - 1) % 4 == 0 else 8, 0), pady=(10, 0))
             ttk.Label(item, text=label, style="Muted.TLabel").pack(anchor="w")
             ttk.Label(item, textvariable=value_var, style="GraphValue.TLabel").pack(anchor="w", pady=(3, 0))
         for column in range(4):
@@ -4825,7 +5868,7 @@ class App:
         main = ttk.Frame(master, style="Root.TFrame")
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(5, weight=1)
+        main.rowconfigure(6, weight=1)
         target = ttk.Frame(main, style="Panel.TFrame", padding=(14, 12))
         target.grid(row=0, column=0, sticky="ew")
         ttk.Label(target, textvariable=self.device_var, style="PanelTitle.TLabel").pack(side="left")
@@ -4835,6 +5878,7 @@ class App:
         quality.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         quality.columnconfigure(0, weight=1)
         ttk.Label(quality, textvariable=self.quality_var, style="Quality.TLabel").pack(side="left")
+        ttk.Label(quality, textvariable=self.weak_live_summary_var, style="Muted.TLabel").pack(side="right", padx=(16, 0))
         ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
 
         cards = ttk.Frame(main, style="Root.TFrame")
@@ -4863,13 +5907,16 @@ class App:
             )
 
         self._build_metric_health_strip(main, row=3)
+        self._build_collection_link_strip(main, row=4)
 
-        self.graph_panel_row_height = 194
+        self.graph_panel_row_height = 176
         self.graph_row_gap = 10
         self.graph_row_scroll_pixels = self.graph_panel_row_height + self.graph_row_gap
-        graph_view_height = self.graph_panel_row_height * 2 + self.graph_row_gap + 22
+        screen_height = self.root.winfo_screenheight()
+        self.graph_visible_rows = graph_visible_rows_for_height(screen_height)
+        graph_view_height = format_graph_view_height(self.graph_visible_rows, self.graph_panel_row_height, self.graph_row_gap, 22)
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=4, column=0, sticky="ew")
+        graph_view.grid(row=5, column=0, sticky="ew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
@@ -4881,6 +5928,7 @@ class App:
             yscrollincrement=self.graph_row_scroll_pixels,
         )
         graph_scroll = ttk.Scrollbar(graph_view, orient="vertical", command=self.graph_canvas.yview)
+        self.graph_scrollbar = graph_scroll
         self.graph_canvas.configure(yscrollcommand=graph_scroll.set)
         self.graph_canvas.grid(row=0, column=0, sticky="nsew")
         graph_scroll.grid(row=0, column=1, sticky="ns", padx=(8, 0))
@@ -4917,10 +5965,13 @@ class App:
         ]
         for key, row, col in positions:
             self.graphs[key].grid(row=row, column=col, sticky="nsew", padx=(0 if col == 0 else 10, 0), pady=(0 if row == 0 else 10, 0))
+        graph_rows = 4
+        self.graph_canvas.configure(scrollregion=(0, 0, 1, graph_rows * self.graph_row_scroll_pixels))
+        self._set_graph_scrollbar_state()
         self._bind_graph_mousewheel(graph_view)
 
         bottom = ttk.Frame(main, style="Root.TFrame")
-        bottom.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
+        bottom.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
         bottom.columnconfigure(1, weight=1)
         bottom.columnconfigure(2, weight=1)
         bottom.rowconfigure(0, weight=1)
@@ -4986,14 +6037,40 @@ class App:
             self.metric_health_vars[metric] = variable
             ttk.Label(grid, textvariable=variable, style="Health.TLabel").grid(row=0, column=col, sticky="w", padx=(0 if col == 0 else 10, 0))
 
+    def _build_collection_link_strip(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
+        panel.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(panel, text="采集链路", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12))
+        grid = ttk.Frame(panel, style="Panel.TFrame")
+        grid.grid(row=0, column=1, sticky="ew")
+        panel.columnconfigure(1, weight=1)
+        labels = ("前台", "PID", "UID", "FPS", "网络")
+        for col, label in enumerate(labels):
+            grid.columnconfigure(col, weight=1)
+            variable = tk.StringVar(value=f"{label}: 等待")
+            self.collection_link_vars[label] = variable
+            ttk.Label(grid, textvariable=variable, style="Health.TLabel").grid(
+                row=0,
+                column=col,
+                sticky="w",
+                padx=(0 if col == 0 else 12, 0),
+            )
+        self._reset_collection_links()
+
     def _resize_graph_scroll_window(self, event: tk.Event) -> None:
         if hasattr(self, "graph_canvas") and hasattr(self, "graph_window_id"):
             self.graph_canvas.itemconfigure(self.graph_window_id, width=event.width)
             self._refresh_graph_scroll_region()
+            self._set_graph_scrollbar_state()
 
     def _refresh_graph_scroll_region(self, _event: tk.Event | None = None) -> None:
         if hasattr(self, "graph_canvas"):
-            self.graph_canvas.configure(scrollregion=self.graph_canvas.bbox("all"))
+            bbox = self.graph_canvas.bbox("all")
+            if bbox:
+                self.graph_canvas.configure(scrollregion=bbox)
+            else:
+                self.graph_canvas.configure(scrollregion=(0, 0, 1, self.graph_panel_row_height * 4))
+            self._set_graph_scrollbar_state()
 
     def _graph_timeline_seconds(self) -> float:
         return max(self.graph_last_elapsed, 10.0)
@@ -5064,9 +6141,6 @@ class App:
             if units:
                 self._on_graph_time_scroll("scroll", str(units), "units")
             return "break"
-        view_start, view_end = self.graph_canvas.yview()
-        if view_start <= 0.0 and view_end >= 1.0:
-            return "break"
         if getattr(event, "num", None) == 4:
             units = -1
         elif getattr(event, "num", None) == 5:
@@ -5075,7 +6149,8 @@ class App:
             delta = int(getattr(event, "delta", 0) or 0)
             units = -1 if delta > 0 else 1 if delta < 0 else 0
         if units:
-            self.graph_canvas.yview_scroll(units, "units")
+            row_step = graph_scroll_row_step(units)
+            self.graph_canvas.yview_scroll(row_step, "units")
         return "break"
 
     def adapter_for(self, device: DeviceInfo | None) -> BaseAdapter | None:
@@ -5167,6 +6242,10 @@ class App:
         )
 
     def stop_weak_proxy(self) -> None:
+        try:
+            self._cleanup_weak_proxy_devices("停止弱网时")
+        except Exception as exc:
+            self.append_log(f"停止弱网前清理 Android 代理失败：{exc}")
         self.weak_proxy.stop()
         self.weak_status_var.set("弱网代理未启动")
         self._refresh_proxy_preview()
@@ -5233,11 +6312,18 @@ class App:
     def _refresh_proxy_traffic(self) -> None:
         if not self.weak_traffic_vars:
             return
-        values = format_proxy_traffic_snapshot(self.weak_proxy.traffic_snapshot())
+        snapshot = self.weak_proxy.traffic_snapshot()
+        values = format_proxy_traffic_snapshot(snapshot)
         for key, text in values.items():
             variable = self.weak_traffic_vars.get(key)
             if variable:
                 variable.set(text)
+        if hasattr(self, "weak_live_summary_var"):
+            self.weak_live_summary_var.set(
+                format_live_proxy_summary(self.weak_proxy.is_running(), self.weak_proxy.local_endpoint(), snapshot)
+            )
+        if hasattr(self, "weak_traffic_chart"):
+            self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
 
     def _selected_android_device(self) -> DeviceInfo | None:
         device = self.selected_device
@@ -5301,10 +6387,10 @@ class App:
             self.append_log("Android 当前未设置系统代理。")
         self._refresh_weak_diagnostics(raw_proxy, probe_connectivity=bool(proxy))
 
-    def _cleanup_weak_proxy_devices(self) -> None:
+    def _cleanup_weak_proxy_devices(self, context: str = "退出前") -> None:
         cleared = self.weak_registry.cleanup(self.android)
         if cleared:
-            self.append_log(f"退出前已清理 Android 代理：{', '.join(cleared)}")
+            self.append_log(f"{context}已清理 Android 代理：{', '.join(cleared)}")
 
     def on_close(self) -> None:
         try:
@@ -5410,6 +6496,39 @@ class App:
         else:
             self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
 
+    def run_collection_diagnostics(self) -> None:
+        device = self.selected_device
+        adapter = self.adapter_for(device)
+        if not device or not adapter:
+            messagebox.showinfo(APP_NAME, "请先选择设备。")
+            return
+        app_id = self.app_var.get().strip().split()[0] if self.app_var.get().strip() else ""
+        if not app_id and device.platform == "Android":
+            try:
+                app_id = adapter.foreground_app(device)
+                self.app_var.set(app_id)
+            except Exception as exc:
+                self.append_log(f"读取前台应用失败：{exc}")
+        if not app_id:
+            messagebox.showinfo(APP_NAME, "请填写目标应用包名或 Bundle ID。")
+            return
+        self.app_hint_var.set("正在执行采集自检...")
+        self.root.update_idletasks()
+        if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
+            try:
+                diagnostics = adapter.collection_diagnostics(device, app_id)
+            except Exception as exc:
+                self.app_hint_var.set(f"采集自检失败：{exc}")
+                self.append_log(f"Android 采集自检失败：{exc}")
+                return
+            self.app_hint_var.set(diagnostics.summary)
+            self._update_collection_links(diagnostics)
+            self.append_log(format_android_collection_diagnostics(diagnostics))
+            return
+        note = "iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 需要保持 iOS 采集服务窗口运行。"
+        self.app_hint_var.set("iOS 采集服务状态请查看日志。")
+        self.append_log(note)
+
     def start_sampling(self) -> None:
         if self.sampler:
             return
@@ -5437,6 +6556,14 @@ class App:
         self.last_notes.clear()
         self._reset_metrics()
         self.stabilizer.reset()
+        if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
+            try:
+                diagnostics = adapter.collection_diagnostics(device, app_id)
+                self.recorder.log(format_android_collection_diagnostics(diagnostics))
+                self.app_hint_var.set(diagnostics.summary)
+                self._update_collection_links(diagnostics)
+            except Exception as exc:
+                self.recorder.log(f"Android 采集自检失败：{exc}")
         self.sampler = SamplerThread(adapter, device, app_id, interval, self.events)
         self.sampler.start()
         self.start_button.configure(state="disabled")
@@ -5474,6 +6601,7 @@ class App:
         for card in self.cards.values():
             card.set_value(0.0, "等待数据")
         self._reset_metric_health()
+        self._reset_collection_links()
         self._refresh_graph_time_axis()
 
     def _reset_metric_health(self) -> None:
@@ -5490,6 +6618,24 @@ class App:
         }
         for metric, variable in self.metric_health_vars.items():
             variable.set(f"{labels.get(metric, metric)}: 等待")
+
+    def _reset_collection_links(self) -> None:
+        for label, variable in self.collection_link_vars.items():
+            variable.set(f"{label}: 等待")
+
+    def _update_collection_links(self, diagnostics: AndroidCollectionDiagnostics) -> None:
+        prefixes = {
+            "ok": "●",
+            "fallback": "◇",
+            "issue": "!",
+        }
+        for name, label, hint, state in collection_diagnostic_status_rows(diagnostics):
+            variable = self.collection_link_vars.get(name)
+            if not variable:
+                continue
+            prefix = prefixes.get(state, "○")
+            short_hint = hint if len(hint) <= 34 else f"{hint[:33]}..."
+            variable.set(f"{prefix} {name}: {label} · {short_hint}")
 
     def _drain_events(self) -> None:
         try:
@@ -5537,8 +6683,8 @@ class App:
         self._append_quality_event(sample)
 
     def _refresh_quality_mode(self) -> None:
-        mode = "开" if self.smoothing_var.get() else "关"
-        self.quality_mode_var.set(f"稳定曲线：{mode} · 报告：原始采样")
+        low_end_bias = self.live_quality.slow_sample_count >= 2 or self.live_quality.issue_count >= 2
+        self.quality_mode_var.set(format_quality_mode_label(self.smoothing_var.get(), low_end_bias))
 
     def _clear_quality_events(self) -> None:
         if not hasattr(self, "quality_event_tree"):
@@ -5639,7 +6785,14 @@ class App:
         folder = filedialog.askdirectory(initialdir=str(EXPORT_DIR), title="选择报告导出目录")
         if not folder:
             return
-        csv_path, json_path, html_path = self.recorder.export_bundle(Path(folder))
+        proxy_snapshot = self.weak_proxy.traffic_snapshot(record_history=False)
+        weak_network = build_weak_network_report_payload(
+            self.weak_proxy.is_running(),
+            self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>",
+            proxy_snapshot,
+            self.weak_proxy.traffic_history(),
+        )
+        csv_path, json_path, html_path = self.recorder.export_bundle(Path(folder), weak_network=weak_network)
         self.last_export_folder = html_path.parent
         self.append_log(f"报告已导出：{html_path}")
         self._show_export_success(csv_path, json_path, html_path)

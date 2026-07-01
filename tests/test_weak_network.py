@@ -6,9 +6,12 @@ from mobileperflab import (
     AndroidAdapter,
     DeviceInfo,
     ProxyTrafficSnapshot,
+    ProxyTrafficHistory,
     WeakNetworkProxy,
     WeakProxyDeviceRegistry,
     build_weak_network_diagnostics,
+    build_weak_network_report_payload,
+    format_live_proxy_summary,
     format_proxy_traffic_snapshot,
     verify_android_proxy_state,
 )
@@ -47,6 +50,72 @@ class WeakProxyDeviceRegistryTest(unittest.TestCase):
         self.assertEqual(registry.cleanup(android), ["serial-1", "serial-2"])
         self.assertEqual(android.cleared, ["serial-1", "serial-2"])
         self.assertEqual(registry.cleanup(android), [])
+
+
+class WeakProxyStopCleanupTest(unittest.TestCase):
+    def test_stop_weak_proxy_cleans_registered_android_devices(self) -> None:
+        class FakeStatus:
+            def __init__(self) -> None:
+                self.values: list[str] = []
+
+            def set(self, value: str) -> None:
+                self.values.append(value)
+
+        class FakeWeakProxy:
+            def __init__(self) -> None:
+                self.stopped = False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_registry = WeakProxyDeviceRegistry()
+        app.android = FakeAndroid()
+        app.weak_status_var = FakeStatus()
+        app.preview_calls = 0
+        app.diagnostic_calls = 0
+        app.traffic_calls = 0
+        app.logs = []
+        app._refresh_proxy_preview = lambda: setattr(app, "preview_calls", app.preview_calls + 1)
+        app._refresh_weak_diagnostics = lambda: setattr(app, "diagnostic_calls", app.diagnostic_calls + 1)
+        app._refresh_proxy_traffic = lambda: setattr(app, "traffic_calls", app.traffic_calls + 1)
+        app.append_log = lambda text: app.logs.append(text)
+        device = DeviceInfo("Android", "serial-1", "Phone", "13", "P", "ready")
+        app.weak_registry.mark_applied(device, "192.168.1.2:18888")
+
+        app.stop_weak_proxy()
+
+        self.assertTrue(app.weak_proxy.stopped)
+        self.assertEqual(app.android.cleared, ["serial-1"])
+        self.assertEqual(app.weak_status_var.values[-1], "弱网代理未启动")
+        self.assertEqual(app.preview_calls, 1)
+        self.assertEqual(app.diagnostic_calls, 1)
+        self.assertEqual(app.traffic_calls, 1)
+        self.assertIn("停止弱网时已清理 Android 代理：serial-1", app.logs)
+
+    def test_exit_cleanup_keeps_exit_wording(self) -> None:
+        class DummyApp:
+            def __init__(self) -> None:
+                self.weak_registry = WeakProxyDeviceRegistry()
+                self.android = FakeAndroid()
+                self.logs: list[str] = []
+
+            def append_log(self, text: str) -> None:
+                self.logs.append(text)
+
+        from mobileperflab import App
+
+        app = DummyApp()
+        device = DeviceInfo("Android", "serial-2", "Phone", "13", "P", "ready")
+        app.weak_registry.mark_applied(device, "192.168.1.2:18888")
+
+        App._cleanup_weak_proxy_devices(app)
+
+        self.assertEqual(app.android.cleared, ["serial-2"])
+        self.assertIn("退出前已清理 Android 代理：serial-2", app.logs)
 
 
 class AndroidProxyVerificationTest(unittest.TestCase):
@@ -232,6 +301,123 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(values["down_total"], "0 B")
         self.assertEqual(values["up_total"], "0 B")
         self.assertEqual(values["activity"], "无")
+
+    def test_formats_live_proxy_summary_for_performance_dashboard(self) -> None:
+        text = format_live_proxy_summary(
+            running=True,
+            endpoint="192.168.1.2:18888",
+            snapshot=ProxyTrafficSnapshot(
+                up_kbps=12.3,
+                down_kbps=45.6,
+                active_connections=2,
+                total_connections=8,
+                dropped_connections=1,
+                last_activity_age=0.8,
+            ),
+        )
+
+        self.assertIn("弱网 ON", text)
+        self.assertIn("192.168.1.2:18888", text)
+        self.assertIn("↓45.6 KB/s", text)
+        self.assertIn("↑12.3 KB/s", text)
+        self.assertIn("2/8 连接", text)
+        self.assertIn("丢弃 1", text)
+
+    def test_formats_disabled_live_proxy_summary(self) -> None:
+        text = format_live_proxy_summary(False, "<host>:<port>", ProxyTrafficSnapshot())
+
+        self.assertEqual(text, "弱网 OFF · 未启动")
+
+    def test_builds_report_payload_with_relative_proxy_history(self) -> None:
+        snapshot = ProxyTrafficSnapshot(
+            down_bytes=2048,
+            up_bytes=1024,
+            down_kbps=8.0,
+            up_kbps=2.0,
+            active_connections=1,
+            total_connections=3,
+            dropped_connections=0,
+            last_activity_age=0.2,
+        )
+
+        payload = build_weak_network_report_payload(
+            True,
+            "127.0.0.1:18888",
+            snapshot,
+            [(100.0, 0.0, 0.0), (101.5, 8.0, 2.0)],
+        )
+
+        self.assertEqual(payload["endpoint"], "127.0.0.1:18888")
+        self.assertEqual(payload["snapshot"]["down_kbps"], 8.0)
+        self.assertEqual(payload["history"][0]["elapsed"], 0.0)
+        self.assertEqual(payload["history"][1]["elapsed"], 1.5)
+        self.assertIn("↓8.0 KB/s", payload["summary"])
+
+
+class ProxyTrafficHistoryTest(unittest.TestCase):
+    def test_keeps_recent_proxy_rate_points_for_live_chart(self) -> None:
+        history = ProxyTrafficHistory(limit=3)
+
+        history.append(10.0, ProxyTrafficSnapshot(down_kbps=1.0, up_kbps=0.5))
+        history.append(11.0, ProxyTrafficSnapshot(down_kbps=2.0, up_kbps=1.5))
+        history.append(12.0, ProxyTrafficSnapshot(down_kbps=3.0, up_kbps=2.5))
+        history.append(13.0, ProxyTrafficSnapshot(down_kbps=4.0, up_kbps=3.5))
+
+        self.assertEqual(
+            history.points(),
+            [(11.0, 2.0, 1.5), (12.0, 3.0, 2.5), (13.0, 4.0, 3.5)],
+        )
+
+    def test_reset_clears_proxy_rate_points(self) -> None:
+        history = ProxyTrafficHistory(limit=3)
+        history.append(10.0, ProxyTrafficSnapshot(down_kbps=1.0, up_kbps=0.5))
+
+        history.reset()
+
+        self.assertEqual(history.points(), [])
+
+    def test_export_snapshot_can_skip_mutating_history(self) -> None:
+        proxy = WeakNetworkProxy(lambda _text: None)
+        proxy.reset_traffic(now=10.0)
+        proxy._record_transfer("down", 1024, now=10.5)
+
+        snapshot = proxy.traffic_snapshot(now=11.0, record_history=False)
+
+        self.assertEqual(snapshot.down_kbps, 1.0)
+        self.assertEqual(proxy.traffic_history(), [])
+
+
+class ProxyTrafficChartCompatibilityTest(unittest.TestCase):
+    def test_history_points_can_drive_a_graph_panel_like_curve(self) -> None:
+        class DummyPanel:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def append(self, elapsed: float, value: float, quality: str = "ok") -> None:
+                self.points.append((elapsed, value, quality))
+
+        history = ProxyTrafficHistory(limit=3)
+        panel = DummyPanel()
+
+        history.append(10.0, ProxyTrafficSnapshot(down_kbps=1.0, up_kbps=0.5))
+        history.append(11.0, ProxyTrafficSnapshot(down_kbps=2.0, up_kbps=1.5))
+        history.append(12.0, ProxyTrafficSnapshot(down_kbps=3.0, up_kbps=2.5))
+
+        for elapsed, down, up in history.points():
+            panel.append(elapsed, down)
+            panel.append(elapsed, up)
+
+        self.assertEqual(
+            panel.points,
+            [
+                (10.0, 1.0, "ok"),
+                (10.0, 0.5, "ok"),
+                (11.0, 2.0, "ok"),
+                (11.0, 1.5, "ok"),
+                (12.0, 3.0, "ok"),
+                (12.0, 2.5, "ok"),
+            ],
+        )
 
 
 class WeakNetworkProxyIntegrationTest(unittest.TestCase):

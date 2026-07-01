@@ -1,6 +1,16 @@
 import unittest
 
-from mobileperflab import build_environment_checks, format_environment_checks
+from mobileperflab import (
+    AndroidCollectionDiagnostics,
+    collection_diagnostic_status_rows,
+    build_environment_checks,
+    format_environment_checks,
+    format_graph_view_height,
+    format_quality_mode_label,
+    graph_scroll_row_step,
+    graph_visible_rows_for_height,
+    smooth_graph_series,
+)
 
 
 class EnvironmentCheckTest(unittest.TestCase):
@@ -53,6 +63,96 @@ class EnvironmentCheckTest(unittest.TestCase):
         self.assertIn("Android ADB：缺失", text)
         self.assertIn("iOS pymobiledevice3：可用", text)
         self.assertIn("Xcode xcrun：缺失", text)
+
+
+class GraphScrollBehaviorTest(unittest.TestCase):
+    def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
+        self.assertEqual(graph_scroll_row_step(1), 1)
+        self.assertEqual(graph_scroll_row_step(-1), -1)
+        self.assertEqual(graph_scroll_row_step(0), 0)
+
+    def test_graph_view_rows_adapt_to_fullscreen_height(self) -> None:
+        self.assertEqual(graph_visible_rows_for_height(760), 2)
+        self.assertEqual(graph_visible_rows_for_height(980), 3)
+        self.assertEqual(graph_visible_rows_for_height(1400), 4)
+
+    def test_graph_view_height_matches_visible_rows_and_scrollbar(self) -> None:
+        self.assertEqual(format_graph_view_height(2, 176, 10, 22), 384)
+        self.assertEqual(format_graph_view_height(3, 176, 10, 22), 570)
+
+    def test_smooth_graph_series_reduces_display_oscillation_without_changing_length(self) -> None:
+        raw = [(0.0, 0.0), (1.0, 10.0), (2.0, 0.0), (3.0, 10.0)]
+
+        smoothed = smooth_graph_series(raw, alpha=0.25)
+
+        raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
+        smooth_range = max(value for _elapsed, value in smoothed) - min(value for _elapsed, value in smoothed)
+        self.assertEqual(len(smoothed), len(raw))
+        self.assertEqual(smoothed[0][0], 0.0)
+        self.assertLess(smooth_range, raw_range)
+
+
+class QualityModeLabelTest(unittest.TestCase):
+    def test_formats_low_end_bias_label(self) -> None:
+        self.assertEqual(format_quality_mode_label(True, False), "稳定曲线：开 · 报告：原始采样")
+        self.assertEqual(format_quality_mode_label(True, True), "稳定曲线：开 · 低端机保守模式")
+        self.assertEqual(format_quality_mode_label(False, True), "稳定曲线：关 · 报告：原始采样")
+
+
+class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
+    def test_marks_all_android_collection_links_as_ok_when_sources_are_healthy(self) -> None:
+        diagnostics = AndroidCollectionDiagnostics(
+            overall_state="ok",
+            summary="Android 采集自检通过",
+            rows=[
+                ("前台", "匹配", "当前前台 com.example.game"),
+                ("PID", "已找到", "pidof: 101, 202"),
+                ("UID", "已找到", "dumpsys package: 10234"),
+                ("FPS", "可用", "gfxinfo counters"),
+                ("网络", "per-UID", "目标 App 独占上下行"),
+            ],
+            foreground_state="ok",
+            pid_source="pidof",
+            pids=[101, 202],
+            uid_source="dumpsys package",
+            uid=10234,
+            fps_source="gfxinfo counters",
+            network_source="per-UID",
+        )
+
+        rows = collection_diagnostic_status_rows(diagnostics)
+
+        self.assertEqual(rows[0], ("前台", "正常", "当前前台 com.example.game", "ok"))
+        self.assertEqual(rows[1], ("PID", "正常", "pidof: 101, 202", "ok"))
+        self.assertEqual(rows[2], ("UID", "正常", "dumpsys package: 10234", "ok"))
+        self.assertEqual(rows[3], ("FPS", "正常", "gfxinfo counters", "ok"))
+        self.assertEqual(rows[4], ("网络", "正常", "目标 App 独占上下行", "ok"))
+
+    def test_marks_fallback_and_missing_android_collection_links_as_warnings(self) -> None:
+        diagnostics = AndroidCollectionDiagnostics(
+            overall_state="warning",
+            summary="Android 采集自检发现 4 项风险",
+            rows=[
+                ("前台", "前台不一致", "当前前台 com.example.home"),
+                ("PID", "未找到", "App 可能未运行"),
+                ("UID", "未找到", "上下行网络无法按 App 统计"),
+                ("FPS", "不可用", "未发现帧数据"),
+                ("网络", "设备级兜底", "非目标 App 独占流量"),
+            ],
+            foreground_state="mismatch",
+            pid_source="missing",
+            uid_source="missing",
+            fps_source="missing",
+            network_source="device",
+        )
+
+        rows = collection_diagnostic_status_rows(diagnostics)
+
+        self.assertEqual(rows[0], ("前台", "异常", "当前前台 com.example.home", "issue"))
+        self.assertEqual(rows[1], ("PID", "异常", "App 可能未运行", "issue"))
+        self.assertEqual(rows[2], ("UID", "异常", "上下行网络无法按 App 统计", "issue"))
+        self.assertEqual(rows[3], ("FPS", "异常", "未发现帧数据", "issue"))
+        self.assertEqual(rows[4], ("网络", "兜底", "非目标 App 独占流量", "fallback"))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ from mobileperflab import (
     MetricHealthAnalyzer,
     MetricStabilizer,
     PerfSample,
+    session_quality_gate,
+    sampling_cadence_summary,
     append_sampling_latency_note,
     quality_intervals_from_points,
     quality_event_from_sample,
@@ -40,6 +42,21 @@ class MetricStabilizerTest(unittest.TestCase):
 
         self.assertEqual(display.fps, 0.0)
 
+    def test_extends_fps_hold_for_slow_low_end_sampling_without_changing_raw_sample(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        raw_gap = PerfSample(
+            timestamp=5.2,
+            elapsed=5.2,
+            fps=0.0,
+            note="采样耗时 1.60s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+        )
+
+        display = stabilizer.smooth_sample(raw_gap)
+
+        self.assertEqual(raw_gap.fps, 0.0)
+        self.assertGreater(display.fps, 20.0)
+
     def test_dampens_single_frame_fps_dip_for_low_end_device_display(self) -> None:
         stabilizer = MetricStabilizer()
         stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=58.0))
@@ -72,6 +89,55 @@ class MetricStabilizerTest(unittest.TestCase):
         volatile_display = volatile.smooth_sample(PerfSample(timestamp=5.0, elapsed=5.0, fps=20.0))
 
         self.assertGreater(volatile_display.fps, stable_display.fps + 3.0)
+
+    def test_quality_notes_make_display_step_more_conservative(self) -> None:
+        normal = MetricStabilizer()
+        conservative = MetricStabilizer()
+        first = PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0)
+        normal.smooth_sample(first)
+        conservative.smooth_sample(first)
+
+        normal_display = normal.smooth_sample(PerfSample(timestamp=2.0, elapsed=2.0, fps=35.0, cpu_percent=80.0))
+        issue_display = conservative.smooth_sample(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=35.0,
+                cpu_percent=80.0,
+                note="Android FPS 当前无帧增量，Surface=com.example.Surface；采样耗时 1.60s 超过采样间隔 1.00s。",
+            )
+        )
+
+        self.assertGreater(issue_display.fps, normal_display.fps + 2.0)
+        self.assertLess(issue_display.cpu_percent, normal_display.cpu_percent - 2.0)
+
+    def test_low_end_quality_notes_reduce_display_oscillation_range(self) -> None:
+        normal = MetricStabilizer()
+        low_end = MetricStabilizer()
+        series = [60.0, 22.0, 55.0, 18.0, 58.0, 20.0, 56.0]
+        normal_values: list[float] = []
+        low_end_values: list[float] = []
+
+        for index, fps in enumerate(series, start=1):
+            normal_values.append(
+                normal.smooth_sample(PerfSample(timestamp=float(index), elapsed=float(index), fps=fps, cpu_percent=20.0)).fps
+            )
+            low_end_values.append(
+                low_end.smooth_sample(
+                    PerfSample(
+                        timestamp=float(index),
+                        elapsed=float(index),
+                        fps=fps,
+                        cpu_percent=20.0,
+                        note="" if index == 1 else "采样耗时 1.60s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。",
+                    )
+                ).fps
+            )
+
+        normal_range = max(normal_values) - min(normal_values)
+        low_end_range = max(low_end_values) - min(low_end_values)
+
+        self.assertLess(low_end_range, normal_range * 0.8)
 
 
 class MetricHealthAnalyzerTest(unittest.TestCase):
@@ -118,6 +184,23 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
 
         self.assertEqual(health["rx_kbps"].state, "ok")
         self.assertEqual(health["tx_kbps"].state, "ok")
+
+    def test_marks_individual_metric_failures_from_parallel_android_sampling(self) -> None:
+        sample = PerfSample(
+            timestamp=10.0,
+            elapsed=10.0,
+            fps=58.0,
+            memory_mb=512.0,
+            temperature_c=36.0,
+            note="Android CPU 采集失败：proc denied；Android 电量/温度/功耗 采集失败：battery denied",
+        )
+
+        health = MetricHealthAnalyzer().analyze(sample)
+
+        self.assertEqual(health["cpu_percent"].state, "missing")
+        self.assertEqual(health["battery_percent"].state, "missing")
+        self.assertEqual(health["temperature_c"].state, "missing")
+        self.assertEqual(health["power_w"].state, "missing")
 
 
 class LiveQualityTrackerTest(unittest.TestCase):
@@ -168,9 +251,64 @@ class LiveQualityTrackerTest(unittest.TestCase):
             )
         )
 
-        self.assertIn("可信度 33.3%", text)
+        self.assertIn("不可信 33.3%", text)
         self.assertIn("前台 1", text)
         self.assertIn("慢采样 1", text)
+
+    def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
+        gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)
+
+        self.assertEqual(gate.state, "good")
+        self.assertEqual(gate.label, "高可信")
+        self.assertEqual(gate.confidence_percent, 90.0)
+
+    def test_session_quality_gate_marks_mixed_session_as_caution(self) -> None:
+        gate = session_quality_gate(sample_count=10, issue_count=2, fallback_count=2, foreground_count=0, slow_count=0)
+
+        self.assertEqual(gate.state, "caution")
+        self.assertEqual(gate.label, "谨慎参考")
+        self.assertEqual(gate.confidence_percent, 60.0)
+
+    def test_session_quality_gate_marks_foreground_or_slow_session_as_untrusted(self) -> None:
+        foreground_gate = session_quality_gate(sample_count=10, issue_count=2, fallback_count=0, foreground_count=2, slow_count=0)
+        slow_gate = session_quality_gate(sample_count=10, issue_count=2, fallback_count=0, foreground_count=0, slow_count=3)
+
+        self.assertEqual(foreground_gate.state, "bad")
+        self.assertEqual(foreground_gate.label, "不可信")
+        self.assertIn("前台异常", foreground_gate.detail)
+        self.assertEqual(slow_gate.state, "bad")
+        self.assertIn("慢采样", slow_gate.detail)
+
+    def test_sampling_cadence_summary_marks_stable_intervals(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0),
+            PerfSample(timestamp=2.0, elapsed=2.0),
+            PerfSample(timestamp=3.0, elapsed=3.0),
+            PerfSample(timestamp=4.0, elapsed=4.0),
+        ]
+
+        summary = sampling_cadence_summary(samples, expected_interval=1.0)
+
+        self.assertEqual(summary["state"], "good")
+        self.assertEqual(summary["label"], "节拍稳定")
+        self.assertEqual(summary["slow_percent"], 0.0)
+        self.assertAlmostEqual(float(summary["avg_interval"]), 1.0)
+
+    def test_sampling_cadence_summary_marks_low_end_jitter_as_bad(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0),
+            PerfSample(timestamp=2.7, elapsed=2.7),
+            PerfSample(timestamp=4.5, elapsed=4.5),
+            PerfSample(timestamp=5.5, elapsed=5.5),
+            PerfSample(timestamp=7.3, elapsed=7.3),
+        ]
+
+        summary = sampling_cadence_summary(samples, expected_interval=1.0)
+
+        self.assertEqual(summary["state"], "bad")
+        self.assertEqual(summary["label"], "节拍失稳")
+        self.assertGreaterEqual(float(summary["slow_percent"]), 50.0)
+        self.assertIn("慢间隔", str(summary["detail"]))
 
 
 class SampleQualityTagTest(unittest.TestCase):
