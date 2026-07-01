@@ -912,6 +912,22 @@ def graph_display_series_for_context(
     return smooth_graph_series(normalized, alpha=alpha)
 
 
+def graph_display_max_value(
+    points: list[tuple[float, float, str]],
+    metric: str,
+    display_values: list[tuple[float, float]] | None = None,
+) -> float:
+    trusted_values = [float(value) for _elapsed, value, quality in points if quality == "ok" and math.isfinite(float(value))]
+    display_max = max(
+        (float(value) for _elapsed, value in display_values or [] if math.isfinite(float(value))),
+        default=0.0,
+    )
+    max_value = max([*trusted_values, display_max, 1.0])
+    if metric == "fps":
+        max_value = max(max_value, 60.0)
+    return max_value
+
+
 QUALITY_ISSUE_TOKENS = (
     "未采集",
     "无帧增量",
@@ -5982,9 +5998,25 @@ class SessionRecorder:
         display_samples = payload.get("display_samples")
         if not isinstance(display_samples, list) or len(display_samples) != len(report_samples):
             display_samples = build_display_samples(self.samples)
+        axis_max_by_metric: dict[str, float] = {}
+        for key in ("fps", "jank_percent", "cpu_percent", "memory_mb", "temperature_c", "power_w", "rx_kbps", "tx_kbps"):
+            display_points = [
+                (float(row.get("elapsed", 0.0) or 0.0), float(row.get(key, 0.0) or 0.0))
+                for row in display_samples
+                if isinstance(row, dict)
+            ]
+            axis_max_by_metric[key] = graph_display_max_value(
+                [
+                    (sample.elapsed, float(getattr(sample, key, 0.0) or 0.0), sample_quality_tag(sample))
+                    for sample in self.samples
+                ],
+                key,
+                display_points,
+            )
         data = json.dumps(report_samples, ensure_ascii=False).replace("</", "<\\/")
         display_data = json.dumps(display_samples, ensure_ascii=False).replace("</", "<\\/")
         markers = json.dumps(self.markers, ensure_ascii=False).replace("</", "<\\/")
+        chart_config = [dict(config, axisMax=axis_max_by_metric.get(str(config["key"]), 1.0)) for config in chart_config]
         charts = json.dumps(chart_config, ensure_ascii=False).replace("</", "<\\/")
         html_text = """<!doctype html>
 <html lang="zh-CN">
@@ -6302,11 +6334,11 @@ class SessionRecorder:
 
       const plotW = width - pad.left - pad.right;
       const plotH = height - pad.top - pad.bottom;
-      const values = finiteValues(config.key);
       const displayValues = displayFiniteValues(config.key);
-      const valueMax = Math.max(...values, Number(config.suggestedMax || 0), 1);
+      const values = finiteValues(config.key);
       const displayMax = Math.max(...displayValues, 0);
-      const maxY = niceCeil(Math.max(valueMax, displayMax) * 1.08);
+      const valueMax = Math.max(Number(config.axisMax || 0), Number(config.suggestedMax || 0), displayMax, 1);
+      const maxY = niceCeil(valueMax * 1.08);
       const minY = 0;
       const range = Math.max(maxY - minY, 1);
       const xFor = (seconds) => pad.left + (Math.max(0, Math.min(Number(seconds || 0), timelineSeconds)) / timelineSeconds) * plotW;
@@ -6783,14 +6815,12 @@ class GraphPanel(ttk.Frame):
             qualities=[quality for _elapsed, _value, quality in visible_points],
         )
         display_by_elapsed = {elapsed: value for elapsed, value in display_values}
-        values = [
-            display_by_elapsed.get(elapsed, value)
+        visible_display_values = [
+            (elapsed, display_by_elapsed.get(elapsed, value))
             for elapsed, value, _quality in visible_points
             if view_start <= elapsed <= view_end
-        ] or [value for _elapsed, value in display_values]
-        max_value = max(max(values), 1.0)
-        if self.metric == "fps":
-            max_value = max(max_value, 60.0)
+        ] or display_values
+        max_value = graph_display_max_value(visible_points, self.metric, visible_display_values)
         points: list[float] = []
         last_visible: tuple[float, float] | None = None
         quality_points: list[tuple[float, float, str]] = []

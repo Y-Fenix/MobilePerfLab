@@ -10,6 +10,7 @@ from mobileperflab import (
     format_quality_mode_label,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
+    graph_display_max_value,
     graph_display_series,
     graph_display_series_for_context,
     graph_scroll_row_step,
@@ -183,6 +184,21 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
         display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
         self.assertLess(display_range, raw_range)
+
+    def test_graph_axis_ignores_single_quality_spike_but_keeps_real_performance_spike(self) -> None:
+        issue_axis = graph_display_max_value(
+            [(0.0, 58.0, "ok"), (1.0, 300.0, "issue"), (2.0, 57.0, "ok")],
+            metric="fps",
+            display_values=[(0.0, 58.0), (1.0, 106.4), (2.0, 96.5)],
+        )
+        real_axis = graph_display_max_value(
+            [(0.0, 58.0, "ok"), (1.0, 95.0, "ok"), (2.0, 57.0, "ok")],
+            metric="fps",
+            display_values=[(0.0, 58.0), (1.0, 95.0), (2.0, 57.0)],
+        )
+
+        self.assertEqual(issue_axis, 106.4)
+        self.assertEqual(real_axis, 95.0)
 
 
 class QualityModeLabelTest(unittest.TestCase):
