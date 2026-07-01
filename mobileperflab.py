@@ -5801,6 +5801,9 @@ class SessionRecorder:
             weak_readiness = weak_effectiveness.get("test_readiness", {})
             if not isinstance(weak_readiness, dict):
                 weak_readiness = {}
+            weak_readiness_display = str(
+                weak_network.get("readiness_display") or weak_readiness_display_text(weak_readiness)
+            )
             weak_diagnostics = weak_network.get("diagnostics", {})
             if not isinstance(weak_diagnostics, dict):
                 weak_diagnostics = {}
@@ -5827,6 +5830,7 @@ class SessionRecorder:
                     "<h2>弱网真实流量</h2>",
                     "<table><tr><th>项目</th><th>值</th></tr>",
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
+                    f"<tr><th>弱网测试结论</th><td>{html.escape(weak_readiness_display)}</td></tr>",
                     f"<tr><th>弱网命中结论</th><td>{html.escape(str(weak_effectiveness.get('label', '未知')))}</td></tr>",
                     f"<tr><th>命中评分</th><td>{html.escape(str(weak_effectiveness.get('score', '-')))} / 100</td></tr>",
                     f"<tr><th>结论说明</th><td>{html.escape(str(weak_effectiveness.get('detail', '')))}</td></tr>",

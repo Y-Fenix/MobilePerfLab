@@ -575,6 +575,7 @@ class ReportExportTest(unittest.TestCase):
                     "action": "继续执行业务场景并观察代理真实流量曲线。",
                 },
             },
+            "readiness_display": "可以开始测试 · 继续执行业务场景并观察代理真实流量曲线。",
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -597,6 +598,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("已命中目标流量", html_text)
         self.assertIn("弱网命中结论", html_text)
         self.assertIn("弱网已生效", html_text)
+        self.assertIn("弱网测试结论", html_text)
+        self.assertIn("可以开始测试 · 继续执行业务场景并观察代理真实流量曲线。", html_text)
         self.assertIn("就绪动作", html_text)
         self.assertIn("继续执行业务场景", html_text)
         self.assertIn("测试就绪", html_text)
