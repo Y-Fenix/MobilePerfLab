@@ -5979,6 +5979,7 @@ class SessionRecorder:
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
                     f"<tr><th>弱网测试结论</th><td>{html.escape(weak_readiness_display)}</td></tr>",
                     f"<tr><th>弱网命中结论</th><td>{html.escape(str(weak_effectiveness.get('label', '未知')))}</td></tr>",
+                    f"<tr><th>流量命中</th><td>{html.escape(str(weak_network.get('hit_status', '未知')))}</td></tr>",
                     f"<tr><th>命中评分</th><td>{html.escape(str(weak_effectiveness.get('score', '-')))} / 100</td></tr>",
                     f"<tr><th>结论说明</th><td>{html.escape(str(weak_effectiveness.get('detail', '')))}</td></tr>",
                     f"<tr><th>下一步</th><td>{html.escape(str(weak_effectiveness.get('action', '')))}</td></tr>",
