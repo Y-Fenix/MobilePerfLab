@@ -478,6 +478,15 @@ class LiveQualityTrackerTest(unittest.TestCase):
             "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。",
         )
 
+    def test_performance_conclusion_text_includes_next_sampling_interval_for_blocked_collection(self) -> None:
+        self.assertEqual(
+            performance_conclusion_text(
+                {"state": "blocked", "label": "先修采集链路", "detail": "最近窗口主要是采集波动，不能直接作为性能结论。"},
+                expected_interval=1.0,
+            ),
+            "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。 · 采样间隔 1.0s -> 1.5s",
+        )
+
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
         self.assertEqual(recommended_sampling_interval(1.5), 2.0)

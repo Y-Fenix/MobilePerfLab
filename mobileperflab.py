@@ -1179,10 +1179,16 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
     }
 
 
-def performance_conclusion_text(status: dict[str, str]) -> str:
+def performance_conclusion_text(status: dict[str, str], expected_interval: float | None = None) -> str:
     label = str(status.get("label", "等待更多样本") if isinstance(status, dict) else "等待更多样本")
     detail = str(status.get("detail", "") if isinstance(status, dict) else "")
-    return f"性能结论：{label} · {detail}" if detail else f"性能结论：{label}"
+    parts = [f"性能结论：{label}"]
+    if detail:
+        parts.append(detail)
+    if isinstance(status, dict) and status.get("state") == "blocked" and expected_interval is not None:
+        current = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
+        parts.append(f"采样间隔 {current:.1f}s -> {next_low_end_interval_label(current)}")
+    return " · ".join(parts)
 
 
 def validation_state_label(state: str) -> str:
@@ -8114,7 +8120,9 @@ class App:
         self.quality_summary_var.set(
             live_recent_window_summary(recent_window, self.live_quality.low_end_display_mode(), self.live_quality.expected_interval)
         )
-        self.performance_conclusion_var.set(performance_conclusion_text(performance_conclusion_status(recent_window)))
+        self.performance_conclusion_var.set(
+            performance_conclusion_text(performance_conclusion_status(recent_window), self.live_quality.expected_interval)
+        )
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()
         display_sample = self.stabilizer.smooth_sample(sample, conservative=conservative_display) if self.smoothing_var.get() else sample

@@ -286,6 +286,7 @@ class QualityModeLabelTest(unittest.TestCase):
         )
 
         self.assertIn("性能结论：先修采集链路", app.performance_conclusion_var.value)
+        self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
