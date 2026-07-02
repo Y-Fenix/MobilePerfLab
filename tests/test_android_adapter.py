@@ -774,6 +774,37 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertAlmostEqual(tx2, 2.0)
         self.assertNotIn("设备级网络兜底", adapter._network_note_cache[("serial-1", "com.example.game")])
 
+    def test_network_kbps_keeps_zero_netstats_uid_as_target_idle_instead_of_device_fallback(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "userId=10234",
+                "cat /proc/uid_stat/10234/tcp_rcv": "",
+                "cat /proc/uid_stat/10234/tcp_snd": "",
+                "cat /proc/net/xt_qtaguid/stats": "",
+                "dumpsys netstats detail": "\n---NEXT---\n".join(
+                    [
+                        "Bucket{uid=10234 tag=0x0 set=DEFAULT}: rx_bytes=0 rx_packets=0 tx_bytes=0 tx_packets=0",
+                        "Bucket{uid=10234 tag=0x0 set=DEFAULT}: rx_bytes=0 rx_packets=0 tx_bytes=0 tx_packets=0",
+                    ]
+                ),
+                "cat /proc/net/dev": "\n---NEXT---\n".join(
+                    [
+                        "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+                        "Inter-| Receive | Transmit\n wlan0: 120480 0 0 0 0 0 0 0 210240 0 0 0 0 0 0 0",
+                    ]
+                ),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0]):
+            rx1, tx1 = adapter._network_kbps(self.device, "com.example.game", 10.0)
+            rx2, tx2 = adapter._network_kbps(self.device, "com.example.game", 11.0)
+
+        self.assertEqual((rx1, tx1), (0.0, 0.0))
+        self.assertEqual((rx2, tx2), (0.0, 0.0))
+        self.assertEqual(adapter._network_note_cache[("serial-1", "com.example.game")], "")
+        self.assertNotIn("cat /proc/net/dev", adapter.calls)
+
     def test_qtaguid_parser_sums_matching_uid_rows(self) -> None:
         output = """
         idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes rx_packets tx_bytes tx_packets
@@ -1093,6 +1124,28 @@ class AndroidAdapterTest(unittest.TestCase):
                 "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
                 "cat /proc/uid_stat/10234/tcp_rcv": "0",
                 "cat /proc/uid_stat/10234/tcp_snd": "0",
+                "cat /proc/net/dev": "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+        formatted = format_android_collection_diagnostics(diagnostics)
+
+        self.assertEqual(diagnostics.network_source, "per-UID")
+        self.assertIn("网络: per-UID", formatted)
+        self.assertNotIn("cat /proc/net/dev", adapter.calls)
+
+    def test_android_collection_diagnostics_treats_zero_netstats_uid_as_per_uid_available(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "",
+                "cat /proc/uid_stat/10234/tcp_snd": "",
+                "cat /proc/net/xt_qtaguid/stats": "",
+                "dumpsys netstats detail": "Bucket{uid=10234 tag=0x0 set=DEFAULT}: rx_bytes=0 rx_packets=0 tx_bytes=0 tx_packets=0",
                 "cat /proc/net/dev": "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
             }
         )

@@ -4116,8 +4116,8 @@ class AndroidAdapter(BaseAdapter):
         rx_total, tx_total, matched_uid = self._parse_qtaguid_stats_with_match(output, uid)
         if matched_uid:
             return rx_total, tx_total, True
-        rx_total, tx_total = self._net_totals_from_netstats(device, uid)
-        if rx_total or tx_total:
+        rx_total, tx_total, matched_uid = self._net_totals_from_netstats_with_match(device, uid)
+        if matched_uid:
             return rx_total, tx_total, True
         return 0, 0, False
 
@@ -4130,8 +4130,12 @@ class AndroidAdapter(BaseAdapter):
             return None
 
     def _net_totals_from_netstats(self, device: DeviceInfo, uid: int) -> tuple[int, int]:
+        rx_total, tx_total, _matched_uid = self._net_totals_from_netstats_with_match(device, uid)
+        return rx_total, tx_total
+
+    def _net_totals_from_netstats_with_match(self, device: DeviceInfo, uid: int) -> tuple[int, int, bool]:
         output = self._shell(device.serial, "dumpsys netstats detail", timeout=6.0)
-        return self._parse_netstats_detail_for_uid(output, uid)
+        return self._parse_netstats_detail_for_uid_with_match(output, uid)
 
     @staticmethod
     def _parse_qtaguid_stats(output: str, uid: int) -> tuple[int, int]:
@@ -4159,9 +4163,15 @@ class AndroidAdapter(BaseAdapter):
 
     @classmethod
     def _parse_netstats_detail_for_uid(cls, output: str, uid: int) -> tuple[int, int]:
+        rx_total, tx_total, _matched_uid = cls._parse_netstats_detail_for_uid_with_match(output, uid)
+        return rx_total, tx_total
+
+    @classmethod
+    def _parse_netstats_detail_for_uid_with_match(cls, output: str, uid: int) -> tuple[int, int, bool]:
         rx_total = 0
         tx_total = 0
         active_uid = False
+        matched_uid = False
         for raw_line in output.splitlines():
             line = raw_line.strip()
             if not line:
@@ -4169,11 +4179,13 @@ class AndroidAdapter(BaseAdapter):
             uid_match = re.search(r"\buid[=:\s]+(-?\d+)", line)
             if uid_match:
                 active_uid = int(uid_match.group(1)) == uid
+                matched_uid = matched_uid or active_uid
             elif "Bucket{" in line or "uid=" in line:
                 active_uid = False
             if str(uid) in line and not active_uid:
                 numbers = [int(value) for value in re.findall(r"\b\d+\b", line)]
                 active_uid = uid in numbers
+                matched_uid = matched_uid or active_uid
             if not active_uid:
                 continue
             named = cls._rx_tx_from_named_bytes(line)
@@ -4193,7 +4205,7 @@ class AndroidAdapter(BaseAdapter):
                 rx, tx = history_row
                 rx_total += rx
                 tx_total += tx
-        return rx_total, tx_total
+        return rx_total, tx_total, matched_uid
 
     @staticmethod
     def _rx_tx_from_named_bytes(line: str) -> tuple[int, int] | None:
