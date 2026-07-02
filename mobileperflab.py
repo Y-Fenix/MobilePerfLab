@@ -1000,11 +1000,14 @@ def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, s
 def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:
     issue_count = sum(1 for _elapsed, _value, quality in points if quality == "issue")
     fallback_count = sum(1 for _elapsed, _value, quality in points if quality == "fallback")
+    limited_count = sum(1 for _elapsed, _value, quality in points if quality == "limited")
     parts: list[str] = []
     if issue_count:
         parts.append(f"异常 {issue_count}")
     if fallback_count:
         parts.append(f"兜底 {fallback_count}")
+    if limited_count:
+        parts.append(f"受限 {limited_count}")
     return " · ".join(parts)
 
 
@@ -1014,7 +1017,7 @@ def graph_quality_badge_text_for_context(
     low_end_display_mode: bool,
 ) -> str:
     base = graph_quality_badge_text(points)
-    has_visible_issue = any(quality in {"issue", "fallback"} for _elapsed, _value, quality in points)
+    has_visible_issue = any(quality in {"issue", "fallback", "limited"} for _elapsed, _value, quality in points)
     if smoothing_enabled and (low_end_display_mode or has_visible_issue):
         return " · ".join(part for part in (base, "稳态") if part)
     return base
@@ -1108,6 +1111,18 @@ def note_has_quality_issue(note: str) -> bool:
     return False
 
 
+def note_has_limited_quality(note: str) -> bool:
+    if not note:
+        return False
+    if "目标应用刚回到前台" in note:
+        return False
+    return (
+        "FPS 当前无帧增量" in note
+        or "CPU 当前无进程增量" in note
+        or ("网络无流量" in note and "网络采集" not in note)
+    )
+
+
 def primary_quality_issue_note(note: str) -> str:
     parts = [part.strip() for part in re.split(r"[；;]", note or "") if part.strip()]
     for part in parts:
@@ -1130,6 +1145,8 @@ def sample_quality_tag(sample: PerfSample) -> str:
         return "issue"
     if "设备级网络兜底" in note:
         return "fallback"
+    if note_has_limited_quality(note):
+        return "limited"
     return "ok"
 
 
@@ -1916,7 +1933,7 @@ def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[
     active_start: float | None = None
     active_end: float | None = None
     for elapsed, quality in sorted(points, key=lambda item: item[0]):
-        tag = quality if quality in ("issue", "fallback") else "ok"
+        tag = quality if quality in ("issue", "fallback", "limited") else "ok"
         current = float(elapsed)
         if tag == "ok":
             if active_start is not None and active_end is not None:
@@ -1949,6 +1966,8 @@ def quality_interval_label(quality: str, note: str = "") -> str:
         return "设备级兜底"
     if quality == "issue":
         return "采集异常"
+    if quality == "limited":
+        return "受限样本"
     return "正常"
 
 
@@ -1958,7 +1977,7 @@ def format_report_seconds(value: float) -> str:
 
 def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None:
     tag = sample_quality_tag(sample)
-    if tag == "ok":
+    if tag in {"ok", "limited"}:
         return None
     note = sample.note or ""
     if "恢复窗口内" in note:
@@ -6568,6 +6587,7 @@ class SessionRecorder:
     .legend-item { display: inline-flex; align-items: center; gap: 7px; }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; background: #2563eb; display: inline-block; }
     .legend-ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #f59e0b; display: inline-block; }
+    .legend-square { width: 10px; height: 10px; border-radius: 2px; background: #38bdf8; display: inline-block; }
     .legend-triangle { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 11px solid #ef4444; display: inline-block; }
     .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .chart-card { min-width: 0; padding: 16px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
@@ -6617,8 +6637,9 @@ class SessionRecorder:
       <span class="legend-item">粗线：稳定展示</span>
       <span class="legend-item">细线：原始值</span>
       <span class="legend-item"><span class="legend-ring"></span>设备级网络兜底</span>
+      <span class="legend-item"><span class="legend-square"></span>受限样本</span>
       <span class="legend-item"><span class="legend-triangle"></span>采集异常样本</span>
-      <span class="legend-item">浅橙/浅红背景表示连续兜底或异常区间</span>
+      <span class="legend-item">浅蓝/浅橙/浅红背景表示连续受限、兜底或异常区间</span>
     </div>
     <div class="chart-grid">__CHART_CARDS__</div>
     <h2>标记</h2>
@@ -6748,9 +6769,10 @@ class SessionRecorder:
       const note = String(sample.note || '');
       if (sample.qualityTag) return sample.qualityTag;
       if (note.includes('恢复窗口内')) return 'fallback';
-      const issueTokens = ['未采集', '无帧增量', '无进程增量', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
+      const issueTokens = ['未采集', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
       if (!note.includes('目标应用刚回到前台') && issueTokens.some(token => note.includes(token))) return 'issue';
       if (note.includes('设备级网络兜底')) return 'fallback';
+      if (note.includes('FPS 当前无帧增量') || note.includes('CPU 当前无进程增量')) return 'limited';
       return 'ok';
     }
 
@@ -6762,6 +6784,16 @@ class SessionRecorder:
         ctx.beginPath();
         ctx.arc(x, y, 5.2, 0, Math.PI * 2);
         ctx.stroke();
+        ctx.restore();
+        return;
+      }
+      if (tag === 'limited') {
+        ctx.save();
+        ctx.fillStyle = '#38bdf8';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(x - 4.8, y - 4.8, 9.6, 9.6);
+        ctx.strokeRect(x - 4.8, y - 4.8, 9.6, 9.6);
         ctx.restore();
         return;
       }
@@ -6785,7 +6817,7 @@ class SessionRecorder:
         .map(point => ({ elapsed: Number(point.elapsed || 0), quality: sampleQualityTag(point) }))
         .sort((left, right) => left.elapsed - right.elapsed)
         .forEach(point => {
-          const tag = point.quality === 'issue' || point.quality === 'fallback' ? point.quality : 'ok';
+          const tag = ['issue', 'fallback', 'limited'].includes(point.quality) ? point.quality : 'ok';
           if (tag === 'ok') {
             if (active) intervals.push(active);
             active = null;
@@ -6808,7 +6840,11 @@ class SessionRecorder:
         let x2 = Math.min(width - pad.right, xFor(interval.end));
         if (x2 <= x1) x2 = Math.min(width - pad.right, x1 + 4);
         ctx.save();
-        ctx.fillStyle = interval.quality === 'issue' ? 'rgba(239, 68, 68, 0.10)' : 'rgba(245, 158, 11, 0.14)';
+        ctx.fillStyle = interval.quality === 'issue'
+          ? 'rgba(239, 68, 68, 0.10)'
+          : interval.quality === 'limited'
+            ? 'rgba(56, 189, 248, 0.12)'
+            : 'rgba(245, 158, 11, 0.14)';
         ctx.fillRect(x1, pad.top, x2 - x1, plotH);
         ctx.restore();
       });
@@ -7358,7 +7394,12 @@ class GraphPanel(ttk.Frame):
             x2 = pad_left + ((min(end, view_end) - view_start) / view_seconds) * plot_w
             if x2 <= x1:
                 x2 = min(width - pad_right, x1 + 3)
-            fill = "#FEE2E2" if quality == "issue" else "#FEF3C7"
+            if quality == "issue":
+                fill = "#FEE2E2"
+            elif quality == "limited":
+                fill = "#E0F2FE"
+            else:
+                fill = "#FEF3C7"
             canvas.create_rectangle(x1, pad_top, x2, pad_top + plot_h, fill=fill, outline="")
         shadow = points.copy()
         canvas.create_line(*shadow, fill="#DCEBFF", width=5, smooth=True)
@@ -7366,6 +7407,8 @@ class GraphPanel(ttk.Frame):
         for x, y, quality in quality_points:
             if quality == "fallback":
                 canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2)
+            elif quality == "limited":
+                canvas.create_rectangle(x - 4.8, y - 4.8, x + 4.8, y + 4.8, fill="#38BDF8", outline="#FFFFFF", width=1)
             elif quality == "issue":
                 canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill="#EF4444", outline="#FFFFFF")
         last_x, last_y = last_visible or (points[-2], points[-1])
@@ -8889,6 +8932,8 @@ class App:
             "fallback": "◇",
             "waiting": "○",
             "idle": "○",
+            "no_frame_delta": "□",
+            "no_cpu_delta": "□",
             "missing": "!",
         }
         health = self.health_analyzer.analyze(sample)

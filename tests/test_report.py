@@ -516,7 +516,11 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("只可参考部分指标", quality["session_usability"]["label"])
         self.assertIn("FPS 无新增帧", quality["session_usability"]["detail"])
         self.assertIn("CPU 无增量", quality["session_usability"]["detail"])
+        self.assertEqual(payload["display_samples"][0]["qualityTag"], "limited")
+        self.assertEqual(payload["display_samples"][1]["qualityTag"], "limited")
         self.assertNotIn('"qualityTag": "issue"', html_text)
+        self.assertIn('"qualityTag": "limited"', html_text)
+        self.assertIn("受限样本", html_text)
 
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [
@@ -828,7 +832,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("设备级网络兜底", html_text)
         self.assertIn("qualityTag", html_text)
         self.assertIn("qualityIntervals", html_text)
-        self.assertIn("连续兜底或异常区间", html_text)
+        self.assertIn("连续受限、兜底或异常区间", html_text)
         self.assertIn("异常区间", html_text)
         self.assertIn("采集异常", html_text)
         self.assertIn("设备级兜底", html_text)

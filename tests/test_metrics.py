@@ -713,8 +713,8 @@ class SampleQualityTagTest(unittest.TestCase):
             note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
         )
 
-        self.assertEqual(sample_quality_tag(fps_idle), "ok")
-        self.assertEqual(sample_quality_tag(cpu_idle), "ok")
+        self.assertEqual(sample_quality_tag(fps_idle), "limited")
+        self.assertEqual(sample_quality_tag(cpu_idle), "limited")
         self.assertIsNone(quality_event_from_sample(fps_idle))
         self.assertIsNone(quality_event_from_sample(cpu_idle))
 
@@ -778,7 +778,9 @@ class QualityIntervalsTest(unittest.TestCase):
                 (3.0, "ok"),
                 (4.0, "fallback"),
                 (5.0, "fallback"),
-                (6.0, "ok"),
+                (6.0, "limited"),
+                (7.0, "limited"),
+                (8.0, "ok"),
             ]
         )
 
@@ -787,6 +789,7 @@ class QualityIntervalsTest(unittest.TestCase):
             [
                 {"start": 1.0, "end": 2.0, "quality": "issue"},
                 {"start": 4.0, "end": 5.0, "quality": "fallback"},
+                {"start": 6.0, "end": 7.0, "quality": "limited"},
             ],
         )
 
@@ -804,6 +807,7 @@ class QualityIntervalsTest(unittest.TestCase):
 
         self.assertEqual(quality_interval_label("fallback", recovery.note), "前台恢复窗口")
         self.assertEqual(quality_interval_label("fallback", network.note), "设备级兜底")
+        self.assertEqual(quality_interval_label("limited", "Android FPS 当前无帧增量"), "受限样本")
         self.assertEqual(quality_interval_label("issue", "采样耗时 1.60s 超过采样间隔 1.00s"), "采样耗时过长")
 
 

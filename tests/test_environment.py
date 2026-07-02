@@ -87,9 +87,10 @@ class GraphScrollBehaviorTest(unittest.TestCase):
                     (1.0, 0.0, "issue"),
                     (2.0, 55.0, "fallback"),
                     (3.0, 20.0, "issue"),
+                    (4.0, 58.0, "limited"),
                 ]
             ),
-            "异常 2 · 兜底 1",
+            "异常 2 · 兜底 1 · 受限 1",
         )
 
     def test_graph_quality_badge_is_empty_for_trusted_points(self) -> None:
