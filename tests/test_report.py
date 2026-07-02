@@ -345,6 +345,23 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("ctx.fillText(emptyLabel", html_text)
         self.assertIn("note.includes('网络无流量') && !note.includes('网络采集')", html_text)
 
+    def test_html_report_chart_stats_use_current_average_and_peak_labels(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=50.0, cpu_percent=20.0, memory_mb=500.0))
+        recorder.append(PerfSample(timestamp=2.0, elapsed=2.0, fps=55.0, cpu_percent=30.0, memory_mb=520.0))
+        recorder.append(PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0, cpu_percent=40.0, memory_mb=540.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("function chartSummaryText", html_text)
+        self.assertIn("最新", html_text)
+        self.assertIn("均值", html_text)
+        self.assertIn("峰值", html_text)
+        self.assertNotIn("stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`", html_text)
+
     def test_metric_availability_treats_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

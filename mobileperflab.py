@@ -7400,6 +7400,17 @@ class SessionRecorder:
       .filter(value => Number.isFinite(value));
 
     const fmt = (value, decimals = 1) => Number(value || 0).toFixed(decimals);
+    function chartSummaryText(values, config) {
+      const finite = values
+        .map(value => Number(value || 0))
+        .filter(value => Number.isFinite(value));
+      if (!finite.length) return '最新 -- · 均值 -- · 峰值 --';
+      const latest = finite[finite.length - 1];
+      const average = finite.reduce((sum, value) => sum + value, 0) / finite.length;
+      const peak = Math.max(...finite);
+      const valueText = (value) => `${fmt(value, config.decimals)}${config.unit}`;
+      return `最新 ${valueText(latest)} · 均值 ${valueText(average)} · 峰值 ${valueText(peak)}`;
+    }
     const timeLabel = (seconds) => {
       const total = Math.max(0, Math.round(Number(seconds || 0)));
       const h = Math.floor(total / 3600);
@@ -7770,14 +7781,12 @@ class SessionRecorder:
         drawMarkerLabel(ctx, layout);
       }
 
-      const avg = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-      const peak = values.length ? Math.max(...values) : 0;
       const stat = document.getElementById(`stat-${config.key}`);
       if (stat) {
         if (['unavailable', 'waiting'].includes(config.availabilityState)) {
           stat.textContent = config.availabilityLabel;
         } else {
-          stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`;
+          stat.textContent = chartSummaryText(displayValues.length ? displayValues : values, config);
         }
       }
       if (stickToEnd) {
