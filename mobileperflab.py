@@ -1461,6 +1461,16 @@ def performance_conclusion_text(status: dict[str, str], expected_interval: float
     return " · ".join(parts)
 
 
+def live_realtime_conclusion_text(
+    recent_window: dict[str, object],
+    health: dict[str, "MetricHealth"],
+    expected_interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> str:
+    conclusion = performance_conclusion_text(performance_conclusion_status(recent_window), expected_interval)
+    usability = live_session_usability_text(health)
+    return "\n".join(part for part in (conclusion, usability) if part)
+
+
 def validation_state_label(state: str) -> str:
     return {
         "pass": "通过",
@@ -8925,14 +8935,7 @@ class App:
             live_recent_window_summary(recent_window, self.live_quality.low_end_display_mode(), self.live_quality.expected_interval)
         )
         self.performance_conclusion_var.set(
-            " · ".join(
-                part
-                for part in (
-                    performance_conclusion_text(performance_conclusion_status(recent_window), self.live_quality.expected_interval),
-                    live_session_usability_text(self.live_quality.last_metric_health),
-                )
-                if part
-            )
+            live_realtime_conclusion_text(recent_window, self.live_quality.last_metric_health, self.live_quality.expected_interval)
         )
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()

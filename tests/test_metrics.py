@@ -10,6 +10,7 @@ from mobileperflab import (
     live_metric_availability_summary,
     live_recent_window_summary,
     live_session_usability_text,
+    live_realtime_conclusion_text,
     live_sampling_action_label,
     performance_conclusion_status,
     performance_conclusion_text,
@@ -757,6 +758,36 @@ class LiveQualityTrackerTest(unittest.TestCase):
             ),
             "性能结论：先确认网络来源 · 最近窗口包含设备级网络兜底，不能当作目标 App 独占上下行结论。 · 确认 per-UID 网络来源",
         )
+
+    def test_live_realtime_conclusion_separates_verdict_from_metric_usability(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=8.0,
+                elapsed=8.0,
+                fps=58.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                rx_kbps=0.0,
+                tx_kbps=0.0,
+                note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+            )
+        )
+        recent_window = {
+            "state": "caution",
+            "label": "窗口：受限",
+            "trend_source": "limited",
+            "slow_samples": 0,
+            "issue_samples": 0,
+            "limited_samples": 2,
+        }
+
+        text = live_realtime_conclusion_text(recent_window, health, expected_interval=1.0)
+
+        self.assertEqual(text.count("\n"), 1)
+        self.assertTrue(text.startswith("性能结论：先触发业务动作"))
+        self.assertIn("\n会话可用性：只可参考部分指标", text)
+        self.assertIn("CPU 无增量", text)
+        self.assertIn("网络无流量", text)
 
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
