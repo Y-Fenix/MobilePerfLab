@@ -9224,18 +9224,19 @@ class App:
         ttk.Label(panel, text="采集健康", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12))
         grid = ttk.Frame(panel, style="Panel.TFrame")
         grid.grid(row=0, column=1, sticky="ew")
-        labels = [
-            ("fps", "FPS"),
-            ("jank_percent", "Jank"),
-            ("cpu_percent", "CPU"),
-            ("memory_mb", "内存"),
-            ("battery_percent", "电量"),
-            ("temperature_c", "温度"),
-            ("power_w", "Power"),
-            ("rx_kbps", "下行"),
-            ("tx_kbps", "上行"),
-        ]
-        for col, (metric, label) in enumerate(labels):
+        health_labels = {
+            "fps": "FPS",
+            "cpu_percent": "CPU",
+            "memory_mb": "内存",
+            "rx_kbps": "下行",
+            "tx_kbps": "上行",
+            "jank_percent": "Jank",
+            "temperature_c": "温度",
+            "power_w": "Power",
+            "battery_percent": "电量",
+        }
+        for col, metric in enumerate((*workbench_primary_metric_order(), "battery_percent")):
+            label = health_labels[metric]
             grid.columnconfigure(col, weight=1)
             variable = tk.StringVar(value=f"{label}: 等待")
             self.metric_health_vars[metric] = variable

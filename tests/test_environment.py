@@ -583,6 +583,17 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("for key in workbench_primary_metric_order()", dashboard_body)
         self.assertNotIn("for index, card in enumerate(self.cards.values())", dashboard_body)
 
+    def test_metric_health_strip_follows_workbench_priority_before_optional_battery(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        health_start = text.index("def _build_metric_health_strip")
+        health_end = text.index("def _build_collection_link_strip", health_start)
+        health_body = text[health_start:health_end]
+
+        self.assertIn("health_labels", health_body)
+        self.assertIn("for col, metric in enumerate((*workbench_primary_metric_order(), \"battery_percent\"))", health_body)
+        self.assertNotIn('("jank_percent", "Jank"),\\n            ("cpu_percent", "CPU")', health_body)
+
     def test_weak_network_workspace_surfaces_three_step_path_and_status_lights(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
