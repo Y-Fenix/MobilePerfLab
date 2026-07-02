@@ -9477,10 +9477,41 @@ class App:
         self.app_hint_var.set(f"已静默尝试启动 iOS 采集服务；如未就绪，请按提示授权。日志：{log_path}")
         self.capability_var.set(self._capability_text())
         self.append_log(f"iOS 采集服务后台启动中：{plan.detail} 日志：{log_path}")
+        self._schedule_ios_service_startup_check(process, log_path, plan.action)
         self._refresh_session_chips()
 
     def _ios_service_log_path(self) -> Path:
         return EXPORT_DIR / "ios-service.log"
+
+    def _schedule_ios_service_startup_check(
+        self,
+        process: subprocess.Popen[str],
+        log_path: Path,
+        action: str,
+    ) -> None:
+        if hasattr(self, "root"):
+            self.root.after(1200, lambda: self._check_ios_service_startup_result(process, log_path, action))
+
+    def _check_ios_service_startup_result(
+        self,
+        process: subprocess.Popen[str],
+        log_path: Path,
+        action: str,
+    ) -> None:
+        if process is not getattr(self, "ios_service_process", None):
+            return
+        code = process.poll()
+        if code is None:
+            self.status_var.set("iOS 采集服务运行中")
+            self.app_hint_var.set(f"iOS 采集服务已在后台运行。日志：{log_path}")
+            self.append_log(f"iOS 采集服务已在后台运行。日志：{log_path}")
+            self._refresh_session_chips()
+            return
+        self.ios_service_process = None
+        self.status_var.set("iOS 采集服务启动失败")
+        self.app_hint_var.set(f"iOS 采集服务快速退出，可能需要 sudo 授权。{action} 日志：{log_path}")
+        self.append_log(f"iOS 采集服务快速退出，退出码 {code}。{action} 日志：{log_path}")
+        self._refresh_session_chips()
 
     def _render_devices(self) -> None:
         for item in self.device_tree.get_children():

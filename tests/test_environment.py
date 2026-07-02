@@ -167,6 +167,7 @@ class IOSServiceLaunchTest(unittest.TestCase):
         app.append_log = lambda text: app.logs.append(text)
         app._refresh_session_chips = lambda: None
         app._ios_service_log_path = lambda: Path("/tmp/mobileperflab-ios-service-test.log")
+        app._schedule_ios_service_startup_check = lambda _process, _log_path, _action: None
 
         original_popen = mobileperflab.subprocess.Popen
         mobileperflab.subprocess.Popen = fake_popen
@@ -181,6 +182,115 @@ class IOSServiceLaunchTest(unittest.TestCase):
         self.assertIn("后台启动中", app.status_var.value)
         self.assertIn("静默尝试启动", app.app_hint_var.value)
         self.assertTrue(any("iOS 采集服务后台启动中" in line for line in app.logs))
+
+    def test_start_ios_service_schedules_quick_failure_check(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeIOS:
+            pymobiledevice3 = "/tmp/pymobiledevice3"
+
+        class FakeProcess:
+            pass
+
+        class FakeRoot:
+            def __init__(self) -> None:
+                self.after_calls: list[tuple[int, object]] = []
+
+            def after(self, delay_ms: int, callback: object) -> None:
+                self.after_calls.append((delay_ms, callback))
+
+        def fake_popen(_command: list[str], **_kwargs: object) -> FakeProcess:
+            return FakeProcess()
+
+        app = object.__new__(App)
+        app.root = FakeRoot()
+        app.ios = FakeIOS()
+        app.status_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.capability_var = FakeVar()
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_session_chips = lambda: None
+        app._ios_service_log_path = lambda: Path("/tmp/mobileperflab-ios-service-test.log")
+
+        original_popen = mobileperflab.subprocess.Popen
+        mobileperflab.subprocess.Popen = fake_popen
+        try:
+            App.start_ios_service(app)
+        finally:
+            mobileperflab.subprocess.Popen = original_popen
+
+        self.assertEqual(app.root.after_calls[0][0], 1200)
+
+    def test_ios_service_startup_check_surfaces_fast_sudo_failure(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FailedProcess:
+            def poll(self) -> int:
+                return 1
+
+        app = object.__new__(App)
+        app.ios_service_process = FailedProcess()
+        app.status_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_session_chips = lambda: None
+
+        App._check_ios_service_startup_result(
+            app,
+            app.ios_service_process,
+            Path("/tmp/ios-service.log"),
+            "请先完成 sudo 授权。",
+        )
+
+        self.assertIsNone(app.ios_service_process)
+        self.assertIn("启动失败", app.status_var.value)
+        self.assertIn("sudo 授权", app.app_hint_var.value)
+        self.assertTrue(any("快速退出" in line for line in app.logs))
+
+    def test_ios_service_startup_check_marks_running_process_ready(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class RunningProcess:
+            def poll(self) -> None:
+                return None
+
+        app = object.__new__(App)
+        app.ios_service_process = RunningProcess()
+        app.status_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_session_chips = lambda: None
+
+        App._check_ios_service_startup_result(
+            app,
+            app.ios_service_process,
+            Path("/tmp/ios-service.log"),
+            "请先完成 sudo 授权。",
+        )
+
+        self.assertIn("运行中", app.status_var.value)
+        self.assertIn("已在后台运行", app.app_hint_var.value)
+        self.assertTrue(any("已在后台运行" in line for line in app.logs))
 
     def test_ios_runtime_guidance_does_not_send_users_to_keep_extra_script_window_open(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
