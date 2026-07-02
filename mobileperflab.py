@@ -1334,6 +1334,14 @@ def android_collection_diagnostics_payload(diagnostics: AndroidCollectionDiagnos
     }
 
 
+def collection_diagnostic_report_status_text(row: dict[str, object]) -> str:
+    raw_state = str(row.get("state", "") or "")
+    label = str(row.get("label", "") or "")
+    if label and raw_state and label != raw_state:
+        return f"{label}（{raw_state}）"
+    return label or raw_state
+
+
 def session_quality_gate(
     sample_count: int,
     issue_count: int,
@@ -7131,7 +7139,7 @@ class SessionRecorder:
             diagnostic_rows_html = "".join(
                 "<tr>"
                 f"<td>{html.escape(str(row.get('name', '')))}</td>"
-                f"<td>{html.escape(str(row.get('state', '')))}</td>"
+                f"<td>{html.escape(collection_diagnostic_report_status_text(row))}</td>"
                 f"<td>{html.escape(str(row.get('detail', '')))}</td>"
                 f"<td>{html.escape(str(row.get('action_detail', '')))}</td>"
                 "</tr>"

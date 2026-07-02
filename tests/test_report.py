@@ -194,6 +194,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("下载/上传", diagnostics["rows"][4]["action_detail"])
         self.assertIn("采集链路自检", html_text)
         self.assertIn("Android 采集链路需关注", html_text)
+        self.assertIn("异常（缺失）", html_text)
+        self.assertIn("兜底（设备级兜底）", html_text)
         self.assertIn("设备级兜底", html_text)
         self.assertIn("下一步", html_text)
         self.assertIn("保持页面可见", html_text)
