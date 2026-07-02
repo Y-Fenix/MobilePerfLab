@@ -337,6 +337,61 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("目标 App 当前无网络流量", availability["rx_kbps"]["detail"])
         self.assertIn("无流量", html_text)
 
+    def test_metric_availability_treats_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="ok",
+                summary="Android 采集链路正常",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "已获取", "101"),
+                    ("UID", "已获取", "10234"),
+                    ("FPS", "可用", "gfxinfo counters"),
+                    ("网络", "per-UID", "目标 App 独占上下行"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="pidof",
+                pids=[101],
+                uid_source="dumpsys package",
+                uid=10234,
+                fps_source="gfxinfo counters",
+                network_source="per-UID",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=4.0,
+                cpu_percent=22.0,
+                memory_mb=512.0,
+                note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=5.0,
+                cpu_percent=23.0,
+                memory_mb=514.0,
+                note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        availability = {item["key"]: item for item in payload["quality"]["metric_availability"]}
+
+        self.assertEqual(availability["fps"]["state"], "no_frame_delta")
+        self.assertEqual(availability["fps"]["state_label"], "无新增帧")
+        self.assertIn("FPS 来源可用", availability["fps"]["detail"])
+        self.assertIn("无新增帧", html_text)
+
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [
             {"key": "fps", "state": "unavailable", "coverage_percent": 0.0},

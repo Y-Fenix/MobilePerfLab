@@ -1648,6 +1648,7 @@ def metric_availability_state_label(state: str) -> str:
         "partial": "部分可用",
         "fallback": "兜底",
         "idle": "无流量",
+        "no_frame_delta": "无新增帧",
         "unavailable": "不可用",
         "waiting": "待验证",
     }.get(state, state)
@@ -1690,8 +1691,14 @@ def build_metric_availability(
         if key == "fps":
             issue = note_count("FPS 未采集", "FPS 当前无帧增量", "无帧增量")
             if source == "fps_source=missing" or (issue and positives == 0):
-                state = "unavailable"
-                detail = "FPS 来源不可用或无帧增量。"
+                no_frame_delta = note_count("FPS 当前无帧增量", "无帧增量")
+                missing_source_issue = note_count("FPS 未采集")
+                if source != "fps_source=missing" and no_frame_delta and not missing_source_issue:
+                    state = "no_frame_delta"
+                    detail = "FPS 来源可用，但采样窗口内没有新增帧；页面静止或低端机短采样窗口较常见。"
+                else:
+                    state = "unavailable"
+                    detail = "FPS 来源不可用或无帧增量。"
             elif positives:
                 state = "partial" if issue else "available"
                 detail = f"{positives}/{total} 个样本有 FPS。"
@@ -1955,6 +1962,7 @@ class MetricHealthAnalyzer:
         "recovering": "恢复中",
         "waiting": "等待",
         "idle": "无流量",
+        "no_frame_delta": "无新增帧",
         "missing": "异常",
     }
 
@@ -1966,6 +1974,8 @@ class MetricHealthAnalyzer:
     def _metric_health(self, metric: str, value: float, elapsed: float, note: str) -> MetricHealth:
         if self._is_foreground_recovery_delta_metric(metric, note):
             return self._health("recovering", "前台恢复窗口，等待 FPS/CPU/网络重新建立基线")
+        if self._is_fps_no_frame_delta(metric, note):
+            return self._health("no_frame_delta", "FPS 来源可用但当前无新增帧，页面静止或低端机短采样窗口较常见")
         if self._note_marks_missing(metric, note):
             return self._health("missing", self._missing_detail(metric, note))
         if metric in ("rx_kbps", "tx_kbps"):
@@ -1991,6 +2001,12 @@ class MetricHealthAnalyzer:
         if "恢复窗口内" not in note:
             return False
         return metric in ("fps", "jank_percent", "cpu_percent", "rx_kbps", "tx_kbps")
+
+    @staticmethod
+    def _is_fps_no_frame_delta(metric: str, note: str) -> bool:
+        if metric not in ("fps", "jank_percent"):
+            return False
+        return "FPS 当前无帧增量" in note and "FPS 未采集" not in note and "FPS 采集失败" not in note
 
     @staticmethod
     def _note_marks_missing(metric: str, note: str) -> bool:
@@ -2049,6 +2065,7 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     fallback: list[str] = []
     recovering: list[str] = []
     idle: list[str] = []
+    no_frame_delta: list[str] = []
     unavailable: list[str] = []
     pending: list[str] = []
     for metric in primary_metrics:
@@ -2064,6 +2081,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
             recovering.append(label)
         elif status.state == "idle":
             idle.append(label)
+        elif status.state == "no_frame_delta":
+            no_frame_delta.append(label)
         elif status.state == "missing":
             unavailable.append(label)
         else:
@@ -2077,6 +2096,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
         parts.append(f"恢复中：{'/'.join(recovering)}")
     if idle:
         parts.append(f"无流量：{'/'.join(idle)}")
+    if no_frame_delta:
+        parts.append(f"无新增帧：{'/'.join(no_frame_delta)}")
     if unavailable:
         parts.append(f"不可用：{'/'.join(unavailable)}")
     if pending:

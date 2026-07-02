@@ -229,6 +229,23 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         self.assertEqual(health["rx_kbps"].state, "idle")
         self.assertEqual(health["tx_kbps"].state, "idle")
 
+    def test_marks_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
+        sample = PerfSample(
+            timestamp=8.0,
+            elapsed=8.0,
+            fps=0.0,
+            cpu_percent=22.0,
+            note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+        )
+
+        health = MetricHealthAnalyzer().analyze(sample)
+
+        self.assertEqual(health["fps"].state, "no_frame_delta")
+        self.assertEqual(health["jank_percent"].state, "no_frame_delta")
+        self.assertEqual(health["fps"].label, "无新增帧")
+        self.assertIn("页面静止", health["fps"].detail)
+        self.assertIn("无新增帧：FPS", live_metric_availability_summary(health))
+
     def test_live_metric_summary_labels_idle_network_separately_from_pending(self) -> None:
         health = MetricHealthAnalyzer().analyze(
             PerfSample(timestamp=8.0, elapsed=8.0, fps=58.0, cpu_percent=22.0, rx_kbps=0.0, tx_kbps=0.0)
