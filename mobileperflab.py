@@ -1315,8 +1315,23 @@ def graph_summary_text(points: list[tuple[float, float]], unit: str) -> str:
     current = values[-1]
     average = sum(values) / len(values)
     peak = max(values)
-    suffix = f" {unit}".rstrip()
+    suffix = f" {unit}".rstrip() if unit != "%" else "%"
     return f"当前 {current:.1f}{suffix} · 均值 {average:.1f}{suffix} · 峰值 {peak:.1f}{suffix}"
+
+
+def metric_card_recent_summary(samples: list["PerfSample"], metric: str, unit: str, window_size: int = 5) -> str:
+    recent = samples[-max(1, int(window_size)) :]
+    values = [
+        float(getattr(sample, metric, 0.0) or 0.0)
+        for sample in recent
+        if math.isfinite(float(getattr(sample, metric, 0.0) or 0.0))
+    ]
+    if not values:
+        return ""
+    suffix = f" {unit}".rstrip() if unit != "%" else "%"
+    average = sum(values) / len(values)
+    peak = max(values)
+    return f"均值 {average:.1f}{suffix} · 峰值 {peak:.1f}{suffix}"
 
 
 def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) -> list[tuple[float, float]]:
@@ -9858,7 +9873,10 @@ class App:
         if status is not None and status.state == "fallback":
             self.cards[metric].set_value(value, status.detail)
             return
-        self.cards[metric].set_value(value, default_sub)
+        units = {str(item["key"]): str(item["unit"]) for item in metric_graph_layout()}
+        recent_summary = metric_card_recent_summary(getattr(self.recorder, "samples", []), metric, units.get(metric, ""))
+        sub = " · ".join(part for part in (default_sub, recent_summary) if part)
+        self.cards[metric].set_value(value, sub)
 
     def _update_metric_health(self, sample: PerfSample) -> dict[str, MetricHealth]:
         labels = {

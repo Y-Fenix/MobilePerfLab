@@ -1157,6 +1157,70 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
         self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
 
+    def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {item["key"]: FakeCard() for item in metric_graph_layout()}
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
+        App._handle_sample(app, PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, cpu_percent=22.0))
+
+        self.assertIn("进程占用", app.cards["cpu_percent"].sub)
+        self.assertIn("均值 21.0%", app.cards["cpu_percent"].sub)
+        self.assertIn("峰值 22.0%", app.cards["cpu_percent"].sub)
+
     def test_handle_sample_surfaces_live_session_usability_when_core_metrics_missing(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
