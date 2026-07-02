@@ -1634,6 +1634,7 @@ def metric_availability_state_label(state: str) -> str:
         "available": "可用",
         "partial": "部分可用",
         "fallback": "兜底",
+        "idle": "无流量",
         "unavailable": "不可用",
         "waiting": "待验证",
     }.get(state, state)
@@ -1737,6 +1738,7 @@ def build_metric_availability(
                 state = "available"
                 detail = f"{positives}/{total} 个样本有网络速率。"
             else:
+                state = "idle"
                 detail = "目标 App 当前无网络流量，需结合业务动作复测。"
         rows.append(
             {
@@ -2033,6 +2035,7 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     available: list[str] = []
     fallback: list[str] = []
     recovering: list[str] = []
+    idle: list[str] = []
     unavailable: list[str] = []
     pending: list[str] = []
     for metric in primary_metrics:
@@ -2046,6 +2049,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
             fallback.append(label)
         elif status.state == "recovering":
             recovering.append(label)
+        elif status.state == "idle":
+            idle.append(label)
         elif status.state == "missing":
             unavailable.append(label)
         else:
@@ -2057,6 +2062,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
         parts.append(f"兜底：{'/'.join(fallback)}")
     if recovering:
         parts.append(f"恢复中：{'/'.join(recovering)}")
+    if idle:
+        parts.append(f"无流量：{'/'.join(idle)}")
     if unavailable:
         parts.append(f"不可用：{'/'.join(unavailable)}")
     if pending:

@@ -229,6 +229,16 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         self.assertEqual(health["rx_kbps"].state, "idle")
         self.assertEqual(health["tx_kbps"].state, "idle")
 
+    def test_live_metric_summary_labels_idle_network_separately_from_pending(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(timestamp=8.0, elapsed=8.0, fps=58.0, cpu_percent=22.0, rx_kbps=0.0, tx_kbps=0.0)
+        )
+
+        summary = live_metric_availability_summary(health)
+
+        self.assertIn("无流量：下行/上行", summary)
+        self.assertNotIn("待验证：下行/上行", summary)
+
     def test_marks_device_network_fallback_as_fallback_when_it_has_values(self) -> None:
         sample = PerfSample(
             timestamp=9.0,
