@@ -169,15 +169,13 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertEqual(graph_scroll_row_step(-1), -1)
         self.assertEqual(graph_scroll_row_step(0), 0)
 
-    def test_graph_view_rows_adapt_to_fullscreen_height(self) -> None:
-        self.assertEqual(graph_visible_rows_for_height(760), 2)
-        self.assertEqual(graph_visible_rows_for_height(900), 3)
-        self.assertEqual(graph_visible_rows_for_height(980), 4)
-        self.assertEqual(graph_visible_rows_for_height(1400), 4)
+    def test_graph_view_rows_defaults_to_two_visible_rows(self) -> None:
+        self.assertEqual(graph_visible_rows_for_height(720), 2)
+        self.assertEqual(graph_visible_rows_for_height(900), 2)
+        self.assertEqual(graph_visible_rows_for_height(1400), 2)
 
-    def test_graph_view_height_matches_visible_rows_and_scrollbar(self) -> None:
+    def test_graph_view_height_shows_exactly_two_rows_plus_scrollbar(self) -> None:
         self.assertEqual(format_graph_view_height(2, 176, 10, 22), 384)
-        self.assertEqual(format_graph_view_height(3, 176, 10, 22), 570)
 
     def test_smooth_graph_series_reduces_display_oscillation_without_changing_length(self) -> None:
         raw = [(0.0, 0.0), (1.0, 10.0), (2.0, 0.0), (3.0, 10.0)]

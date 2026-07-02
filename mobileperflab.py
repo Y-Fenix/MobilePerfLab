@@ -1050,12 +1050,8 @@ def graph_scroll_row_step(wheel_units: int) -> int:
     return 0
 
 
-def graph_visible_rows_for_height(screen_height: int, min_rows: int = 2, max_rows: int = 4) -> int:
-    if screen_height >= 980:
-        return min(max_rows, 4)
-    if screen_height >= 900:
-        return min(max_rows, max(min_rows, 3))
-    return min_rows
+def graph_visible_rows_for_height(_screen_height: int) -> int:
+    return 2
 
 
 def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, scrollbar_height: int) -> int:
