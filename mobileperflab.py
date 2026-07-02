@@ -9266,15 +9266,16 @@ class App:
     ) -> None:
         if not hasattr(self, "weak_diagnostic_summary_var"):
             return
-        device = self.selected_device if self.selected_device and self.selected_device.platform == "Android" else None
+        diagnostic_device = self.selected_device
+        android_device = diagnostic_device if diagnostic_device and diagnostic_device.platform == "Android" else None
         endpoint = self.weak_proxy.local_endpoint()
-        if current_proxy is None and device:
-            current_proxy = self.android.current_http_proxy(device)
+        if current_proxy is None and android_device:
+            current_proxy = self.android.current_http_proxy(android_device)
         proxy_reachable: bool | None = None
-        if probe_connectivity and device and self.weak_proxy.is_running():
+        if probe_connectivity and android_device and self.weak_proxy.is_running():
             host, port_text = endpoint.rsplit(":", 1)
             try:
-                proxy_reachable, detail = self.android.probe_tcp_connectivity(device, host, int(port_text))
+                proxy_reachable, detail = self.android.probe_tcp_connectivity(android_device, host, int(port_text))
             except Exception as exc:
                 proxy_reachable = False
                 detail = str(exc)
@@ -9284,7 +9285,7 @@ class App:
         diagnostics = build_weak_network_diagnostics(
             proxy_running=self.weak_proxy.is_running(),
             endpoint=endpoint,
-            device=device,
+            device=diagnostic_device,
             current_proxy=current_proxy or "",
             proxy_reachable=proxy_reachable,
         )
@@ -9304,13 +9305,14 @@ class App:
         self._refresh_weak_status_lights()
 
     def _weak_network_export_diagnostics(self) -> WeakNetworkDiagnostics:
-        device = self.selected_device if self.selected_device and self.selected_device.platform == "Android" else None
+        diagnostic_device = self.selected_device
+        android_device = diagnostic_device if diagnostic_device and diagnostic_device.platform == "Android" else None
         endpoint = self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>"
         current_proxy = ""
         proxy_reachable: bool | None = None
-        if device:
+        if android_device:
             try:
-                current_proxy = self.android.current_http_proxy(device)
+                current_proxy = self.android.current_http_proxy(android_device)
             except Exception as exc:
                 current_proxy = ""
                 self.append_log(f"导出报告读取 Android 代理失败：{exc}")
@@ -9318,7 +9320,7 @@ class App:
             if self.weak_proxy.is_running() and verification.confirmed:
                 host, port_text = endpoint.rsplit(":", 1)
                 try:
-                    proxy_reachable, detail = self.android.probe_tcp_connectivity(device, host, int(port_text))
+                    proxy_reachable, detail = self.android.probe_tcp_connectivity(android_device, host, int(port_text))
                     self.append_log(
                         f"导出报告弱网端口{'可达' if proxy_reachable else '不可达'}：{detail}"
                     )
@@ -9328,7 +9330,7 @@ class App:
         return build_weak_network_diagnostics(
             proxy_running=self.weak_proxy.is_running(),
             endpoint=endpoint,
-            device=device,
+            device=diagnostic_device,
             current_proxy=current_proxy,
             proxy_reachable=proxy_reachable,
         )

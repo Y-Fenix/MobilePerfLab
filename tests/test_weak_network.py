@@ -263,6 +263,37 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("下载/上传", app.weak_live_summary_var.value)
         self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量 · 目标 App 待确认")
 
+    def test_refresh_weak_diagnostics_uses_selected_ios_device_for_manual_proxy_guidance(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.selected_device = DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready")
+        app.weak_diagnostic_summary_var = FakeVar()
+        app.weak_diagnostic_row_vars = [(FakeVar(), FakeVar(), FakeVar()) for _ in range(4)]
+        app._refresh_weak_status_lights = lambda: None
+
+        App._refresh_weak_diagnostics(app)
+
+        self.assertEqual(app.weak_diagnostic_summary_var.value, "iOS 需要手动配置 Wi-Fi 代理")
+        rows = [(name.value, state.value, detail.value) for name, state, detail in app.weak_diagnostic_row_vars]
+        self.assertIn(("iOS 设备", "已选择", "iPhone"), rows)
+        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写 192.168.1.2:18888"), rows)
+
     def test_refresh_proxy_traffic_updates_five_status_lights(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
