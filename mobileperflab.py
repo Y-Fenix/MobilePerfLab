@@ -468,7 +468,7 @@ def proxy_traffic_state(running: bool, snapshot: ProxyTrafficSnapshot) -> tuple[
         return "dropped", "已命中并丢弃"
     if snapshot.total_connections <= 0 and snapshot.up_bytes <= 0 and snapshot.down_bytes <= 0:
         return "waiting", "等待目标流量"
-    return "hit", "已命中目标流量"
+    return "hit", "代理有真实流量"
 
 
 def weak_hit_status_text(
@@ -481,7 +481,9 @@ def weak_hit_status_text(
     if not running or traffic_state == "off":
         return "未启动 · 先启动代理并应用到 Android"
     if traffic_state == "hit":
-        return "已命中目标流量 · 弱网规则有生效证据"
+        if app_has_traffic:
+            return "已命中目标流量 · 弱网规则有生效证据"
+        return "代理有流量 · 目标 App 待确认"
     if traffic_state == "dropped":
         return "已命中并丢弃 · 结合业务日志确认目标请求"
     if traffic_state == "waiting" and app_has_traffic:
@@ -518,9 +520,14 @@ def format_live_proxy_summary(
         traffic_label = f"{traffic_label}/未捕获请求"
         if app_rx_kbps > 0.0 or app_tx_kbps > 0.0:
             traffic_label = f"{traffic_label}/疑似绕过系统代理"
+    elif state == "hit":
+        if app_rx_kbps > 0.0 or app_tx_kbps > 0.0:
+            traffic_label = "已命中目标流量"
+        else:
+            traffic_label = f"{traffic_label}/目标待确认"
     elif state == "dropped":
         traffic_label = f"{traffic_label}/只见丢弃"
-    app_traffic = f" · App ↑↓有流量 {app_rx_kbps:.1f}/{app_tx_kbps:.1f} KB/s" if state == "waiting" and (app_rx_kbps > 0.0 or app_tx_kbps > 0.0) else ""
+    app_traffic = f" · App ↑↓有流量 {app_rx_kbps:.1f}/{app_tx_kbps:.1f} KB/s" if state in {"waiting", "hit"} and (app_rx_kbps > 0.0 or app_tx_kbps > 0.0) else ""
     return (
         f"弱网 ON · {endpoint} · "
         f"{effectiveness_label}{readiness_text} · "
@@ -561,6 +568,12 @@ def weak_network_test_readiness(effectiveness_state: str) -> dict[str, str]:
             "state": "attention",
             "label": "先触发业务请求",
             "detail": "代理链路已就绪，但还没有目标请求命中证据。",
+        }
+    if effectiveness_state == "target_unconfirmed":
+        return {
+            "state": "attention",
+            "label": "确认目标流量",
+            "detail": "代理已有流量，但还不能证明来自目标 App。",
         }
     return {
         "state": "blocked",
@@ -683,6 +696,14 @@ def build_weak_network_effectiveness(
             action="点击应用到 Android，再刷新状态确认设备代理读回一致。",
         )
     if traffic_state == "hit":
+        if not app_has_traffic:
+            return _weak_network_effectiveness_result(
+                state="target_unconfirmed",
+                label="代理有流量，目标待确认",
+                score=75,
+                detail="代理已捕获流量，但目标 App 上下行尚无可归因数据，不能完全确认弱网命中的是当前测试 App。",
+                action="在目标 App 内触发明确下载/上传或 HTTP/HTTPS 请求，确认目标 App 上下行同步变化。",
+            )
         return _weak_network_effectiveness_result(
             state="effective",
             label="弱网已生效",
@@ -1588,6 +1609,9 @@ def build_validation_checklist(
         if effectiveness_state == "bypass" or bypass_state == "bypass":
             weak_state = "fail"
             weak_detail = f"疑似绕过代理：{bypass_detail}" if bypass_detail else "App 有上下行流量但弱网代理未捕获请求，疑似绕过代理。"
+        elif effectiveness_state == "target_unconfirmed":
+            weak_state = "warning"
+            weak_detail = "弱网代理已捕获流量，但目标 App 上下行未确认，需先证明请求来自当前测试 App。"
         elif traffic_state == "hit":
             weak_state = "pass"
             weak_detail = "弱网代理已捕获真实目标流量。"
