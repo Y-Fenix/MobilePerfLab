@@ -392,6 +392,61 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("FPS 来源可用", availability["fps"]["detail"])
         self.assertIn("无新增帧", html_text)
 
+    def test_metric_availability_treats_cpu_no_process_delta_as_idle_when_pid_exists(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="ok",
+                summary="Android 采集链路正常",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "已获取", "101"),
+                    ("UID", "已获取", "10234"),
+                    ("FPS", "可用", "gfxinfo counters"),
+                    ("网络", "per-UID", "目标 App 独占上下行"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="pidof",
+                pids=[101],
+                uid_source="dumpsys package",
+                uid=10234,
+                fps_source="gfxinfo counters",
+                network_source="per-UID",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=4.0,
+                fps=58.0,
+                memory_mb=512.0,
+                note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=5.0,
+                fps=59.0,
+                memory_mb=514.0,
+                note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        availability = {item["key"]: item for item in payload["quality"]["metric_availability"]}
+
+        self.assertEqual(availability["cpu_percent"]["state"], "no_cpu_delta")
+        self.assertEqual(availability["cpu_percent"]["state_label"], "CPU 无增量")
+        self.assertIn("PID 可用", availability["cpu_percent"]["detail"])
+        self.assertIn("CPU 无增量", html_text)
+
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [
             {"key": "fps", "state": "unavailable", "coverage_percent": 0.0},

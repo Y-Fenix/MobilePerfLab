@@ -246,6 +246,23 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         self.assertIn("页面静止", health["fps"].detail)
         self.assertIn("无新增帧：FPS", live_metric_availability_summary(health))
 
+    def test_marks_cpu_no_process_delta_as_idle_when_pid_exists(self) -> None:
+        sample = PerfSample(
+            timestamp=8.0,
+            elapsed=8.0,
+            fps=58.0,
+            cpu_percent=0.0,
+            memory_mb=512.0,
+            note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+        )
+
+        health = MetricHealthAnalyzer().analyze(sample)
+
+        self.assertEqual(health["cpu_percent"].state, "no_cpu_delta")
+        self.assertEqual(health["cpu_percent"].label, "CPU 无增量")
+        self.assertIn("进程 CPU 计数未变化", health["cpu_percent"].detail)
+        self.assertIn("CPU 无增量：CPU", live_metric_availability_summary(health))
+
     def test_live_metric_summary_labels_idle_network_separately_from_pending(self) -> None:
         health = MetricHealthAnalyzer().analyze(
             PerfSample(timestamp=8.0, elapsed=8.0, fps=58.0, cpu_percent=22.0, rx_kbps=0.0, tx_kbps=0.0)

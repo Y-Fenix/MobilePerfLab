@@ -1649,6 +1649,7 @@ def metric_availability_state_label(state: str) -> str:
         "fallback": "兜底",
         "idle": "无流量",
         "no_frame_delta": "无新增帧",
+        "no_cpu_delta": "CPU 无增量",
         "unavailable": "不可用",
         "waiting": "待验证",
     }.get(state, state)
@@ -1707,8 +1708,14 @@ def build_metric_availability(
         elif key == "cpu_percent":
             issue = note_count("CPU 当前无进程增量", "CPU 采集失败")
             if source == "pid_source=missing" or (issue and positives == 0):
-                state = "unavailable"
-                detail = "CPU 依赖目标 PID，当前 PID 或 /proc 链路不可用。"
+                no_cpu_delta = note_count("CPU 当前无进程增量")
+                cpu_failure = note_count("CPU 采集失败")
+                if source != "pid_source=missing" and no_cpu_delta and not cpu_failure:
+                    state = "no_cpu_delta"
+                    detail = "PID 可用，但进程 CPU 计数未变化；进程空闲、采样窗口过短或低端机 adb 慢命令较常见。"
+                else:
+                    state = "unavailable"
+                    detail = "CPU 依赖目标 PID，当前 PID 或 /proc 链路不可用。"
             elif positives:
                 state = "partial" if issue else "available"
                 detail = f"{positives}/{total} 个样本有 CPU。"
@@ -1963,6 +1970,7 @@ class MetricHealthAnalyzer:
         "waiting": "等待",
         "idle": "无流量",
         "no_frame_delta": "无新增帧",
+        "no_cpu_delta": "CPU 无增量",
         "missing": "异常",
     }
 
@@ -1976,6 +1984,8 @@ class MetricHealthAnalyzer:
             return self._health("recovering", "前台恢复窗口，等待 FPS/CPU/网络重新建立基线")
         if self._is_fps_no_frame_delta(metric, note):
             return self._health("no_frame_delta", "FPS 来源可用但当前无新增帧，页面静止或低端机短采样窗口较常见")
+        if self._is_cpu_no_process_delta(metric, note):
+            return self._health("no_cpu_delta", "PID 可用但进程 CPU 计数未变化，进程空闲或采样窗口过短较常见")
         if self._note_marks_missing(metric, note):
             return self._health("missing", self._missing_detail(metric, note))
         if metric in ("rx_kbps", "tx_kbps"):
@@ -2007,6 +2017,26 @@ class MetricHealthAnalyzer:
         if metric not in ("fps", "jank_percent"):
             return False
         return "FPS 当前无帧增量" in note and "FPS 未采集" not in note and "FPS 采集失败" not in note
+
+    @staticmethod
+    def _is_cpu_no_process_delta(metric: str, note: str) -> bool:
+        if metric != "cpu_percent":
+            return False
+        if "CPU 当前无进程增量" not in note:
+            return False
+        hard_collection_tokens = (
+            "CPU 采集失败",
+            "未匹配到目标 PID",
+            "未找到运行中的",
+            "FPS 未采集",
+            "网络未匹配",
+            "无法按应用统计",
+            "网络采集失败",
+            "网络采集不可用",
+        )
+        if any(token in note for token in hard_collection_tokens):
+            return False
+        return not ("CPU/内存" in note and "需要启动" in note)
 
     @staticmethod
     def _note_marks_missing(metric: str, note: str) -> bool:
@@ -2066,6 +2096,7 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
     recovering: list[str] = []
     idle: list[str] = []
     no_frame_delta: list[str] = []
+    no_cpu_delta: list[str] = []
     unavailable: list[str] = []
     pending: list[str] = []
     for metric in primary_metrics:
@@ -2083,6 +2114,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
             idle.append(label)
         elif status.state == "no_frame_delta":
             no_frame_delta.append(label)
+        elif status.state == "no_cpu_delta":
+            no_cpu_delta.append(label)
         elif status.state == "missing":
             unavailable.append(label)
         else:
@@ -2098,6 +2131,8 @@ def live_metric_availability_summary(health: dict[str, MetricHealth]) -> str:
         parts.append(f"无流量：{'/'.join(idle)}")
     if no_frame_delta:
         parts.append(f"无新增帧：{'/'.join(no_frame_delta)}")
+    if no_cpu_delta:
+        parts.append(f"CPU 无增量：{'/'.join(no_cpu_delta)}")
     if unavailable:
         parts.append(f"不可用：{'/'.join(unavailable)}")
     if pending:
