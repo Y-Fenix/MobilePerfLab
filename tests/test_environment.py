@@ -10,6 +10,7 @@ from mobileperflab import (
     format_environment_checks,
     format_graph_view_height,
     format_quality_mode_label,
+    format_workbench_status_chip,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
     graph_latest_display_value_for_context,
@@ -172,6 +173,19 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         layout = metric_graph_layout()
 
         self.assertEqual([item["key"] for item in layout[:4]], ["fps", "cpu_percent", "memory_mb", "rx_kbps"])
+
+    def test_workbench_status_chip_keeps_short_labels_for_empty_state(self) -> None:
+        self.assertEqual(format_workbench_status_chip("设备", ""), "设备：未选择")
+        self.assertEqual(format_workbench_status_chip("弱网", "弱网 OFF · 未启动"), "弱网：OFF")
+
+    def test_workbench_status_chip_truncates_long_operational_text(self) -> None:
+        text = format_workbench_status_chip(
+            "质量",
+            "高可信 95.0% · 网络来源：目标 App per-UID · 窗口：稳定 · 趋势：平稳",
+        )
+
+        self.assertLessEqual(len(text), 28)
+        self.assertEqual(text, "质量：高可信 95.0%")
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):

@@ -1013,6 +1013,21 @@ def workbench_primary_metric_order() -> list[str]:
     return ["fps", "cpu_percent", "memory_mb", "rx_kbps", "tx_kbps", "jank_percent", "temperature_c", "power_w"]
 
 
+def format_workbench_status_chip(label: str, value: str, max_length: int = 28) -> str:
+    clean_label = str(label or "").strip() or "状态"
+    clean_value = str(value or "").strip()
+    if not clean_value:
+        clean_value = "未选择"
+    if clean_value.startswith("弱网 OFF"):
+        clean_value = "OFF"
+    if " · " in clean_value:
+        clean_value = clean_value.split(" · ", 1)[0]
+    text = f"{clean_label}：{clean_value}"
+    if len(text) <= max_length:
+        return text
+    return text[: max(max_length - 1, 1)] + "…"
+
+
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
     detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
