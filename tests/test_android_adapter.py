@@ -982,6 +982,43 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertIn("目标应用不在前台", third.note)
         self.assertEqual(adapter.calls.count("foreground"), 2)
 
+    def test_cached_foreground_app_uses_light_probe_to_catch_fast_background_switch(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "cmd activity get-foreground-activities": "\n---NEXT---\n".join(
+                    [
+                        "packageName=com.example.game",
+                        "packageName=com.example.home",
+                    ]
+                ),
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+            }
+        )
+
+        first = adapter._cached_foreground_app(self.device, "com.example.game", 100.0)
+        second = adapter._cached_foreground_app(self.device, "com.example.game", 100.5)
+
+        self.assertEqual(first, "com.example.game")
+        self.assertEqual(second, "com.example.home")
+        self.assertNotIn("dumpsys activity activities", adapter.calls)
+        self.assertEqual(adapter.calls.count("cmd activity get-foreground-activities"), 2)
+
+    def test_cached_foreground_app_reuses_recent_heavy_probe_when_light_probe_is_empty(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "cmd activity get-foreground-activities": "",
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+            }
+        )
+
+        first = adapter._cached_foreground_app(self.device, "com.example.game", 100.0)
+        second = adapter._cached_foreground_app(self.device, "com.example.game", 100.5)
+
+        self.assertEqual(first, "com.example.game")
+        self.assertEqual(second, "com.example.game")
+        self.assertEqual(adapter.calls.count("cmd activity get-foreground-activities"), 2)
+        self.assertEqual(adapter.calls.count("dumpsys window"), 1)
+
     def test_collect_sample_reuses_metric_executor_during_session(self) -> None:
         adapter = SlowMetricAndroidAdapter(sleep_seconds=0.0)
 

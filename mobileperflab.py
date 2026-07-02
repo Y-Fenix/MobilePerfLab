@@ -3415,6 +3415,10 @@ class AndroidAdapter(BaseAdapter):
                 return app_id
         return ""
 
+    def _light_foreground_app(self, device: DeviceInfo) -> str:
+        output = self._shell(device.serial, "cmd activity get-foreground-activities", timeout=2.0)
+        return self._parse_foreground_app(output)
+
     def collection_diagnostics(self, device: DeviceInfo, app_id: str, now: float | None = None) -> AndroidCollectionDiagnostics:
         now = time.time() if now is None else now
         foreground_app = self.foreground_app(device)
@@ -4680,6 +4684,10 @@ class AndroidAdapter(BaseAdapter):
 
     def _cached_foreground_app(self, device: DeviceInfo, app_id: str, now: float) -> str:
         key = (device.serial, app_id)
+        light_foreground = self._light_foreground_app(device)
+        if light_foreground:
+            self._foreground_cache[key] = (now, light_foreground)
+            return light_foreground
         cached = self._foreground_cache.get(key)
         if cached:
             cached_time, cached_app = cached
