@@ -6082,7 +6082,7 @@ class IOSAdapter(BaseAdapter):
                     self._graphics_retry_after[device.serial] = now + 8.0
                     self._graphics_notes[device.serial] = (
                         "iOS FPS 图形采集 8 秒内未返回帧率，已准备自动重试。"
-                        "请确认“iOS采集服务”窗口已启动并保持打开。"
+                        f"{ios_service_action_hint()}"
                     )
                     note = self._graphics_notes[device.serial]
                 else:
@@ -9611,6 +9611,8 @@ class App:
         if not app_id:
             messagebox.showinfo(APP_NAME, "请填写目标应用包名或 Bundle ID。")
             return
+        if device.platform == "iOS":
+            self._ensure_ios_service_for_sampling()
         try:
             interval = max(float(self.interval_var.get()), 0.2)
         except ValueError:
@@ -9642,6 +9644,14 @@ class App:
         self.append_log(f"采集已启动。稳定曲线：{smoothing}（报告仍保存原始采样）。")
         if device.platform == "Android":
             self.append_log("Android 采集已启用多路前台识别和多进程 CPU 汇总。")
+
+    def _ensure_ios_service_for_sampling(self) -> None:
+        process = getattr(self, "ios_service_process", None)
+        if process is not None and process.poll() is None:
+            self.append_log("iOS 采集服务已自动检查：后台服务正在运行。")
+            return
+        self.start_ios_service()
+        self.append_log("iOS 采集服务已自动检查：已尝试静默启动。")
 
     def stop_sampling(self) -> None:
         if not self.sampler:

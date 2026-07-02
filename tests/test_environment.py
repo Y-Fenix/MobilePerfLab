@@ -6,6 +6,7 @@ from mobileperflab import (
     App,
     WORKBENCH_SHELL_REGIONS,
     collection_diagnostic_status_rows,
+    DeviceInfo,
     build_environment_checks,
     format_environment_checks,
     format_graph_view_height,
@@ -187,6 +188,7 @@ class IOSServiceLaunchTest(unittest.TestCase):
 
         self.assertNotIn("双击“启动iOS采集服务.command”并保持窗口打开", text)
         self.assertNotIn("双击“启动iOS采集服务.command”并输入电脑密码，保持窗口打开", text)
+        self.assertNotIn("iOS采集服务”窗口已启动并保持打开", text)
         self.assertIn("点击 iOS采集服务", text)
         self.assertIn("静默尝试启动", text)
 
@@ -243,6 +245,133 @@ class IOSServiceLaunchTest(unittest.TestCase):
         self.assertFalse(process.terminated)
         self.assertIsNone(app.ios_service_process)
         self.assertEqual(app.logs, [])
+
+    def test_start_sampling_auto_ensures_ios_service_before_sampler_starts(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.logs: list[str] = []
+
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, text: str) -> None:
+                self.logs.append(text)
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            instances: list["FakeSampler"] = []
+
+            def __init__(self, *_args: object) -> None:
+                self.started = False
+                FakeSampler.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("iOS", "ios-1", "iPhone", "18", "iPhone", "ready")
+        app.ios = object()
+        app.adapter_for = lambda _device: app.ios
+        app.app_var = FakeVar("com.example.game")
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = object()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app.logs: list[str] = []
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+        app.ensure_calls = 0
+        app._ensure_ios_service_for_sampling = lambda: setattr(app, "ensure_calls", app.ensure_calls + 1)
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertEqual(app.ensure_calls, 1)
+        self.assertTrue(FakeSampler.instances[-1].started)
+
+    def test_ensure_ios_service_for_sampling_reuses_live_background_process(self) -> None:
+        class FakeProcess:
+            def poll(self) -> None:
+                return None
+
+        app = object.__new__(App)
+        app.ios_service_process = FakeProcess()
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+        app.start_ios_service = lambda: (_ for _ in ()).throw(AssertionError("should not restart"))
+
+        App._ensure_ios_service_for_sampling(app)
+
+        self.assertIn("iOS 采集服务已自动检查：后台服务正在运行。", app.logs)
+
+    def test_ensure_ios_service_for_sampling_silently_starts_when_missing(self) -> None:
+        app = object.__new__(App)
+        app.ios_service_process = None
+        app.logs: list[str] = []
+        app.start_calls = 0
+        app.append_log = lambda text: app.logs.append(text)
+        app.start_ios_service = lambda: setattr(app, "start_calls", app.start_calls + 1)
+
+        App._ensure_ios_service_for_sampling(app)
+
+        self.assertEqual(app.start_calls, 1)
+        self.assertIn("iOS 采集服务已自动检查：已尝试静默启动。", app.logs)
+
+    def test_start_sampling_does_not_auto_start_ios_service_for_android(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(App)
+        app.sampler = object()
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.ensure_calls = 0
+        app._ensure_ios_service_for_sampling = lambda: setattr(app, "ensure_calls", app.ensure_calls + 1)
+
+        App.start_sampling(app)
+
+        self.assertEqual(app.ensure_calls, 0)
 
 
 class FullscreenStartupTest(unittest.TestCase):
