@@ -2562,7 +2562,12 @@ class LiveQualityTracker:
         )
 
     def low_end_display_mode(self) -> bool:
-        return self.slow_sample_count >= 2 or self.issue_count >= 2
+        recent_window = self.recent_window_health()
+        if str(recent_window.get("trend_source", "")) != "collection":
+            return False
+        slow_samples = int(recent_window.get("slow_samples", 0) or 0)
+        issue_samples = int(recent_window.get("issue_samples", 0) or 0)
+        return slow_samples >= 2 or issue_samples >= 2
 
     def recent_window_health(self) -> dict[str, object]:
         return build_recent_window_health(self._recent_samples, expected_interval=self.expected_interval)

@@ -542,6 +542,20 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertTrue(tracker.low_end_display_mode())
         self.assertIn("展示：低端机保守", text)
 
+    def test_low_end_display_mode_recovers_when_recent_window_is_stable(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        tracker.update(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
+        tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=54.0))
+        self.assertTrue(tracker.low_end_display_mode())
+
+        for elapsed in [5.6, 6.6, 7.6, 8.6, 9.6, 10.6, 11.6, 12.6]:
+            text = tracker.update(PerfSample(timestamp=elapsed, elapsed=elapsed, fps=58.0, cpu_percent=20.0))
+
+        self.assertFalse(tracker.low_end_display_mode())
+        self.assertIn("展示：标准稳定", text)
+        self.assertIn("慢采样 2", text)
+
     def test_respects_custom_expected_interval_before_marking_slow_sampling(self) -> None:
         tracker = LiveQualityTracker(expected_interval=2.0)
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
