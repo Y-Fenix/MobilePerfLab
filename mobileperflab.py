@@ -9866,7 +9866,13 @@ class App:
         self.app_hint_var.set("正在读取应用列表...")
         self._start_app_background_task("list_apps", device, adapter)
 
-    def _start_app_background_task(self, kind: str, device: DeviceInfo, adapter: BaseAdapter) -> None:
+    def _start_app_background_task(
+        self,
+        kind: str,
+        device: DeviceInfo,
+        adapter: BaseAdapter,
+        app_id: str = "",
+    ) -> None:
         if self.app_task_thread and self.app_task_thread.is_alive():
             self.app_hint_var.set("正在处理上一个应用任务，请稍候...")
             self._refresh_session_chips()
@@ -9875,7 +9881,7 @@ class App:
         generation = self.app_task_generation
         thread = threading.Thread(
             target=self._run_app_task_in_background,
-            args=(generation, kind, device, adapter),
+            args=(generation, kind, device, adapter, app_id),
             daemon=True,
         )
         self.app_task_thread = thread
@@ -9888,13 +9894,17 @@ class App:
         kind: str,
         device: DeviceInfo,
         adapter: BaseAdapter,
+        app_id: str = "",
     ) -> None:
-        payload: dict[str, object] = {"generation": generation, "kind": kind, "error": ""}
+        payload: dict[str, object] = {"generation": generation, "kind": kind, "error": "", "app_id": app_id}
         try:
             if kind == "list_apps":
                 payload["apps"] = adapter.list_apps(device)
             elif kind == "foreground":
                 payload["app_id"] = adapter.foreground_app(device)
+            elif kind == "collection_diagnostics" and isinstance(adapter, AndroidAdapter):
+                app_id = str(payload.get("app_id") or "")
+                payload["diagnostics"] = adapter.collection_diagnostics(device, app_id)
             else:
                 payload["error"] = f"未知应用任务：{kind}"
         except Exception as exc:
@@ -9929,6 +9939,17 @@ class App:
                 self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
             self._refresh_session_chips()
             return
+        if kind == "collection_diagnostics":
+            diagnostics = data.get("diagnostics")
+            if isinstance(diagnostics, AndroidCollectionDiagnostics):
+                self.app_hint_var.set(diagnostics.summary)
+                self._update_collection_links(diagnostics)
+                self.recorder.set_collection_diagnostics(diagnostics)
+                self.append_log(format_android_collection_diagnostics(diagnostics))
+            else:
+                self.app_hint_var.set("采集自检无结果，请重试。")
+            self._refresh_session_chips()
+            return
         self.app_hint_var.set("应用任务无结果，请重试。")
         self._refresh_session_chips()
 
@@ -9957,20 +9978,9 @@ class App:
         if not app_id:
             messagebox.showinfo(APP_NAME, "请填写目标应用包名或 Bundle ID。")
             return
-        self.app_hint_var.set("正在执行采集自检...")
-        self.root.update_idletasks()
         if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
-            try:
-                diagnostics = adapter.collection_diagnostics(device, app_id)
-            except Exception as exc:
-                self.app_hint_var.set(f"采集自检失败：{exc}")
-                self.append_log(f"Android 采集自检失败：{exc}")
-                return
-            self.app_hint_var.set(diagnostics.summary)
-            self._update_collection_links(diagnostics)
-            self.recorder.set_collection_diagnostics(diagnostics)
-            self.append_log(format_android_collection_diagnostics(diagnostics))
-            self._refresh_session_chips()
+            self.app_hint_var.set("正在执行采集自检...")
+            self._start_app_background_task("collection_diagnostics", device, adapter, app_id=app_id)
             return
         note = f"iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 可点击 iOS采集服务静默尝试启动。{ios_service_action_hint()}"
         self.app_hint_var.set("iOS 采集服务状态请查看日志。")

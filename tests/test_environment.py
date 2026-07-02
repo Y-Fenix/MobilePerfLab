@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from mobileperflab import (
+    AndroidAdapter,
     AndroidCollectionDiagnostics,
     App,
     WORKBENCH_SHELL_REGIONS,
@@ -787,6 +788,107 @@ class FullscreenStartupTest(unittest.TestCase):
 
         self.assertEqual(app.app_var.value, "com.current")
         self.assertEqual(app.app_hint_var.value, "")
+
+    def test_collection_diagnostics_runs_in_background(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        class FakeAdapter(AndroidAdapter):
+            def collection_diagnostics(self, _device: DeviceInfo, _app_id: str) -> AndroidCollectionDiagnostics:
+                started.set()
+                release.wait(2.0)
+                return AndroidCollectionDiagnostics("ok", "Android 采集自检通过", [])
+
+        started = threading.Event()
+        release = threading.Event()
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app.app_var = FakeVar("com.example.game")
+        app.app_hint_var = FakeVar()
+        app.events = queue.Queue()
+        app.app_task_thread = None
+        app.app_task_generation = 0
+        app.adapter_for = lambda _device: FakeAdapter()
+        app._refresh_session_chips = lambda: None
+
+        App.run_collection_diagnostics(app)
+
+        self.assertEqual(app.app_hint_var.value, "正在执行采集自检...")
+        self.assertTrue(started.wait(0.5))
+        self.assertTrue(app.events.empty())
+        release.set()
+        app.app_task_thread.join(1.0)
+        self.assertFalse(app.events.empty())
+
+    def test_collection_diagnostics_result_updates_links_recorder_and_log(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.diagnostics: AndroidCollectionDiagnostics | None = None
+
+            def set_collection_diagnostics(self, diagnostics: AndroidCollectionDiagnostics) -> None:
+                self.diagnostics = diagnostics
+
+        diagnostics = AndroidCollectionDiagnostics("ok", "Android 采集自检通过", [])
+        app = object.__new__(App)
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app.recorder = FakeRecorder()
+        app.updated: AndroidCollectionDiagnostics | None = None
+        app.logs: list[str] = []
+        app._update_collection_links = lambda value: setattr(app, "updated", value)
+        app.append_log = lambda value: app.logs.append(value)
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(
+            app,
+            {"generation": 1, "kind": "collection_diagnostics", "diagnostics": diagnostics, "error": ""},
+        )
+
+        self.assertEqual(app.app_hint_var.value, "Android 采集自检通过")
+        self.assertIs(app.updated, diagnostics)
+        self.assertIs(app.recorder.diagnostics, diagnostics)
+        self.assertTrue(any("Android 采集自检通过" in line for line in app.logs))
+
+    def test_ios_collection_diagnostics_guidance_returns_without_background_thread(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("iOS", "ios-1", "iPhone", "18", "iPhone", "ready")
+        app.app_var = FakeVar("com.example.ios")
+        app.app_hint_var = FakeVar()
+        app.app_task_thread = None
+        app.adapter_for = lambda _device: object()
+        app.logs: list[str] = []
+        app.append_log = lambda value: app.logs.append(value)
+        app._refresh_session_chips = lambda: None
+
+        App.run_collection_diagnostics(app)
+
+        self.assertIsNone(app.app_task_thread)
+        self.assertEqual(app.app_hint_var.value, "iOS 采集服务状态请查看日志。")
+        self.assertTrue(any("iOS 采集自检" in line for line in app.logs))
 
 
 class WorkbenchLayoutContractTest(unittest.TestCase):
