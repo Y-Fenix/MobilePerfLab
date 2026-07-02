@@ -732,6 +732,19 @@ class LiveQualityTrackerTest(unittest.TestCase):
             "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。 · 采样间隔 1.0s -> 1.5s",
         )
 
+    def test_performance_conclusion_text_includes_network_source_action_for_fallback(self) -> None:
+        self.assertEqual(
+            performance_conclusion_text(
+                {
+                    "state": "caution",
+                    "label": "先确认网络来源",
+                    "detail": "最近窗口包含设备级网络兜底，不能当作目标 App 独占上下行结论。",
+                },
+                expected_interval=1.0,
+            ),
+            "性能结论：先确认网络来源 · 最近窗口包含设备级网络兜底，不能当作目标 App 独占上下行结论。 · 确认 per-UID 网络来源",
+        )
+
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
         self.assertEqual(recommended_sampling_interval(1.5), 2.0)

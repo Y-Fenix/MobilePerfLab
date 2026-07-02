@@ -1456,6 +1456,8 @@ def performance_conclusion_text(status: dict[str, str], expected_interval: float
     if isinstance(status, dict) and status.get("state") == "blocked" and expected_interval is not None:
         current = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
         parts.append(f"采样间隔 {current:.1f}s -> {next_low_end_interval_label(current)}")
+    if isinstance(status, dict) and status.get("state") == "caution" and status.get("label") == "先确认网络来源":
+        parts.append("确认 per-UID 网络来源")
     return " · ".join(parts)
 
 
