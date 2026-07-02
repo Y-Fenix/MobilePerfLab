@@ -8120,21 +8120,48 @@ class App:
     def _build_ui(self) -> None:
         root_frame = ttk.Frame(self.root, style="Root.TFrame")
         root_frame.pack(fill="both", expand=True)
-        self._build_header(root_frame)
-        body = ttk.Frame(root_frame, style="Root.TFrame", padding=(14, 14, 14, 14))
-        body.pack(fill="both", expand=True)
-        body.columnconfigure(0, minsize=320, weight=0)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
-        self._build_sidebar(body)
-        self.workspace_tabs = ttk.Notebook(body)
-        self.workspace_tabs.grid(row=0, column=1, sticky="nsew")
+        self._build_session_bar(root_frame)
+        shell = ttk.Frame(root_frame, style="Root.TFrame", padding=(12, 12, 12, 12))
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, minsize=320, weight=0)
+        shell.columnconfigure(1, weight=1)
+        shell.columnconfigure(2, minsize=360, weight=0)
+        shell.rowconfigure(0, weight=1)
+        self._build_control_rail(shell)
+        self._build_observability_workspace(shell)
+        self._build_diagnostics_rail(shell)
+
+    def _build_session_bar(self, master: tk.Widget) -> None:
+        self._build_header(master)
+
+    def _build_control_rail(self, master: tk.Widget) -> None:
+        self._build_sidebar(master)
+
+    def _build_observability_workspace(self, master: tk.Widget) -> None:
+        workspace = ttk.Frame(master, style="Root.TFrame")
+        workspace.grid(row=0, column=1, sticky="nsew")
+        workspace.columnconfigure(0, weight=1)
+        workspace.rowconfigure(0, weight=1)
+        self.workspace_tabs = ttk.Notebook(workspace)
+        self.workspace_tabs.grid(row=0, column=0, sticky="nsew")
         self.performance_tab = ttk.Frame(self.workspace_tabs, style="Root.TFrame")
         self.network_tab = ttk.Frame(self.workspace_tabs, style="Root.TFrame")
         self.workspace_tabs.add(self.performance_tab, text="性能采集")
         self.workspace_tabs.add(self.network_tab, text="弱网工具")
         self._build_dashboard(self.performance_tab)
         self._build_network_workspace(self.network_tab)
+
+    def _build_diagnostics_rail(self, master: tk.Widget) -> None:
+        rail = ttk.Frame(master, style="Panel.TFrame", padding=(12, 12))
+        rail.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        rail.columnconfigure(0, weight=1)
+        ttk.Label(rail, text="诊断", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            rail,
+            text="采集链路、弱网状态、质量事件和日志将在这里汇总。",
+            style="Muted.TLabel",
+            wraplength=320,
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
     def _build_header(self, master: tk.Widget) -> None:
         header = ttk.Frame(master, style="Top.TFrame", padding=(18, 14, 18, 14))

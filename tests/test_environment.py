@@ -187,6 +187,17 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertLessEqual(len(text), 28)
         self.assertEqual(text, "质量：高可信 95.0%")
 
+    def test_app_build_ui_uses_four_workbench_regions(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("self._build_session_bar(root_frame)", text)
+        self.assertIn("self._build_control_rail(shell)", text)
+        self.assertIn("self._build_observability_workspace(shell)", text)
+        self.assertIn("self._build_diagnostics_rail(shell)", text)
+        self.assertNotIn("self._build_header(root_frame)", text)
+        self.assertNotIn("self._build_sidebar(body)", text)
+
 
 class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:
