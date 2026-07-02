@@ -640,6 +640,7 @@ def weak_network_status_lights(
     listener_row = _weak_row_lookup(rows, "本机代理")
     device_row = _weak_row_lookup(rows, "设备代理", "iOS 代理")
     port_row = _weak_row_lookup(rows, "端口连通")
+    ios_proxy_row = _weak_row_lookup(rows, "iOS 代理")
 
     if listener_row is None:
         listener_state = "ok" if running else "blocked"
@@ -654,10 +655,16 @@ def weak_network_status_lights(
     else:
         device_state = _weak_row_light_state(device_row[1])
         device_detail = device_row[2]
+        if ios_proxy_row is not None:
+            device_detail = f"iOS 手动配置：{device_detail}"
 
     if port_row is None:
         port_state = "waiting" if running else "blocked"
-        port_detail = "刷新状态后检测 Android 到本机代理端口。"
+        port_detail = (
+            "iOS 配置后用真实流量确认代理链路。"
+            if ios_proxy_row is not None
+            else "刷新状态后检测 Android 到本机代理端口。"
+        )
     else:
         port_state = _weak_row_light_state(port_row[1])
         port_detail = port_row[2]

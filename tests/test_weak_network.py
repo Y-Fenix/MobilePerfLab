@@ -592,6 +592,26 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         )
         self.assertIn("弱网已生效", lights[-1]["detail"])
 
+    def test_status_lights_use_ios_manual_proxy_wording_without_android_port_probe(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready"),
+            current_proxy="",
+            proxy_reachable=None,
+        )
+
+        lights = weak_network_status_lights(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+        )
+        by_key = {light["key"]: light for light in lights}
+
+        self.assertIn("iOS", by_key["device_proxy"]["detail"])
+        self.assertIn("真实流量", by_key["port_reachability"]["detail"])
+        self.assertNotIn("Android", by_key["port_reachability"]["detail"])
+
     def test_status_lights_call_out_proxy_bypass_when_app_has_traffic_without_proxy_hits(self) -> None:
         diagnostics = build_weak_network_diagnostics(
             proxy_running=True,
