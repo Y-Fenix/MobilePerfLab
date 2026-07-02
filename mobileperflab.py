@@ -753,6 +753,31 @@ def live_weak_network_action_text(effectiveness: dict[str, object] | object) -> 
     return f"弱网：{label}"
 
 
+def weak_proxy_preview_text(endpoint: str, device: DeviceInfo | None = None) -> str:
+    endpoint = endpoint.strip() or "<host>:<port>"
+    lines = [
+        f"当前代理地址：{endpoint}",
+        f"Android 写入命令：settings put global http_proxy {endpoint}",
+        "Android 清理命令：settings put global http_proxy :0",
+    ]
+    if device and device.platform == "iOS":
+        lines.extend(
+            [
+                "",
+                "iOS 手动配置：设置 > Wi-Fi > 当前网络 > Wi-Fi HTTP 代理 > 手动",
+                f"服务器和端口：{endpoint}",
+                "配置后触发 HTTP/HTTPS 请求，并观察代理真实流量曲线。",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "提示：应用弱网前请确认设备能访问电脑所在局域网 IP。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _weak_network_effectiveness_result(
     state: str,
     label: str,
@@ -9228,12 +9253,7 @@ class App:
         if not hasattr(self, "proxy_preview_text"):
             return
         endpoint = self.weak_proxy.local_endpoint() if self.weak_proxy.is_running() else "<host>:<port>"
-        text = (
-            f"当前代理地址：{endpoint}\n"
-            f"Android 写入命令：settings put global http_proxy {endpoint}\n"
-            "Android 清理命令：settings put global http_proxy :0\n\n"
-            "提示：应用弱网前请确认 Android 设备能访问电脑所在局域网 IP。"
-        )
+        text = weak_proxy_preview_text(endpoint, self.selected_device)
         self.proxy_preview_text.configure(state="normal")
         self.proxy_preview_text.delete("1.0", tk.END)
         self.proxy_preview_text.insert("1.0", text)

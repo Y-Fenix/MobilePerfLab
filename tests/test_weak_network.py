@@ -19,6 +19,7 @@ from mobileperflab import (
     live_weak_network_action_text,
     weak_network_status_lights,
     weak_hit_status_text,
+    weak_proxy_preview_text,
     weak_readiness_display_text,
     verify_android_proxy_state,
 )
@@ -773,6 +774,22 @@ class WeakNetworkProxyTrafficTest(unittest.TestCase):
 
 
 class ProxyTrafficFormattingTest(unittest.TestCase):
+    def test_formats_proxy_preview_with_ios_manual_wifi_proxy_steps(self) -> None:
+        text = weak_proxy_preview_text(
+            "192.168.1.2:18888",
+            DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready"),
+        )
+
+        self.assertIn("当前代理地址：192.168.1.2:18888", text)
+        self.assertIn("Android 写入命令", text)
+        self.assertIn("iOS 手动配置", text)
+        self.assertIn("设置 > Wi-Fi > 当前网络", text)
+        self.assertIn("Wi-Fi HTTP 代理", text)
+        self.assertIn("手动", text)
+        self.assertIn("192.168.1.2:18888", text)
+        self.assertIn("触发 HTTP/HTTPS 请求", text)
+        self.assertIn("真实流量", text)
+
     def test_formats_proxy_traffic_for_live_panel(self) -> None:
         values = format_proxy_traffic_snapshot(
             ProxyTrafficSnapshot(
