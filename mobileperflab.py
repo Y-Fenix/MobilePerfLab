@@ -6840,23 +6840,30 @@ class SessionRecorder:
     def _update_recommendation_summary(quality: dict[str, object]) -> None:
         recommendations = quality.get("recommendations", [])
         counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+        first_recommendation: dict[str, object] | None = None
         if isinstance(recommendations, list):
             for item in recommendations:
                 if not isinstance(item, dict):
                     continue
+                if first_recommendation is None:
+                    first_recommendation = item
                 priority = str(item.get("priority", "P3") or "P3")
                 counts[priority if priority in counts else "P3"] += 1
         total = sum(counts.values())
+        top_title = str(first_recommendation.get("title", "") if first_recommendation else "")
+        top_action = str(first_recommendation.get("action", "") if first_recommendation else "")
         label = f"P0 {counts['P0']}项 · P1 {counts['P1']}项 · P2 {counts['P2']}项" if total else "暂无修复建议"
         if counts["P0"] > 0:
-            detail = "优先修复 P0 采集链路，再判断性能和弱网结论。"
+            detail = f"先处理：{top_title}。{top_action}" if top_title and top_action else "优先修复 P0 采集链路，再判断性能和弱网结论。"
         elif total:
-            detail = "按优先级处理建议，复测后再导出报告。"
+            detail = f"先处理：{top_title}。{top_action}" if top_title and top_action else "按优先级处理建议，复测后再导出报告。"
         else:
             detail = "当前报告未生成修复建议。"
         quality["recommendation_summary"] = {
             "label": label,
             "detail": detail,
+            "top_title": top_title,
+            "top_action": top_action,
             "p0_count": counts["P0"],
             "p1_count": counts["P1"],
             "p2_count": counts["P2"],
