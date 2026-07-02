@@ -134,6 +134,12 @@ class FullscreenStartupTest(unittest.TestCase):
             ],
         )
 
+    def test_main_keeps_app_instance_attached_to_root(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("root._mobileperflab_app = App(root)", text)
+
 
 class WorkbenchLayoutContractTest(unittest.TestCase):
     def test_workbench_shell_has_professional_four_region_layout(self) -> None:
@@ -197,6 +203,17 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self._build_diagnostics_rail(shell)", text)
         self.assertNotIn("self._build_header(root_frame)", text)
         self.assertNotIn("self._build_sidebar(body)", text)
+
+    def test_session_bar_contains_status_chip_variables(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("self.session_chip_vars", text)
+        self.assertIn('format_workbench_status_chip("设备"', text)
+        self.assertIn('format_workbench_status_chip("目标应用"', text)
+        self.assertIn('format_workbench_status_chip("采集"', text)
+        self.assertIn('format_workbench_status_chip("质量"', text)
+        self.assertIn('format_workbench_status_chip("弱网"', text)
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):

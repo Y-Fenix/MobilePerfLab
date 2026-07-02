@@ -8054,6 +8054,13 @@ class App:
         self.weak_traffic_vars: dict[str, tk.StringVar] = {}
         self.metric_health_vars: dict[str, tk.StringVar] = {}
         self.collection_link_vars: dict[str, tk.StringVar] = {}
+        self.session_chip_vars: dict[str, tk.StringVar] = {
+            "device": tk.StringVar(value=format_workbench_status_chip("设备", "")),
+            "target_app": tk.StringVar(value=format_workbench_status_chip("目标应用", "")),
+            "capture": tk.StringVar(value=format_workbench_status_chip("采集", "就绪")),
+            "quality": tk.StringVar(value=format_workbench_status_chip("质量", "等待数据")),
+            "weak_network": tk.StringVar(value=format_workbench_status_chip("弱网", "弱网 OFF · 未启动")),
+        }
 
         self._configure_styles()
         self._build_ui()
@@ -8109,6 +8116,7 @@ class App:
         style.configure("Quality.TLabel", background="#FFFFFF", foreground="#334155", font=("Helvetica", 11, "bold"))
         style.configure("SidebarTitle.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 13, "bold"))
         style.configure("Status.TLabel", background="#172235", foreground="#EAF2FF", font=("Helvetica", 11))
+        style.configure("StatusChip.TLabel", background="#22324A", foreground="#EAF2FF", font=("Helvetica", 10, "bold"), padding=(9, 5))
         style.configure("Primary.TButton", padding=(14, 8), font=("Helvetica", 12, "bold"))
         style.configure("Tool.TButton", padding=(10, 7), font=("Helvetica", 11))
         style.configure("Danger.TButton", padding=(14, 8), font=("Helvetica", 12, "bold"))
@@ -8132,7 +8140,29 @@ class App:
         self._build_diagnostics_rail(shell)
 
     def _build_session_bar(self, master: tk.Widget) -> None:
-        self._build_header(master)
+        header = ttk.Frame(master, style="Top.TFrame", padding=(18, 14, 18, 14))
+        header.pack(fill="x")
+        title_group = ttk.Frame(header, style="Top.TFrame")
+        title_group.pack(side="left")
+        ttk.Label(title_group, text=APP_NAME, style="TopTitle.TLabel").pack(anchor="w")
+        ttk.Label(title_group, text="移动端实时性能测试分析台", style="TopSub.TLabel").pack(anchor="w", pady=(2, 0))
+
+        chip_row = ttk.Frame(header, style="Top.TFrame")
+        chip_row.pack(side="left", padx=(28, 0), fill="x", expand=True)
+        for item in workbench_top_status_items():
+            key = item["key"]
+            ttk.Label(chip_row, textvariable=self.session_chip_vars[key], style="StatusChip.TLabel").pack(side="left", padx=(0, 8))
+
+        actions = ttk.Frame(header, style="Top.TFrame")
+        actions.pack(side="right")
+        ttk.Label(actions, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=(0, 14))
+        self.start_button = ttk.Button(actions, text="开始采集", style="Primary.TButton", command=self.start_sampling)
+        self.start_button.pack(side="left", padx=4)
+        self.stop_button = ttk.Button(actions, text="停止", style="Danger.TButton", command=self.stop_sampling, state="disabled")
+        self.stop_button.pack(side="left", padx=4)
+        ttk.Button(actions, text="导出报告", style="Tool.TButton", command=self.export_report).pack(side="left", padx=4)
+        ttk.Button(actions, text="打开文件夹", style="Tool.TButton", command=self.open_export_folder).pack(side="left", padx=4)
+        self._refresh_session_chips()
 
     def _build_control_rail(self, master: tk.Widget) -> None:
         self._build_sidebar(master)
@@ -8164,21 +8194,16 @@ class App:
         ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
     def _build_header(self, master: tk.Widget) -> None:
-        header = ttk.Frame(master, style="Top.TFrame", padding=(18, 14, 18, 14))
-        header.pack(fill="x")
-        title_group = ttk.Frame(header, style="Top.TFrame")
-        title_group.pack(side="left")
-        ttk.Label(title_group, text=APP_NAME, style="TopTitle.TLabel").pack(anchor="w")
-        ttk.Label(title_group, text="移动端实时性能测试分析台", style="TopSub.TLabel").pack(anchor="w", pady=(2, 0))
-        actions = ttk.Frame(header, style="Top.TFrame")
-        actions.pack(side="right")
-        ttk.Label(actions, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=(0, 14))
-        self.start_button = ttk.Button(actions, text="开始采集", style="Primary.TButton", command=self.start_sampling)
-        self.start_button.pack(side="left", padx=4)
-        self.stop_button = ttk.Button(actions, text="停止", style="Danger.TButton", command=self.stop_sampling, state="disabled")
-        self.stop_button.pack(side="left", padx=4)
-        ttk.Button(actions, text="导出报告", style="Tool.TButton", command=self.export_report).pack(side="left", padx=4)
-        ttk.Button(actions, text="打开文件夹", style="Tool.TButton", command=self.open_export_folder).pack(side="left", padx=4)
+        self._build_session_bar(master)
+
+    def _refresh_session_chips(self) -> None:
+        if not hasattr(self, "session_chip_vars"):
+            return
+        self.session_chip_vars["device"].set(format_workbench_status_chip("设备", self.device_var.get()))
+        self.session_chip_vars["target_app"].set(format_workbench_status_chip("目标应用", self.app_var.get()))
+        self.session_chip_vars["capture"].set(format_workbench_status_chip("采集", self.status_var.get()))
+        self.session_chip_vars["quality"].set(format_workbench_status_chip("质量", self.quality_summary_var.get()))
+        self.session_chip_vars["weak_network"].set(format_workbench_status_chip("弱网", self.weak_live_summary_var.get()))
 
     def _build_sidebar(self, master: tk.Widget) -> None:
         sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
@@ -8817,6 +8842,7 @@ class App:
             self.status_var.set("未检测到真机，可使用演示模式预览。")
         else:
             self.status_var.set(f"检测到 {len(self.devices)} 台设备")
+        self._refresh_session_chips()
 
     def use_demo_devices(self) -> None:
         self.devices = self.demo.list_devices()
@@ -8824,6 +8850,7 @@ class App:
         self._render_devices()
         self.status_var.set("演示模式已启用")
         self.capability_var.set("演示模式只用于预览界面与报告流程，不代表真实设备数据。")
+        self._refresh_session_chips()
 
     def _capability_text(self) -> str:
         return format_environment_checks(build_environment_checks(current_environment_paths()))
@@ -8879,6 +8906,7 @@ class App:
         self._refresh_proxy_preview()
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
+        self._refresh_session_chips()
         self.append_log(
             f"弱网配置：延迟 {latency}ms，抖动 {jitter}ms，丢包 {loss:g}%，"
             f"下行 {down:g}KB/s，上行 {up:g}KB/s。"
@@ -8894,6 +8922,7 @@ class App:
         self._refresh_proxy_preview()
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
+        self._refresh_session_chips()
 
     def _refresh_proxy_preview(self) -> None:
         if not hasattr(self, "proxy_preview_text"):
@@ -9025,6 +9054,7 @@ class App:
             )
         if hasattr(self, "weak_traffic_chart"):
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
+        self._refresh_session_chips()
 
     def _selected_android_device(self) -> DeviceInfo | None:
         device = self.selected_device
@@ -9054,11 +9084,13 @@ class App:
                 messagebox.showwarning(APP_NAME, verification.status_text)
             self.weak_status_var.set(f"{device.name}：{verification.status_text}")
             self._refresh_weak_diagnostics(current_proxy, probe_connectivity=verification.confirmed)
+            self._refresh_session_chips()
             if hasattr(self, "workspace_tabs"):
                 self.workspace_tabs.select(self.network_tab)
         else:
             messagebox.showerror(APP_NAME, f"设置 Android 代理失败：{detail}")
             self._refresh_weak_diagnostics()
+            self._refresh_session_chips()
 
     def clear_android_proxy(self) -> None:
         device = self._selected_android_device()
@@ -9073,6 +9105,7 @@ class App:
         else:
             messagebox.showwarning(APP_NAME, f"清除 Android 代理可能未完全成功：{detail}")
             self._refresh_weak_diagnostics()
+        self._refresh_session_chips()
 
     def refresh_android_proxy_status(self) -> None:
         device = self._selected_android_device()
@@ -9087,6 +9120,7 @@ class App:
             self.weak_status_var.set(f"{device.name} 当前未设置系统代理")
             self.append_log("Android 当前未设置系统代理。")
         self._refresh_weak_diagnostics(raw_proxy, probe_connectivity=bool(proxy))
+        self._refresh_session_chips()
 
     def _cleanup_weak_proxy_devices(self, context: str = "退出前") -> None:
         cleared = self.weak_registry.cleanup(self.android)
@@ -9155,12 +9189,14 @@ class App:
             else:
                 self.app_hint_var.set("iOS 请填写 Bundle ID；电量/温度可直接采集，CPU/内存需要启动 iOS 采集服务。")
         self._refresh_weak_diagnostics()
+        self._refresh_session_chips()
 
     def _on_app_selected(self, _event: tk.Event | None = None) -> None:
         selection = self.app_list.curselection()
         if selection:
             raw = self.app_list.get(selection[0])
             self.app_var.set(raw.split()[0] if raw.split() else raw)
+            self._refresh_session_chips()
 
     def refresh_apps(self) -> None:
         device = self.selected_device
@@ -9196,6 +9232,7 @@ class App:
             self.app_hint_var.set(f"前台应用：{app_id}")
         else:
             self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
+        self._refresh_session_chips()
 
     def run_collection_diagnostics(self) -> None:
         device = self.selected_device
@@ -9226,10 +9263,12 @@ class App:
             self._update_collection_links(diagnostics)
             self.recorder.set_collection_diagnostics(diagnostics)
             self.append_log(format_android_collection_diagnostics(diagnostics))
+            self._refresh_session_chips()
             return
         note = "iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 需要保持 iOS 采集服务窗口运行。"
         self.app_hint_var.set("iOS 采集服务状态请查看日志。")
         self.append_log(note)
+        self._refresh_session_chips()
 
     def start_sampling(self) -> None:
         if self.sampler:
@@ -9275,6 +9314,7 @@ class App:
         self.stop_button.configure(state="normal")
         self.status_var.set("采集中")
         self.session_var.set("00:00 · 0 samples")
+        self._refresh_session_chips()
         smoothing = "开启" if self.smoothing_var.get() else "关闭"
         self.append_log(f"采集已启动。稳定曲线：{smoothing}（报告仍保存原始采样）。")
         if device.platform == "Android":
@@ -9288,6 +9328,7 @@ class App:
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.status_var.set("采集已停止")
+        self._refresh_session_chips()
         self.append_log("正在停止采集线程。")
 
     def _reset_metrics(self) -> None:
@@ -9406,6 +9447,7 @@ class App:
         self._refresh_proxy_traffic()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
         self._append_quality_event(sample)
+        self._refresh_session_chips()
 
     def _refresh_quality_mode(self) -> None:
         low_end_bias = self.live_quality.slow_sample_count >= 2 or self.live_quality.issue_count >= 2
@@ -9483,6 +9525,7 @@ class App:
             elapsed = time.time() - self.recorder.start_time
             self.session_var.set(f"{self._format_elapsed(elapsed)} · {len(self.recorder.samples)} samples")
         self._refresh_proxy_traffic()
+        self._refresh_session_chips()
         self.root.after(1000, self._tick)
 
     @staticmethod
@@ -9587,7 +9630,7 @@ class App:
 def main() -> int:
     ensure_dirs()
     root = tk.Tk()
-    App(root)
+    root._mobileperflab_app = App(root)  # type: ignore[attr-defined]
     root.mainloop()
     return 0
 
