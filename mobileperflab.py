@@ -7281,7 +7281,8 @@ class SessionRecorder:
       if (!values.length || values.every(value => value === 0)) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-        ctx.fillText('无有效数据', pad.left + 12, pad.top + plotH / 2);
+        const emptyLabel = config.availabilityLabel || '无有效数据';
+        ctx.fillText(emptyLabel, pad.left + 12, pad.top + plotH / 2);
       } else {
         const displaySeries = displaySamples.length === samples.length ? displaySamples : samples;
         const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);

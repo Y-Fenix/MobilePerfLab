@@ -341,6 +341,8 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(availability["rx_kbps"]["state_label"], "无流量")
         self.assertIn("目标 App 当前无网络流量", availability["rx_kbps"]["detail"])
         self.assertIn("无流量", html_text)
+        self.assertIn("const emptyLabel = config.availabilityLabel || '无有效数据'", html_text)
+        self.assertIn("ctx.fillText(emptyLabel", html_text)
         self.assertIn("note.includes('网络无流量') && !note.includes('网络采集')", html_text)
 
     def test_metric_availability_treats_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
@@ -397,6 +399,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(availability["fps"]["state_label"], "无新增帧")
         self.assertIn("FPS 来源可用", availability["fps"]["detail"])
         self.assertIn("无新增帧", html_text)
+        self.assertIn("const emptyLabel = config.availabilityLabel || '无有效数据'", html_text)
 
     def test_metric_availability_treats_cpu_no_process_delta_as_idle_when_pid_exists(self) -> None:
         recorder = SessionRecorder()
