@@ -343,7 +343,7 @@ class QualityModeLabelTest(unittest.TestCase):
                 return {}
 
         class FakeCard:
-            def set_value(self, _value: float, _sub: str) -> None:
+            def set_value(self, _value: object, _sub: str) -> None:
                 pass
 
         class FakeGraph:
@@ -422,8 +422,13 @@ class QualityModeLabelTest(unittest.TestCase):
                 return {}
 
         class FakeCard:
-            def set_value(self, _value: float, _sub: str) -> None:
-                pass
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
 
         class FakeGraph:
             def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
@@ -438,7 +443,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.last_app_tx_kbps = 0.0
         app.metric_health_vars = {}
         app.collection_link_vars = {}
-        app.health_analyzer = FakeMetricHealth()
+        app.health_analyzer = MetricHealthAnalyzer()
         app.live_quality = LiveQualityTracker()
         app.quality_summary_var = FakeVar()
         app.performance_conclusion_var = FakeVar()
@@ -477,6 +482,11 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertIn("会话可用性：只可参考部分指标", app.performance_conclusion_var.value)
         self.assertIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
+        self.assertEqual(app.cards["fps"].value, "不可用")
+        self.assertEqual(app.cards["cpu_percent"].value, "不可用")
+        self.assertEqual(app.cards["rx_kbps"].value, "不可用")
+        self.assertEqual(app.cards["tx_kbps"].value, "不可用")
+        self.assertEqual(app.cards["memory_mb"].value, 512.0)
 
     def test_handle_sample_marks_foreground_recovery_as_recovering_not_unavailable(self) -> None:
         class FakeVar:

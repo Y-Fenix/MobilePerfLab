@@ -7542,7 +7542,11 @@ class MetricCard(ttk.Frame):
         self.sub_label = ttk.Label(self, text="等待采集", style="Muted.TLabel")
         self.sub_label.pack(anchor="w", pady=(6, 0))
 
-    def set_value(self, value: float, sub: str = "") -> None:
+    def set_value(self, value: float | str, sub: str = "") -> None:
+        if isinstance(value, str):
+            self.value_label.configure(text=value)
+            self.sub_label.configure(text=sub or "实时")
+            return
         if self.unit == "%":
             display = f"{value:.1f}{self.unit}"
         elif self.unit in ("MB", "KB/s"):
@@ -9159,7 +9163,7 @@ class App:
         self.recorder.append(sample)
         self.last_app_rx_kbps = max(float(sample.rx_kbps or 0.0), 0.0)
         self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
-        self._update_metric_health(sample)
+        metric_health = self._update_metric_health(sample)
         quality_tag = self.live_quality.quality_tag_for_sample(sample)
         quality_text = self.live_quality.update(sample)
         recent_window = self.live_quality.recent_window_health()
@@ -9179,14 +9183,14 @@ class App:
         self._refresh_quality_mode()
         for graph in self.graphs.values():
             graph.set_display_context(self.smoothing_var.get(), conservative_display)
-        self.cards["fps"].set_value(display_sample.fps, "越高越流畅")
-        self.cards["jank_percent"].set_value(display_sample.jank_percent, "越低越稳")
-        self.cards["cpu_percent"].set_value(display_sample.cpu_percent, "进程占用")
-        self.cards["memory_mb"].set_value(display_sample.memory_mb, "PSS/Total")
-        self.cards["temperature_c"].set_value(display_sample.temperature_c, "电池温度")
-        self.cards["power_w"].set_value(display_sample.power_w, "估算功耗")
-        self.cards["rx_kbps"].set_value(display_sample.rx_kbps, "接收速率")
-        self.cards["tx_kbps"].set_value(display_sample.tx_kbps, "发送速率")
+        self._set_metric_card("fps", display_sample.fps, "越高越流畅", metric_health)
+        self._set_metric_card("jank_percent", display_sample.jank_percent, "越低越稳", metric_health)
+        self._set_metric_card("cpu_percent", display_sample.cpu_percent, "进程占用", metric_health)
+        self._set_metric_card("memory_mb", display_sample.memory_mb, "PSS/Total", metric_health)
+        self._set_metric_card("temperature_c", display_sample.temperature_c, "电池温度", metric_health)
+        self._set_metric_card("power_w", display_sample.power_w, "估算功耗", metric_health)
+        self._set_metric_card("rx_kbps", display_sample.rx_kbps, "接收速率", metric_health)
+        self._set_metric_card("tx_kbps", display_sample.tx_kbps, "发送速率", metric_health)
         self.graphs["fps"].append(display_sample.elapsed, display_sample.fps, quality_tag)
         self.graphs["jank_percent"].append(display_sample.elapsed, display_sample.jank_percent, quality_tag)
         self.graphs["cpu_percent"].append(display_sample.elapsed, display_sample.cpu_percent, quality_tag)
@@ -9228,7 +9232,21 @@ class App:
             self.quality_event_tree.delete(item)
         self.quality_event_tree.yview_moveto(1.0)
 
-    def _update_metric_health(self, sample: PerfSample) -> None:
+    def _set_metric_card(
+        self,
+        metric: str,
+        value: float,
+        default_sub: str,
+        health: dict[str, MetricHealth],
+    ) -> None:
+        status = health.get(metric)
+        if status is not None and status.state in {"missing", "waiting", "recovering", "no_frame_delta", "no_cpu_delta"}:
+            display = "不可用" if status.state == "missing" else status.label
+            self.cards[metric].set_value(display, status.detail)
+            return
+        self.cards[metric].set_value(value, default_sub)
+
+    def _update_metric_health(self, sample: PerfSample) -> dict[str, MetricHealth]:
         labels = {
             "fps": "FPS",
             "jank_percent": "Jank",
@@ -9256,6 +9274,7 @@ class App:
                 continue
             prefix = prefixes.get(status.state, "○")
             variable.set(f"{prefix} {labels.get(metric, metric)}: {status.label}")
+        return health
 
     def _tick(self) -> None:
         if self.sampler and self.recorder.start_time:
