@@ -990,6 +990,46 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertEqual(summary, "采集波动 · 窗口：节拍失稳 · 推荐 2.0s")
 
+    def test_metric_cards_surface_idle_and_fallback_network_health(self) -> None:
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        app = object.__new__(App)
+        app.cards = {
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        analyzer = MetricHealthAnalyzer()
+        idle_health = analyzer.analyze(
+            PerfSample(timestamp=8.0, elapsed=8.0, fps=58.0, cpu_percent=22.0, rx_kbps=0.0, tx_kbps=0.0)
+        )
+        fallback_health = analyzer.analyze(
+            PerfSample(
+                timestamp=9.0,
+                elapsed=9.0,
+                fps=58.0,
+                cpu_percent=22.0,
+                rx_kbps=4.0,
+                tx_kbps=2.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+            )
+        )
+
+        App._set_metric_card(app, "rx_kbps", 0.0, "接收速率", idle_health)
+        App._set_metric_card(app, "tx_kbps", 2.0, "发送速率", fallback_health)
+
+        self.assertEqual(app.cards["rx_kbps"].value, "无流量")
+        self.assertEqual(app.cards["rx_kbps"].sub, "当前没有应用网络流量")
+        self.assertEqual(app.cards["tx_kbps"].value, 2.0)
+        self.assertEqual(app.cards["tx_kbps"].sub, "设备级网络兜底，非目标 App 独占流量")
+        self.assertNotEqual(app.cards["tx_kbps"].sub, "发送速率")
+
     def test_handle_sample_updates_live_performance_conclusion(self) -> None:
         class FakeVar:
             def __init__(self) -> None:

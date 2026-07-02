@@ -9852,6 +9852,12 @@ class App:
             display = "不可用" if status.state == "missing" else status.label
             self.cards[metric].set_value(display, status.detail)
             return
+        if status is not None and status.state == "idle":
+            self.cards[metric].set_value(status.label, status.detail)
+            return
+        if status is not None and status.state == "fallback":
+            self.cards[metric].set_value(value, status.detail)
+            return
         self.cards[metric].set_value(value, default_sub)
 
     def _update_metric_health(self, sample: PerfSample) -> dict[str, MetricHealth]:
