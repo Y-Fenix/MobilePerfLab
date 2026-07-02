@@ -17,6 +17,7 @@ from mobileperflab import (
     graph_display_max_value,
     graph_display_series,
     graph_display_series_for_context,
+    graph_summary_text,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
     live_recent_window_summary,
@@ -307,6 +308,38 @@ class GraphScrollBehaviorTest(unittest.TestCase):
             ),
             "",
         )
+
+    def test_graph_summary_text_exposes_current_average_and_peak(self) -> None:
+        self.assertEqual(
+            graph_summary_text([(0.0, 10.0), (1.0, 20.0), (2.0, 30.0)], "KB/s"),
+            "当前 30.0 KB/s · 均值 20.0 KB/s · 峰值 30.0 KB/s",
+        )
+        self.assertEqual(graph_summary_text([], "FPS"), "当前 -- · 均值 -- · 峰值 --")
+
+    def test_graph_panel_summary_uses_display_series_for_limited_points(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        append_start = text.index("def append(self, elapsed: float, value: float, quality: str = \"ok\")")
+        append_end = text.index("def set_display_context", append_start)
+        append_body = text[append_start:append_end]
+
+        self.assertIn("graph_display_series_for_context", append_body)
+        self.assertIn("summary_points", append_body)
+        self.assertNotIn("graph_summary_text([(elapsed, value) for elapsed, value, _quality in self.points]", append_body)
+
+    def test_graph_panel_declares_summary_and_fixed_quality_legend(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("class GraphPanel")
+        panel_end = text.index("class TrafficMiniChart", panel_start)
+        panel_body = text[panel_start:panel_end]
+
+        self.assertIn("self.summary_var", panel_body)
+        self.assertIn("graph_summary_text", panel_body)
+        self.assertIn("正常", panel_body)
+        self.assertIn("兜底", panel_body)
+        self.assertIn("受限", panel_body)
+        self.assertIn("异常", panel_body)
 
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)

@@ -1168,6 +1168,17 @@ def graph_quality_badge_text_for_context(
     return base
 
 
+def graph_summary_text(points: list[tuple[float, float]], unit: str) -> str:
+    values = [float(value) for _elapsed, value in points if math.isfinite(float(value))]
+    if not values:
+        return "当前 -- · 均值 -- · 峰值 --"
+    current = values[-1]
+    average = sum(values) / len(values)
+    peak = max(values)
+    suffix = f" {unit}".rstrip()
+    return f"当前 {current:.1f}{suffix} · 均值 {average:.1f}{suffix} · 峰值 {peak:.1f}{suffix}"
+
+
 def smooth_graph_series(points: list[tuple[float, float]], alpha: float = 0.28) -> list[tuple[float, float]]:
     if len(points) < 2:
         return list(points)
@@ -7751,11 +7762,14 @@ class GraphPanel(ttk.Frame):
         ttk.Label(self.header, text=title, style="PanelTitle.TLabel").pack(side="left")
         self.value_var = tk.StringVar(value="--")
         self.quality_badge_var = tk.StringVar(value="")
+        self.summary_var = tk.StringVar(value=graph_summary_text([], self.unit))
         ttk.Label(self.header, textvariable=self.value_var, style="GraphValue.TLabel").pack(side="right")
         ttk.Label(self.header, textvariable=self.quality_badge_var, style="Muted.TLabel").pack(side="right", padx=(0, 10))
+        ttk.Label(self, textvariable=self.summary_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
         self.canvas = tk.Canvas(self, height=132, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
+        ttk.Label(self, text="正常 · 兜底 · 受限 · 异常", style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
 
     def append(self, elapsed: float, value: float, quality: str = "ok") -> None:
         self.points.append((max(0.0, float(elapsed)), float(value), quality))
@@ -7766,6 +7780,13 @@ class GraphPanel(ttk.Frame):
             low_end_display_mode=self.low_end_display_mode,
         )
         self.value_var.set(self._format(float(value) if latest_display is None else latest_display))
+        summary_points = graph_display_series_for_context(
+            [(elapsed, value) for elapsed, value, _quality in self.points],
+            smoothing_enabled=self.smoothing_enabled,
+            low_end_display_mode=self.low_end_display_mode,
+            qualities=[quality for _elapsed, _value, quality in self.points],
+        )
+        self.summary_var.set(graph_summary_text(summary_points, self.unit))
         self.redraw()
 
     def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
@@ -7781,6 +7802,7 @@ class GraphPanel(ttk.Frame):
         self.view_seconds = 10.0
         self.value_var.set("--")
         self.quality_badge_var.set("")
+        self.summary_var.set(graph_summary_text([], self.unit))
         self.redraw()
 
     def set_view(self, view_start: float, view_seconds: float) -> None:
