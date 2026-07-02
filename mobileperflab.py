@@ -1560,7 +1560,15 @@ def build_validation_checklist(
     weak_detail = "未导出弱网代理状态。"
     if weak_network is not None:
         traffic_state = str(weak_network.get("traffic_state", "off"))
-        if traffic_state == "hit":
+        effectiveness = weak_network.get("effectiveness", {})
+        effectiveness_state = str(effectiveness.get("state", "") if isinstance(effectiveness, dict) else "")
+        bypass_evidence = weak_network.get("bypass_evidence", {})
+        bypass_state = str(bypass_evidence.get("state", "") if isinstance(bypass_evidence, dict) else "")
+        bypass_detail = str(bypass_evidence.get("detail", "") if isinstance(bypass_evidence, dict) else "")
+        if effectiveness_state == "bypass" or bypass_state == "bypass":
+            weak_state = "fail"
+            weak_detail = f"疑似绕过代理：{bypass_detail}" if bypass_detail else "App 有上下行流量但弱网代理未捕获请求，疑似绕过代理。"
+        elif traffic_state == "hit":
             weak_state = "pass"
             weak_detail = "弱网代理已捕获真实目标流量。"
         elif traffic_state == "waiting":
