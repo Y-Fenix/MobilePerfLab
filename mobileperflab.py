@@ -594,12 +594,18 @@ def live_weak_network_action_text(effectiveness: dict[str, object] | object) -> 
     if not isinstance(effectiveness, dict):
         return "弱网：未知"
     label = str(effectiveness.get("label", "未知") or "未知")
+    state = str(effectiveness.get("state", "") or "")
     readiness = effectiveness.get("test_readiness", {})
     readiness_label = ""
+    readiness_action = ""
     if isinstance(readiness, dict):
         readiness_label = str(readiness.get("label", "") or "")
+        readiness_action = str(readiness.get("action", "") or "")
     if readiness_label:
-        return f"弱网：{readiness_label} · {label}"
+        parts = [f"弱网：{readiness_label}", label]
+        if readiness_action and state == "target_unconfirmed":
+            parts.append(readiness_action)
+        return " · ".join(parts)
     return f"弱网：{label}"
 
 

@@ -215,6 +215,52 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
         self.assertEqual(app.weak_traffic_vars["hit_status"].value, "疑似绕过代理 · App 有流量但代理未捕获")
 
+    def test_refresh_proxy_traffic_shows_target_confirmation_action_for_proxy_only_hit(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot(total_connections=1, down_bytes=2048, up_bytes=1024)
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {"readiness": FakeVar(), "hit_status": FakeVar()}
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.last_weak_diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertIn("确认目标流量", app.weak_readiness_var.value)
+        self.assertIn("下载/上传", app.weak_readiness_var.value)
+        self.assertIn("代理有流量，目标待确认", app.weak_live_summary_var.value)
+        self.assertIn("下载/上传", app.weak_live_summary_var.value)
+        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量 · 目标 App 待确认")
+
 
 class AndroidProxyVerificationTest(unittest.TestCase):
     def test_confirms_proxy_when_device_state_matches_expected_endpoint(self) -> None:
