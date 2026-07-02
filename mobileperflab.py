@@ -8483,8 +8483,7 @@ class App:
         self._configure_styles()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self._log_environment_checks()
-        self.refresh_devices()
+        self._schedule_startup_refresh()
         self.root.after(250, self._drain_events)
         self.root.after(1000, self._tick)
 
@@ -8506,6 +8505,15 @@ class App:
 
     def _open_fullscreen_window(self) -> None:
         self._open_fullscreen_window_for_root(self.root)
+
+    def _schedule_startup_refresh(self) -> None:
+        self.status_var.set("正在识别设备...")
+        self._refresh_session_chips()
+        self.root.after(300, self._startup_refresh_devices)
+
+    def _startup_refresh_devices(self) -> None:
+        self._log_environment_checks()
+        self.refresh_devices()
 
     def _threadsafe_log(self, text: str) -> None:
         self.events.put(("log", text))

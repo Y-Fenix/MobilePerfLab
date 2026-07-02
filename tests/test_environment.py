@@ -532,6 +532,28 @@ class FullscreenStartupTest(unittest.TestCase):
 
         self.assertIn("root._mobileperflab_app = App(root)", text)
 
+    def test_app_init_defers_device_refresh_until_after_first_paint(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        init_start = text.index("def __init__(self, root: tk.Tk) -> None:")
+        init_end = text.index("    @staticmethod", init_start)
+        init_body = text[init_start:init_end]
+
+        self.assertIn("self._schedule_startup_refresh()", init_body)
+        self.assertNotIn("self.refresh_devices()", init_body)
+        self.assertLess(init_body.index("self._build_ui()"), init_body.index("self._schedule_startup_refresh()"))
+
+    def test_startup_refresh_logs_environment_then_refreshes_devices(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("def _schedule_startup_refresh(self) -> None:", text)
+        self.assertIn('self.status_var.set("正在识别设备...")', text)
+        self.assertIn("self.root.after(300, self._startup_refresh_devices)", text)
+        self.assertIn("def _startup_refresh_devices(self) -> None:", text)
+        self.assertIn("self._log_environment_checks()", text)
+        self.assertIn("self.refresh_devices()", text)
+
 
 class WorkbenchLayoutContractTest(unittest.TestCase):
     def test_workbench_shell_has_professional_four_region_layout(self) -> None:
