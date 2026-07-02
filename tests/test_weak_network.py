@@ -17,6 +17,7 @@ from mobileperflab import (
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
     live_weak_network_action_text,
+    weak_network_status_lights,
     weak_hit_status_text,
     weak_readiness_display_text,
     verify_android_proxy_state,
@@ -261,6 +262,58 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("下载/上传", app.weak_live_summary_var.value)
         self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量 · 目标 App 待确认")
 
+    def test_refresh_proxy_traffic_updates_five_status_lights(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot(total_connections=1, down_bytes=2048, up_bytes=1024)
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {}
+        app.weak_status_light_vars = {
+            key: {"label": FakeVar(), "state": FakeVar(), "detail": FakeVar()}
+            for key in ("proxy_listener", "device_proxy", "port_reachability", "proxy_traffic", "target_hit")
+        }
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 15.0
+        app.last_app_tx_kbps = 2.0
+        app.last_weak_diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertEqual(app.weak_status_light_vars["proxy_listener"]["label"].value, "代理监听")
+        self.assertEqual(app.weak_status_light_vars["device_proxy"]["label"].value, "设备代理")
+        self.assertEqual(app.weak_status_light_vars["port_reachability"]["label"].value, "端口连通")
+        self.assertEqual(app.weak_status_light_vars["proxy_traffic"]["label"].value, "代理流量")
+        self.assertEqual(app.weak_status_light_vars["target_hit"]["label"].value, "目标命中")
+        self.assertEqual(app.weak_status_light_vars["target_hit"]["state"].value, "正常")
+        self.assertIn("弱网已生效", app.weak_status_light_vars["target_hit"]["detail"].value)
+
 
 class AndroidProxyVerificationTest(unittest.TestCase):
     def test_confirms_proxy_when_device_state_matches_expected_endpoint(self) -> None:
@@ -424,6 +477,60 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["test_readiness"]["state"], "ready")
         self.assertEqual(result["test_readiness"]["label"], "可以开始测试")
         self.assertIn("代理已捕获真实流量", result["detail"])
+
+    def test_builds_five_status_lights_for_confirmed_android_target_hit(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        lights = weak_network_status_lights(
+            running=True,
+            traffic_state="hit",
+            diagnostics=diagnostics,
+            app_rx_kbps=12.0,
+            app_tx_kbps=3.0,
+        )
+
+        self.assertEqual(
+            [(light["key"], light["label"], light["state"]) for light in lights],
+            [
+                ("proxy_listener", "代理监听", "ok"),
+                ("device_proxy", "设备代理", "ok"),
+                ("port_reachability", "端口连通", "ok"),
+                ("proxy_traffic", "代理流量", "ok"),
+                ("target_hit", "目标命中", "ok"),
+            ],
+        )
+        self.assertIn("弱网已生效", lights[-1]["detail"])
+
+    def test_status_lights_call_out_proxy_bypass_when_app_has_traffic_without_proxy_hits(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        lights = weak_network_status_lights(
+            running=True,
+            traffic_state="waiting",
+            diagnostics=diagnostics,
+            app_rx_kbps=20.0,
+            app_tx_kbps=0.0,
+        )
+        by_key = {light["key"]: light for light in lights}
+
+        self.assertEqual(by_key["proxy_listener"]["state"], "ok")
+        self.assertEqual(by_key["device_proxy"]["state"], "ok")
+        self.assertEqual(by_key["port_reachability"]["state"], "ok")
+        self.assertEqual(by_key["proxy_traffic"]["state"], "waiting")
+        self.assertEqual(by_key["target_hit"]["state"], "blocked")
+        self.assertIn("疑似绕过代理", by_key["target_hit"]["detail"])
 
     def test_proxy_hit_without_app_traffic_still_requires_target_confirmation(self) -> None:
         diagnostics = build_weak_network_diagnostics(

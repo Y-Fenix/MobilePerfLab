@@ -550,6 +550,114 @@ def weak_network_diagnostics_payload(diagnostics: WeakNetworkDiagnostics) -> dic
     }
 
 
+def _weak_network_diagnostic_rows(
+    diagnostics: WeakNetworkDiagnostics | dict[str, object] | None,
+) -> list[tuple[str, str, str]]:
+    if isinstance(diagnostics, WeakNetworkDiagnostics):
+        return list(diagnostics.rows)
+    rows: list[tuple[str, str, str]] = []
+    if isinstance(diagnostics, dict):
+        raw_rows = diagnostics.get("rows", [])
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if isinstance(row, dict):
+                    rows.append((str(row.get("name", "")), str(row.get("state", "")), str(row.get("detail", ""))))
+                elif isinstance(row, (tuple, list)) and len(row) >= 3:
+                    rows.append((str(row[0]), str(row[1]), str(row[2])))
+    return rows
+
+
+def _weak_row_lookup(rows: list[tuple[str, str, str]], *names: str) -> tuple[str, str, str] | None:
+    wanted = set(names)
+    for row in rows:
+        if row[0] in wanted:
+            return row
+    return None
+
+
+def _weak_row_light_state(row_state: str) -> str:
+    if row_state in {"运行中", "已选择", "已确认", "可达"}:
+        return "ok"
+    if row_state in {"未检查", "待验证", "手动配置"}:
+        return "waiting"
+    if row_state in {"未启动", "未选择", "不一致", "不可达", "不支持"}:
+        return "blocked"
+    return "warning"
+
+
+def weak_network_status_lights(
+    running: bool,
+    traffic_state: str,
+    diagnostics: WeakNetworkDiagnostics | dict[str, object] | None = None,
+    app_rx_kbps: float = 0.0,
+    app_tx_kbps: float = 0.0,
+) -> list[dict[str, str]]:
+    rows = _weak_network_diagnostic_rows(diagnostics)
+    effectiveness = build_weak_network_effectiveness(
+        running,
+        traffic_state,
+        diagnostics=diagnostics,
+        app_rx_kbps=app_rx_kbps,
+        app_tx_kbps=app_tx_kbps,
+    )
+
+    listener_row = _weak_row_lookup(rows, "本机代理")
+    device_row = _weak_row_lookup(rows, "设备代理", "iOS 代理")
+    port_row = _weak_row_lookup(rows, "端口连通")
+
+    if listener_row is None:
+        listener_state = "ok" if running else "blocked"
+        listener_detail = "本机弱网代理正在监听。" if running else "先启动弱网代理。"
+    else:
+        listener_state = _weak_row_light_state(listener_row[1])
+        listener_detail = listener_row[2]
+
+    if device_row is None:
+        device_state = "blocked" if not running else "waiting"
+        device_detail = "应用到 Android 后读回系统代理。"
+    else:
+        device_state = _weak_row_light_state(device_row[1])
+        device_detail = device_row[2]
+
+    if port_row is None:
+        port_state = "waiting" if running else "blocked"
+        port_detail = "刷新状态后检测 Android 到本机代理端口。"
+    else:
+        port_state = _weak_row_light_state(port_row[1])
+        port_detail = port_row[2]
+
+    if not running or traffic_state == "off":
+        proxy_state = "blocked"
+        proxy_detail = "代理未启动，暂无真实代理流量。"
+    elif traffic_state == "hit":
+        proxy_state = "ok"
+        proxy_detail = "代理已捕获真实流量。"
+    elif traffic_state == "dropped":
+        proxy_state = "warning"
+        proxy_detail = "代理已有丢弃命中，结合业务日志确认目标请求。"
+    else:
+        proxy_state = "waiting"
+        proxy_detail = "代理链路就绪后，在 App 内触发 HTTP/HTTPS 请求。"
+
+    effect_state = str(effectiveness.get("state", "off"))
+    effect_label = str(effectiveness.get("label", "未知"))
+    effect_detail = str(effectiveness.get("detail", ""))
+    if effect_state == "effective":
+        target_state = "ok"
+    elif effect_state in {"waiting", "target_unconfirmed", "dropped", "ios_manual_proxy"}:
+        target_state = "warning" if effect_state != "waiting" else "waiting"
+    else:
+        target_state = "blocked"
+
+    return [
+        {"key": "proxy_listener", "label": "代理监听", "state": listener_state, "detail": listener_detail},
+        {"key": "device_proxy", "label": "设备代理", "state": device_state, "detail": device_detail},
+        {"key": "port_reachability", "label": "端口连通", "state": port_state, "detail": port_detail},
+        {"key": "proxy_traffic", "label": "代理流量", "state": proxy_state, "detail": proxy_detail},
+        {"key": "target_hit", "label": "目标命中", "state": target_state, "detail": f"{effect_label}：{effect_detail}"},
+    ]
+
+
 def weak_network_test_readiness(effectiveness_state: str) -> dict[str, str]:
     if effectiveness_state == "effective":
         return {
@@ -640,14 +748,10 @@ def build_weak_network_effectiveness(
     diagnostic_rows: list[tuple[str, str, str]] = []
     if isinstance(diagnostics, WeakNetworkDiagnostics):
         diagnostic_summary = diagnostics.summary
-        diagnostic_rows = list(diagnostics.rows)
+        diagnostic_rows = _weak_network_diagnostic_rows(diagnostics)
     elif isinstance(diagnostics, dict):
         diagnostic_summary = str(diagnostics.get("summary", ""))
-        raw_rows = diagnostics.get("rows", [])
-        if isinstance(raw_rows, list):
-            for row in raw_rows:
-                if isinstance(row, dict):
-                    diagnostic_rows.append((str(row.get("name", "")), str(row.get("state", "")), str(row.get("detail", ""))))
+        diagnostic_rows = _weak_network_diagnostic_rows(diagnostics)
     port_unreachable = "端口不可达" in diagnostic_summary or any(state == "不可达" for _name, state, _detail in diagnostic_rows)
     no_android_device = "未选择 Android 设备" in diagnostic_summary or any(name == "Android 设备" and state == "未选择" for name, state, _detail in diagnostic_rows)
     ios_manual_proxy = "iOS 需要手动配置" in diagnostic_summary or any(name == "iOS 代理" and state == "手动配置" for name, state, _detail in diagnostic_rows)
@@ -8074,6 +8178,7 @@ class App:
         self.weak_readiness_var = tk.StringVar(value="先启动弱网代理")
         self.weak_diagnostic_row_vars: list[tuple[tk.StringVar, tk.StringVar, tk.StringVar]] = []
         self.weak_traffic_vars: dict[str, tk.StringVar] = {}
+        self.weak_status_light_vars: dict[str, dict[str, tk.StringVar]] = {}
         self.metric_health_vars: dict[str, tk.StringVar] = {}
         self.collection_link_vars: dict[str, tk.StringVar] = {}
         self.session_chip_vars: dict[str, tk.StringVar] = {
@@ -8531,23 +8636,21 @@ class App:
         guide = ttk.Frame(content, style="Panel.TFrame", padding=(16, 14))
         guide.grid(row=0, column=1, sticky="nsew")
         guide.columnconfigure(0, weight=1)
-        ttk.Label(guide, text="链路诊断", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        self._build_weak_three_step_path(guide, row=0)
+        self._build_weak_status_lights(guide, row=1)
+        ttk.Label(guide, text="链路诊断", style="PanelTitle.TLabel").grid(row=2, column=0, sticky="w", pady=(18, 0))
         ttk.Label(guide, textvariable=self.weak_diagnostic_summary_var, style="GraphValue.TLabel").grid(
-            row=1,
+            row=3,
             column=0,
             sticky="w",
             pady=(6, 0),
         )
-        self._build_weak_diagnostic_rows(guide, row=2)
-        self._build_proxy_traffic_panel(guide, row=3)
-        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=4, column=0, sticky="w", pady=(18, 0))
+        self._build_weak_diagnostic_rows(guide, row=4)
+        self._build_proxy_traffic_panel(guide, row=5)
+        ttk.Label(guide, text="使用流程", style="PanelTitle.TLabel").grid(row=6, column=0, sticky="w", pady=(18, 0))
         text = (
-            "1. 选择一台 Android 设备，并确认手机和电脑在同一网络。\n"
-            "2. 选择弱网预设或手动配置参数。\n"
-            "3. 点击“启动代理”，再点击“应用到 Android”。\n"
-            "4. 在 App 内执行目标场景，同时回到“性能采集”观察 FPS、CPU、网络曲线。\n"
-            "5. 测试结束务必点击“清除 Android 代理”。\n\n"
-            "覆盖范围：当前为系统 HTTP/HTTPS 代理模式，不需要 Root。对 UDP、QUIC、私有代理栈或主动绕过系统代理的 App，后续需要 VPN/tun 模式。"
+            "测试结束点击“清除 Android 代理”。当前为系统 HTTP/HTTPS 代理模式，不需要 Root；"
+            "对 UDP、QUIC、私有代理栈或主动绕过系统代理的 App，后续需要 VPN/tun 模式。"
         )
         tk.Message(
             guide,
@@ -8555,13 +8658,13 @@ class App:
             width=760,
             bg="#FFFFFF",
             fg="#243044",
-            font=("Helvetica", 12),
+            font=("Helvetica", 11),
             borderwidth=0,
             justify="left",
-        ).grid(row=5, column=0, sticky="new", pady=(12, 0))
+        ).grid(row=7, column=0, sticky="new", pady=(10, 0))
         self.proxy_preview_text = tk.Text(
             guide,
-            height=8,
+            height=6,
             wrap="word",
             borderwidth=1,
             highlightthickness=0,
@@ -8569,7 +8672,7 @@ class App:
             fg="#243044",
             font=("Menlo", 11),
         )
-        self.proxy_preview_text.grid(row=6, column=0, sticky="ew", pady=(16, 0))
+        self.proxy_preview_text.grid(row=8, column=0, sticky="ew", pady=(14, 0))
         self.proxy_preview_text.insert(
             "1.0",
             "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
@@ -8577,6 +8680,78 @@ class App:
         self.proxy_preview_text.configure(state="disabled")
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
+
+    def _build_weak_three_step_path(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="PanelBody.TFrame")
+        panel.grid(row=row, column=0, sticky="ew")
+        panel.columnconfigure(0, weight=1)
+        ttk.Label(panel, text="3 步弱网测试", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        steps = ("1 选择预设", "2 启动并应用", "3 触发请求看命中")
+        grid = ttk.Frame(panel, style="PanelBody.TFrame")
+        grid.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for col, text in enumerate(steps):
+            grid.columnconfigure(col, weight=1)
+            step = ttk.Frame(grid, style="Step.TFrame", padding=(10, 8))
+            step.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0))
+            ttk.Label(step, text=text, style="StepTitle.TLabel").pack(anchor="w")
+
+    def _build_weak_status_lights(self, master: tk.Widget, row: int) -> None:
+        panel = ttk.Frame(master, style="PanelBody.TFrame")
+        panel.grid(row=row, column=0, sticky="ew", pady=(16, 0))
+        ttk.Label(panel, text="弱网状态灯", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        grid = ttk.Frame(panel, style="PanelBody.TFrame")
+        grid.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        labels = [
+            ("proxy_listener", "代理监听"),
+            ("device_proxy", "设备代理"),
+            ("port_reachability", "端口连通"),
+            ("proxy_traffic", "代理流量"),
+            ("target_hit", "目标命中"),
+        ]
+        self.weak_status_light_vars = {}
+        for col, (key, label) in enumerate(labels):
+            grid.columnconfigure(col, weight=1)
+            label_var = tk.StringVar(value=label)
+            state_var = tk.StringVar(value="等待")
+            detail_var = tk.StringVar(value="-")
+            self.weak_status_light_vars[key] = {"label": label_var, "state": state_var, "detail": detail_var}
+            item = ttk.Frame(grid, style="Panel.TFrame", padding=(10, 8))
+            item.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 8, 0))
+            ttk.Label(item, textvariable=label_var, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(item, textvariable=state_var, style="Quality.TLabel").pack(anchor="w", pady=(4, 0))
+            ttk.Label(item, textvariable=detail_var, style="Muted.TLabel", wraplength=130).pack(anchor="w", pady=(3, 0))
+        self._refresh_weak_status_lights()
+
+    def _refresh_weak_status_lights(
+        self,
+        traffic_state: str = "off",
+        snapshot: ProxyTrafficSnapshot | None = None,
+    ) -> None:
+        if not hasattr(self, "weak_status_light_vars"):
+            return
+        running = self.weak_proxy.is_running() if hasattr(self, "weak_proxy") else False
+        if snapshot is not None:
+            traffic_state, _label = proxy_traffic_state(running, snapshot)
+        state_labels = {
+            "ok": "正常",
+            "waiting": "等待",
+            "warning": "注意",
+            "blocked": "阻塞",
+        }
+        lights = weak_network_status_lights(
+            running,
+            traffic_state,
+            getattr(self, "last_weak_diagnostics", None),
+            app_rx_kbps=getattr(self, "last_app_rx_kbps", 0.0),
+            app_tx_kbps=getattr(self, "last_app_tx_kbps", 0.0),
+        )
+        for light in lights:
+            variables = self.weak_status_light_vars.get(str(light["key"]))
+            if not variables:
+                continue
+            variables["label"].set(str(light["label"]))
+            variables["state"].set(state_labels.get(str(light["state"]), str(light["state"])))
+            variables["detail"].set(str(light["detail"]))
 
     def _build_weak_diagnostic_rows(self, master: tk.Widget, row: int) -> None:
         table = ttk.Frame(master, style="Panel.TFrame")
@@ -9046,6 +9221,7 @@ class App:
                 name_var.set("-")
                 state_var.set("-")
                 detail_var.set("-")
+        self._refresh_weak_status_lights()
 
     def _weak_network_export_diagnostics(self) -> WeakNetworkDiagnostics:
         device = self.selected_device if self.selected_device and self.selected_device.platform == "Android" else None
@@ -9119,6 +9295,7 @@ class App:
             )
         if hasattr(self, "weak_traffic_chart"):
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
+        self._refresh_weak_status_lights(traffic_state=traffic_state, snapshot=snapshot)
         self._refresh_session_chips()
 
     def _selected_android_device(self) -> DeviceInfo | None:

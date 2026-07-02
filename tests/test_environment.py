@@ -181,6 +181,24 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
 
         self.assertEqual([item["key"] for item in layout[:4]], ["fps", "cpu_percent", "memory_mb", "rx_kbps"])
 
+    def test_weak_network_workspace_surfaces_three_step_path_and_status_lights(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        workspace_start = text.index("def _build_network_workspace")
+        workspace_end = text.index("def _build_weak_diagnostic_rows", workspace_start)
+        workspace_body = text[workspace_start:workspace_end]
+
+        self.assertIn("3 步弱网测试", workspace_body)
+        self.assertIn("选择预设", workspace_body)
+        self.assertIn("启动并应用", workspace_body)
+        self.assertIn("触发请求看命中", workspace_body)
+        self.assertIn("self._build_weak_status_lights", workspace_body)
+
+        self.assertIn("def _build_weak_status_lights", text)
+        self.assertIn("weak_network_status_lights", text)
+        for label in ("代理监听", "设备代理", "端口连通", "代理流量", "目标命中"):
+            self.assertIn(label, text)
+
     def test_workbench_status_chip_keeps_short_labels_for_empty_state(self) -> None:
         self.assertEqual(format_workbench_status_chip("设备", ""), "设备：未选择")
         self.assertEqual(format_workbench_status_chip("弱网", "弱网 OFF · 未启动"), "弱网：OFF")
