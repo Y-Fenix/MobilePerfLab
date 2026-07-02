@@ -20,6 +20,7 @@ from mobileperflab import (
     graph_summary_text,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
+    ios_service_launch_plan,
     live_recent_window_summary,
     LiveQualityTracker,
     MetricHealthAnalyzer,
@@ -111,6 +112,83 @@ class EnvironmentCheckTest(unittest.TestCase):
         self.assertIn("Android ADB：缺失", text)
         self.assertIn("iOS pymobiledevice3：可用", text)
         self.assertIn("Xcode xcrun：缺失", text)
+
+
+class IOSServiceLaunchTest(unittest.TestCase):
+    def test_ios_service_launch_plan_uses_background_noninteractive_command_on_macos(self) -> None:
+        plan = ios_service_launch_plan("/tmp/pymobiledevice3", platform="darwin")
+
+        self.assertEqual(plan.state, "ready")
+        self.assertEqual(
+            plan.command,
+            ["sudo", "-n", "/tmp/pymobiledevice3", "remote", "tunneld", "--protocol", "tcp"],
+        )
+        self.assertNotIn("open", plan.command)
+        self.assertIn("不打开额外终端窗口", plan.detail)
+
+    def test_ios_service_launch_plan_guides_dependency_install_when_tool_is_missing(self) -> None:
+        plan = ios_service_launch_plan("", platform="darwin")
+
+        self.assertEqual(plan.state, "missing_dependency")
+        self.assertEqual(plan.command, [])
+        self.assertIn("安装iOS依赖.command", plan.action)
+
+    def test_start_ios_service_runs_silently_and_updates_ui_state(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeIOS:
+            pymobiledevice3 = "/tmp/pymobiledevice3"
+
+        class FakeProcess:
+            def poll(self) -> None:
+                return None
+
+        calls: list[dict[str, object]] = []
+
+        def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+            calls.append({"command": command, **kwargs})
+            return FakeProcess()
+
+        app = object.__new__(App)
+        app.ios = FakeIOS()
+        app.status_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.capability_var = FakeVar()
+        app.logs: list[str] = []
+        app.ios_service_process = None
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_session_chips = lambda: None
+        app._ios_service_log_path = lambda: Path("/tmp/mobileperflab-ios-service-test.log")
+
+        original_popen = mobileperflab.subprocess.Popen
+        mobileperflab.subprocess.Popen = fake_popen
+        try:
+            App.start_ios_service(app)
+        finally:
+            mobileperflab.subprocess.Popen = original_popen
+
+        self.assertEqual(calls[0]["command"][:3], ["sudo", "-n", "/tmp/pymobiledevice3"])
+        self.assertIs(calls[0]["stdin"], mobileperflab.subprocess.DEVNULL)
+        self.assertTrue(calls[0]["start_new_session"])
+        self.assertIn("后台启动中", app.status_var.value)
+        self.assertIn("静默尝试启动", app.app_hint_var.value)
+        self.assertTrue(any("iOS 采集服务后台启动中" in line for line in app.logs))
+
+    def test_ios_runtime_guidance_does_not_send_users_to_keep_extra_script_window_open(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertNotIn("双击“启动iOS采集服务.command”并保持窗口打开", text)
+        self.assertNotIn("双击“启动iOS采集服务.command”并输入电脑密码，保持窗口打开", text)
+        self.assertIn("点击 iOS采集服务", text)
+        self.assertIn("静默尝试启动", text)
 
 
 class FullscreenStartupTest(unittest.TestCase):

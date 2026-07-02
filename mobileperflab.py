@@ -144,6 +144,42 @@ def resolve_pymobiledevice3_path() -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class IOSServiceLaunchPlan:
+    state: str
+    command: list[str]
+    detail: str
+    action: str
+
+
+def ios_service_launch_plan(
+    pymobiledevice3_path: str | None,
+    platform: str | None = None,
+) -> IOSServiceLaunchPlan:
+    tool = str(pymobiledevice3_path or "").strip()
+    if not tool:
+        return IOSServiceLaunchPlan(
+            state="missing_dependency",
+            command=[],
+            detail="未找到 pymobiledevice3，无法启动 iOS DVT tunnel 服务。",
+            action="先运行“安装iOS依赖.command”，再回到工具内点击 iOS采集服务。",
+        )
+    platform_name = platform or sys.platform
+    command = [tool, "remote", "tunneld", "--protocol", "tcp"]
+    if platform_name == "darwin":
+        command = ["sudo", "-n", *command]
+    return IOSServiceLaunchPlan(
+        state="ready",
+        command=command,
+        detail="将后台静默尝试启动 iOS DVT tunnel 服务，不打开额外终端窗口。",
+        action="如提示需要密码，请先在终端执行一次 sudo 授权，或使用“启动iOS采集服务.command”手动启动。",
+    )
+
+
+def ios_service_action_hint() -> str:
+    return "点击 iOS采集服务，工具会静默尝试启动；如仍未就绪，请先完成 sudo 授权或手动运行“启动iOS采集服务.command”。"
+
+
 def extract_json_payload(text: str) -> object | None:
     decoder = json.JSONDecoder()
     fallback: object | None = None
@@ -5429,7 +5465,7 @@ class IOSAdapter(BaseAdapter):
         if self._is_tunnel_error(output):
             self._note_cache[key] = (
                 "iOS CPU/内存实时采集需要先启动 tunneld："
-                "双击“启动iOS采集服务.command”并输入电脑密码，保持窗口打开。"
+                f"{ios_service_action_hint()}"
             )
             return
         pid = self._extract_pid(output)
@@ -5845,7 +5881,7 @@ class IOSAdapter(BaseAdapter):
                 await monitor_provider(tunnel_provider)
         except TunneldConnectionError:
             with self._network_lock:
-                self._network_notes[serial] = "iOS 网络采集需要启动 iOS 采集服务：双击“启动iOS采集服务.command”并保持窗口打开。"
+                self._network_notes[serial] = f"iOS 网络采集需要启动 iOS 采集服务：{ios_service_action_hint()}"
                 self._network_retry_after[serial] = time.time() + 8.0
         except Exception as exc:
             if not stop_event.is_set():
@@ -5980,7 +6016,7 @@ class IOSAdapter(BaseAdapter):
                     continue
                 if self._is_tunnel_error(line):
                     with self._graphics_lock:
-                        self._graphics_notes[serial] = "iOS FPS 采集需要启动 iOS 采集服务：双击“启动iOS采集服务.command”并保持窗口打开。"
+                        self._graphics_notes[serial] = f"iOS FPS 采集需要启动 iOS 采集服务：{ios_service_action_hint()}"
         finally:
             try:
                 code = process.wait(timeout=0.2)
@@ -6085,7 +6121,7 @@ class IOSAdapter(BaseAdapter):
     @classmethod
     def _graphics_error_note(cls, output: str) -> str:
         if cls._is_tunnel_error(output):
-            return "iOS FPS 采集需要启动 iOS 采集服务：双击“启动iOS采集服务.command”并保持窗口打开。"
+            return f"iOS FPS 采集需要启动 iOS 采集服务：{ios_service_action_hint()}"
         text = output.lower()
         if "connection was terminated abruptly" in text:
             return "iOS FPS 图形服务连接被设备断开，正在等待自动重试；请确认 iOS 采集服务已启动。"
@@ -6157,7 +6193,7 @@ class IOSAdapter(BaseAdapter):
         if pid is not None:
             code, output = self._sysmon_process_snapshot(device, f"pid={pid}", timeout=8.0)
             if self._is_tunnel_error(output):
-                return 0.0, 0.0, "iOS CPU/内存实时采集需要先启动 tunneld：双击“启动iOS采集服务.command”并保持窗口打开。", None
+                return 0.0, 0.0, f"iOS CPU/内存实时采集需要先启动 tunneld：{ios_service_action_hint()}", None
             if code == 0:
                 item = self._find_sysmon_item(self._sysmon_items(output), pid, process_names)
                 if item:
@@ -6169,7 +6205,7 @@ class IOSAdapter(BaseAdapter):
 
         code, output = self._sysmon_process_snapshot(device, None, timeout=10.0)
         if self._is_tunnel_error(output):
-            return 0.0, 0.0, "iOS CPU/内存实时采集需要先启动 tunneld：双击“启动iOS采集服务.command”并保持窗口打开。", None
+            return 0.0, 0.0, f"iOS CPU/内存实时采集需要先启动 tunneld：{ios_service_action_hint()}", None
         if code != 0:
             detail = self._short_error(output) or last_error
             return 0.0, 0.0, f"iOS sysmon 采样失败：{detail}", None
@@ -8149,6 +8185,7 @@ class App:
         self.weak_proxy = WeakNetworkProxy(self._threadsafe_log)
         self.weak_registry = WeakProxyDeviceRegistry()
         self.last_weak_diagnostics: WeakNetworkDiagnostics | None = None
+        self.ios_service_process: subprocess.Popen[str] | None = None
 
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
@@ -9387,19 +9424,42 @@ class App:
         self.root.destroy()
 
     def start_ios_service(self) -> None:
-        script = BASE_DIR / "启动iOS采集服务.command"
-        if not script.exists():
-            messagebox.showwarning(APP_NAME, f"未找到脚本：{script}")
+        tool = getattr(getattr(self, "ios", None), "pymobiledevice3", None) or resolve_pymobiledevice3_path()
+        plan = ios_service_launch_plan(tool)
+        if plan.state != "ready":
+            self.status_var.set("iOS 采集服务未就绪")
+            self.app_hint_var.set(plan.action)
+            self.append_log(f"{plan.detail} {plan.action}")
+            self._refresh_session_chips()
             return
         try:
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", str(script)])
-            else:
-                subprocess.Popen([str(script)])
+            ensure_dirs()
+            log_path = self._ios_service_log_path()
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {' '.join(shlex.quote(part) for part in plan.command)}\n")
+                process = subprocess.Popen(
+                    plan.command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"启动 iOS 采集服务失败：{exc}")
+            self.status_var.set("iOS 采集服务启动失败")
+            self.app_hint_var.set(plan.action)
+            self.append_log(f"iOS 采集服务静默启动失败：{exc}。{plan.action}")
+            self._refresh_session_chips()
             return
-        self.append_log("已打开 iOS 采集服务窗口，请输入本机密码并保持窗口打开。")
+        self.ios_service_process = process
+        self.status_var.set("iOS 采集服务后台启动中")
+        self.app_hint_var.set(f"已静默尝试启动 iOS 采集服务；如未就绪，请按提示授权。日志：{log_path}")
+        self.capability_var.set(self._capability_text())
+        self.append_log(f"iOS 采集服务后台启动中：{plan.detail} 日志：{log_path}")
+        self._refresh_session_chips()
+
+    def _ios_service_log_path(self) -> Path:
+        return EXPORT_DIR / "ios-service.log"
 
     def _render_devices(self) -> None:
         for item in self.device_tree.get_children():
@@ -9507,7 +9567,7 @@ class App:
             self.append_log(format_android_collection_diagnostics(diagnostics))
             self._refresh_session_chips()
             return
-        note = "iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 需要保持 iOS 采集服务窗口运行。"
+        note = f"iOS 采集自检：电量/温度可直接采集，CPU/内存/FPS 可点击 iOS采集服务静默尝试启动。{ios_service_action_hint()}"
         self.app_hint_var.set("iOS 采集服务状态请查看日志。")
         self.append_log(note)
         self._refresh_session_chips()

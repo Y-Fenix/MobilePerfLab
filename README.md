@@ -157,7 +157,7 @@ iOS 真机需要先信任电脑。基础识别可使用 Xcode 命令行工具；
 
 双击 `安装iOS依赖.command` 安装 `pymobiledevice3`。
 
-如果要采集 iOS CPU/内存/FPS，双击 `启动iOS采集服务.command`，输入本机登录密码，并保持该窗口打开。FPS 来自 DVT graphics 的 `CoreAnimationFramesPerSecond`；如果日志提示 `pymobiledevice3 当前未识别设备`，请重新插拔、信任设备，或切换到 `pymobiledevice3 usbmux list` 可见的设备。
+如果要采集 iOS CPU/内存/FPS，优先在工具内点击 `iOS采集服务`，应用会静默尝试启动 DVT tunnel 并把输出写入 `reports/ios-service.log`。如果 macOS 提示需要 sudo 授权，请先在终端完成一次 sudo 授权，或用 `启动iOS采集服务.command` 手动兜底。FPS 来自 DVT graphics 的 `CoreAnimationFramesPerSecond`；如果日志提示 `pymobiledevice3 当前未识别设备`，请重新插拔、信任设备，或切换到 `pymobiledevice3 usbmux list` 可见的设备。
 
 ## 说明
 
