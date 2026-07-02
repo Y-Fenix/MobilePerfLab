@@ -261,6 +261,16 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn('text="质量事件"', dashboard_body)
         self.assertNotIn('text="日志"', dashboard_body)
 
+    def test_workbench_styles_use_professional_neutral_palette(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("#0F172A", text)
+        self.assertIn("#F8FAFC", text)
+        self.assertIn("StatusChip.TLabel", text)
+        self.assertIn("StepTitle.TLabel", text)
+        self.assertNotIn("#172235", text)
+
 
 class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:

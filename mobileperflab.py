@@ -8098,11 +8098,11 @@ class App:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure(".", font=("Helvetica", 12), background="#F4F7FB", foreground="#1A2533")
-        style.configure("Root.TFrame", background="#F4F7FB")
-        style.configure("Top.TFrame", background="#172235")
-        style.configure("TopTitle.TLabel", background="#172235", foreground="#FFFFFF", font=("Helvetica", 18, "bold"))
-        style.configure("TopSub.TLabel", background="#172235", foreground="#B5C4D8", font=("Helvetica", 11))
+        style.configure(".", font=("Helvetica", 11), background="#F8FAFC", foreground="#0F172A")
+        style.configure("Root.TFrame", background="#F8FAFC")
+        style.configure("Top.TFrame", background="#0F172A")
+        style.configure("TopTitle.TLabel", background="#0F172A", foreground="#FFFFFF", font=("Helvetica", 17, "bold"))
+        style.configure("TopSub.TLabel", background="#0F172A", foreground="#CBD5E1", font=("Helvetica", 10))
         style.configure("Sidebar.TFrame", background="#FFFFFF")
         style.configure("Step.TFrame", background="#F8FAFC")
         style.configure("StepTitle.TLabel", background="#F8FAFC", foreground="#18212F", font=("Helvetica", 11, "bold"))
@@ -8118,8 +8118,8 @@ class App:
         style.configure("Health.TLabel", background="#FFFFFF", foreground="#243044", font=("Helvetica", 10, "bold"))
         style.configure("Quality.TLabel", background="#FFFFFF", foreground="#334155", font=("Helvetica", 11, "bold"))
         style.configure("SidebarTitle.TLabel", background="#FFFFFF", foreground="#18212F", font=("Helvetica", 13, "bold"))
-        style.configure("Status.TLabel", background="#172235", foreground="#EAF2FF", font=("Helvetica", 11))
-        style.configure("StatusChip.TLabel", background="#22324A", foreground="#EAF2FF", font=("Helvetica", 10, "bold"), padding=(9, 5))
+        style.configure("Status.TLabel", background="#0F172A", foreground="#E2E8F0", font=("Helvetica", 10))
+        style.configure("StatusChip.TLabel", background="#1E293B", foreground="#E2E8F0", font=("Helvetica", 10, "bold"), padding=(9, 5))
         style.configure("Primary.TButton", padding=(14, 8), font=("Helvetica", 12, "bold"))
         style.configure("Tool.TButton", padding=(10, 7), font=("Helvetica", 11))
         style.configure("Danger.TButton", padding=(14, 8), font=("Helvetica", 12, "bold"))
@@ -8672,7 +8672,7 @@ class App:
         graph_view.rowconfigure(0, weight=1)
         self.graph_canvas = tk.Canvas(
             graph_view,
-            background="#F4F7FB",
+            background="#F8FAFC",
             borderwidth=0,
             highlightthickness=0,
             yscrollincrement=self.graph_row_scroll_pixels,
