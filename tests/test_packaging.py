@@ -10,6 +10,9 @@ class PackagingScriptTest(unittest.TestCase):
         text = Path("一键启动.command").read_text(encoding="utf-8")
 
         self.assertIn('SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"', text)
+        self.assertIn('GUI_PYTHON_BIN="$(command -v python3 || true)"', text)
+        self.assertIn('Resources/Python.app', text)
+        self.assertIn('open -n -a "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"', text)
         self.assertIn('"$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"', text)
 
     def test_packaging_script_syncs_app_bundle_version_from_source(self) -> None:

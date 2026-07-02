@@ -17,4 +17,23 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 cd "$SCRIPT_DIR" || exit 1
-"$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"
+PYTHON_APP=""
+if [[ "$OSTYPE" == darwin* ]]; then
+  GUI_PYTHON_BIN="$(command -v python3 || true)"
+  if [ -n "$GUI_PYTHON_BIN" ]; then
+    PYTHON_VERSION_DIR="$(dirname "$(dirname "$GUI_PYTHON_BIN")")"
+    PYTHON_APP="$PYTHON_VERSION_DIR/Resources/Python.app"
+    if [ ! -d "$PYTHON_APP" ]; then
+      PYTHON_APP="$(dirname "$(dirname "$(dirname "$GUI_PYTHON_BIN")")")"
+    fi
+  fi
+  if [ ! -d "$PYTHON_APP" ] || [[ "$PYTHON_APP" != *.app ]]; then
+    PYTHON_APP=""
+  fi
+fi
+
+if [ -n "$PYTHON_APP" ]; then
+  open -n -a "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"
+else
+  "$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"
+fi
