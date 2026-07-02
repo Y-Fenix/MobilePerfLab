@@ -7220,29 +7220,32 @@ class SessionRecorder:
             "</tr>"
             for interval in quality_intervals
         ) or "<tr><td colspan='4'>未发现连续异常或兜底区间</td></tr>"
+        chart_titles = {
+            "fps": ("FPS 帧率", "越高越流畅，关注突降和长时间低帧。"),
+            "cpu_percent": ("CPU 进程占用", "观察峰值、持续高位和突降后的恢复。"),
+            "memory_mb": ("内存", "关注持续爬升和峰值。"),
+            "rx_kbps": ("下行网络", "接收流量速率。"),
+            "tx_kbps": ("上行网络", "发送流量速率。"),
+            "jank_percent": ("Jank 卡顿率", "越低越稳定，尖峰通常对应卡顿。"),
+            "temperature_c": ("温度", "观察发热趋势和平台期。"),
+            "power_w": ("功耗", "观察功耗峰值和平均负载。"),
+        }
         chart_cards = "".join(
             f"<section class='chart-card' data-metric='{key}'><div class='chart-head'><div><h3>{title}</h3><p>{desc}</p></div><div class='chart-stat' id='stat-{key}'>--</div></div><div class='chart-scroll'><canvas id='chart-{key}'></canvas></div></section>"
-            for key, title, desc in [
-                ("fps", "FPS 帧率", "越高越流畅，关注突降和长时间低帧。"),
-                ("jank_percent", "Jank 卡顿率", "越低越稳定，尖峰通常对应卡顿。"),
-                ("cpu_percent", "CPU 进程占用", "观察峰值、持续高位和突降后的恢复。"),
-                ("memory_mb", "内存", "关注持续爬升和峰值。"),
-                ("temperature_c", "温度", "观察发热趋势和平台期。"),
-                ("power_w", "功耗", "观察功耗峰值和平均负载。"),
-                ("rx_kbps", "下行网络", "接收流量速率。"),
-                ("tx_kbps", "上行网络", "发送流量速率。"),
-            ]
+            for key in workbench_primary_metric_order()
+            for title, desc in [chart_titles[key]]
         )
-        chart_config = [
-            {"key": "fps", "unit": "FPS", "color": "#2563eb", "suggestedMax": 60, "decimals": 1, "guide": 60, "guideLabel": "60 FPS"},
-            {"key": "jank_percent", "unit": "%", "color": "#f59e0b", "suggestedMax": 10, "decimals": 1, "guide": 5, "guideLabel": "5%"},
-            {"key": "cpu_percent", "unit": "%", "color": "#ef4444", "suggestedMax": 100, "decimals": 1, "guide": 80, "guideLabel": "80%"},
-            {"key": "memory_mb", "unit": "MB", "color": "#4f46e5", "suggestedMax": 0, "decimals": 1},
-            {"key": "temperature_c", "unit": "°C", "color": "#dc2626", "suggestedMax": 45, "decimals": 1, "guide": 42, "guideLabel": "42°C"},
-            {"key": "power_w", "unit": "W", "color": "#0891b2", "suggestedMax": 5, "decimals": 2},
-            {"key": "rx_kbps", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
-            {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
-        ]
+        chart_config_by_key = {
+            "fps": {"key": "fps", "unit": "FPS", "color": "#2563eb", "suggestedMax": 60, "decimals": 1, "guide": 60, "guideLabel": "60 FPS"},
+            "cpu_percent": {"key": "cpu_percent", "unit": "%", "color": "#ef4444", "suggestedMax": 100, "decimals": 1, "guide": 80, "guideLabel": "80%"},
+            "memory_mb": {"key": "memory_mb", "unit": "MB", "color": "#4f46e5", "suggestedMax": 0, "decimals": 1},
+            "rx_kbps": {"key": "rx_kbps", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
+            "tx_kbps": {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
+            "jank_percent": {"key": "jank_percent", "unit": "%", "color": "#f59e0b", "suggestedMax": 10, "decimals": 1, "guide": 5, "guideLabel": "5%"},
+            "temperature_c": {"key": "temperature_c", "unit": "°C", "color": "#dc2626", "suggestedMax": 45, "decimals": 1, "guide": 42, "guideLabel": "42°C"},
+            "power_w": {"key": "power_w", "unit": "W", "color": "#0891b2", "suggestedMax": 5, "decimals": 2},
+        }
+        chart_config = [chart_config_by_key[key] for key in workbench_primary_metric_order()]
         report_samples: list[dict[str, object]] = []
         for sample, quality_tag in zip(self.samples, quality_tags):
             row = asdict(sample)

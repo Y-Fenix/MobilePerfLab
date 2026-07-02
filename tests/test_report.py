@@ -3,7 +3,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mobileperflab import AndroidCollectionDiagnostics, DeviceInfo, PerfSample, SessionRecorder, build_session_usability
+from mobileperflab import (
+    AndroidCollectionDiagnostics,
+    DeviceInfo,
+    PerfSample,
+    SessionRecorder,
+    build_session_usability,
+    workbench_primary_metric_order,
+)
 
 
 class ReportExportTest(unittest.TestCase):
@@ -361,6 +368,35 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("均值", html_text)
         self.assertIn("峰值", html_text)
         self.assertNotIn("stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`", html_text)
+
+    def test_html_report_chart_cards_follow_workbench_metric_priority(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=58.0,
+                cpu_percent=22.0,
+                memory_mb=512.0,
+                rx_kbps=128.0,
+                tx_kbps=16.0,
+                jank_percent=1.0,
+                temperature_c=36.0,
+                power_w=2.1,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        chart_start = html_text.index('<div class="chart-grid">')
+        marker_start = html_text.index("<h2>标记</h2>", chart_start)
+        chart_grid = html_text[chart_start:marker_start]
+        positions = [chart_grid.index(f"data-metric='{key}'") for key in workbench_primary_metric_order()]
+
+        self.assertEqual(positions, sorted(positions))
 
     def test_metric_availability_treats_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
         recorder = SessionRecorder()
