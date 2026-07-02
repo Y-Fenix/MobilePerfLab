@@ -8422,6 +8422,8 @@ class App:
         self.devices: list[DeviceInfo] = []
         self.selected_device: DeviceInfo | None = None
         self.sampler: SamplerThread | None = None
+        self.device_refresh_thread: threading.Thread | None = None
+        self.device_refresh_generation = 0
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.recorder = SessionRecorder()
         self.last_notes: set[str] = set()
@@ -9384,12 +9386,36 @@ class App:
 
     def refresh_devices(self) -> None:
         self.status_var.set("正在刷新设备...")
-        self.devices = []
+        if self.device_refresh_thread and self.device_refresh_thread.is_alive():
+            self.status_var.set("正在刷新设备，请稍候...")
+            self._refresh_session_chips()
+            return
+        self.device_refresh_generation += 1
+        generation = self.device_refresh_generation
+        thread = threading.Thread(target=self._discover_devices_in_background, args=(generation,), daemon=True)
+        self.device_refresh_thread = thread
+        thread.start()
+        self._refresh_session_chips()
+
+    def _discover_devices_in_background(self, generation: int) -> None:
+        devices: list[DeviceInfo] = []
+        errors: list[str] = []
         for adapter in (self.android, self.ios):
             try:
-                self.devices.extend(adapter.list_devices())
+                devices.extend(adapter.list_devices())
             except Exception as exc:
-                self.recorder.log(f"{adapter.platform_name} 设备刷新失败：{exc}")
+                errors.append(f"{adapter.platform_name} 设备刷新失败：{exc}")
+        self.events.put(("devices", {"generation": generation, "devices": devices, "errors": errors}))
+
+    def _handle_device_refresh_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("generation") != getattr(self, "device_refresh_generation", None):
+            return
+        devices = data.get("devices", [])
+        errors = data.get("errors", [])
+        self.devices = list(devices) if isinstance(devices, list) else []
+        for error in errors if isinstance(errors, list) else []:
+            self.recorder.log(str(error))
         self._render_devices()
         self.capability_var.set(self._capability_text())
         if not self.devices:
@@ -9399,6 +9425,7 @@ class App:
         self._refresh_session_chips()
 
     def use_demo_devices(self) -> None:
+        self.device_refresh_generation += 1
         self.devices = self.demo.list_devices()
         self.platform_filter.set("Demo")
         self._render_devices()
@@ -10030,6 +10057,8 @@ class App:
                 kind, payload = self.events.get_nowait()
                 if kind == "sample" and isinstance(payload, PerfSample):
                     self._handle_sample(payload)
+                elif kind == "devices":
+                    self._handle_device_refresh_result(payload)
                 elif kind == "log":
                     self.append_log(str(payload))
                 elif kind == "note":

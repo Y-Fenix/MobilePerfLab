@@ -1,3 +1,5 @@
+import queue
+import threading
 import unittest
 from pathlib import Path
 
@@ -553,6 +555,103 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertIn("def _startup_refresh_devices(self) -> None:", text)
         self.assertIn("self._log_environment_checks()", text)
         self.assertIn("self.refresh_devices()", text)
+
+    def test_refresh_devices_runs_discovery_in_background(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeAdapter:
+            platform_name = "Android"
+
+            def __init__(self) -> None:
+                self.called = False
+
+            def list_devices(self) -> list[DeviceInfo]:
+                self.called = True
+                started.set()
+                release.wait(2.0)
+                return [DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")]
+
+        started = threading.Event()
+        release = threading.Event()
+        app = object.__new__(App)
+        app.status_var = FakeVar()
+        app.session_chip_vars = {}
+        app.events = queue.Queue()
+        app.android = FakeAdapter()
+        app.ios = FakeAdapter()
+        app.device_refresh_thread = None
+        app.device_refresh_generation = 0
+        app.devices = [DeviceInfo("Demo", "demo", "Demo", "-", "-", "ready", "演示数据")]
+        app._refresh_session_chips = lambda: None
+
+        App.refresh_devices(app)
+
+        self.assertEqual(app.status_var.value, "正在刷新设备...")
+        self.assertTrue(started.wait(0.5))
+        self.assertEqual(app.devices[0].serial, "demo")
+        self.assertTrue(app.events.empty())
+        release.set()
+        app.device_refresh_thread.join(1.0)
+        self.assertFalse(app.events.empty())
+
+    def test_device_refresh_result_event_updates_device_list(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app = object.__new__(App)
+        app.devices = []
+        app.status_var = FakeVar()
+        app.capability_var = FakeVar()
+        app.device_refresh_generation = 1
+        app.render_calls = 0
+        app._render_devices = lambda: setattr(app, "render_calls", app.render_calls + 1)
+        app._capability_text = lambda: "capabilities"
+        app._refresh_session_chips = lambda: None
+
+        App._handle_device_refresh_result(app, {"generation": 1, "devices": [device], "errors": []})
+
+        self.assertEqual(app.devices, [device])
+        self.assertEqual(app.status_var.value, "检测到 1 台设备")
+        self.assertEqual(app.capability_var.value, "capabilities")
+        self.assertEqual(app.render_calls, 1)
+
+    def test_stale_device_refresh_result_does_not_override_demo_mode(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        demo_device = DeviceInfo("Demo", "demo", "Demo", "-", "-", "ready", "演示数据")
+        real_device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app = object.__new__(App)
+        app.devices = [demo_device]
+        app.status_var = FakeVar()
+        app.capability_var = FakeVar()
+        app.device_refresh_generation = 2
+        app.render_calls = 0
+        app._render_devices = lambda: setattr(app, "render_calls", app.render_calls + 1)
+        app._capability_text = lambda: "capabilities"
+        app._refresh_session_chips = lambda: None
+
+        App._handle_device_refresh_result(app, {"generation": 1, "devices": [real_device], "errors": []})
+
+        self.assertEqual(app.devices, [demo_device])
+        self.assertEqual(app.render_calls, 0)
 
 
 class WorkbenchLayoutContractTest(unittest.TestCase):
