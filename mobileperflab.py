@@ -2220,6 +2220,7 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
         "tx_kbps": "网络",
     }
     missing: list[str] = []
+    limited: list[str] = []
     recovering: list[str] = []
     for metric, label in required.items():
         status = health.get(metric)
@@ -2227,12 +2228,26 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
         if state == "recovering" and label not in recovering:
             recovering.append(label)
             continue
+        if state == "no_frame_delta":
+            limited_label = "FPS 无新增帧"
+        elif state == "no_cpu_delta":
+            limited_label = "CPU 无增量"
+        elif state == "idle" and label == "网络":
+            limited_label = "网络无流量"
+        else:
+            limited_label = ""
+        if limited_label:
+            if limited_label not in limited:
+                limited.append(limited_label)
+            continue
         if state in {"missing", "waiting"} and label not in missing:
             missing.append(label)
     if recovering and not missing:
         return f"会话可用性：恢复窗口 · 等待 {'/'.join(recovering)}重新建立基线"
     if missing:
         return f"会话可用性：只可参考部分指标 · {'/'.join(missing)}不可用"
+    if limited:
+        return f"会话可用性：只可参考部分指标 · {'、'.join(limited)} · 先触发业务动作"
     return "会话可用性：可分析性能"
 
 

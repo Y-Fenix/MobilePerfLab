@@ -407,6 +407,48 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("只可参考部分指标", text)
         self.assertIn("FPS/CPU/网络不可用", text)
 
+    def test_live_session_usability_limits_fps_no_frame_delta(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=8.0,
+                elapsed=8.0,
+                fps=0.0,
+                cpu_percent=22.0,
+                rx_kbps=4.0,
+                tx_kbps=2.0,
+                note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。",
+            )
+        )
+
+        text = live_session_usability_text(health)
+
+        self.assertIn("只可参考部分指标", text)
+        self.assertIn("FPS 无新增帧", text)
+        self.assertIn("先触发业务动作", text)
+        self.assertNotIn("可分析性能", text)
+
+    def test_live_session_usability_limits_cpu_delta_and_idle_network(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=8.0,
+                elapsed=8.0,
+                fps=58.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                rx_kbps=0.0,
+                tx_kbps=0.0,
+                note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+            )
+        )
+
+        text = live_session_usability_text(health)
+
+        self.assertIn("只可参考部分指标", text)
+        self.assertIn("CPU 无增量", text)
+        self.assertIn("网络无流量", text)
+        self.assertIn("先触发业务动作", text)
+        self.assertNotIn("可分析性能", text)
+
     def test_summarizes_session_confidence_foreground_and_slow_sampling(self) -> None:
         tracker = LiveQualityTracker()
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
