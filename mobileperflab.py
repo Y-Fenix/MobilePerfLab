@@ -10018,15 +10018,6 @@ class App:
         self.last_notes.clear()
         self._reset_metrics()
         self.stabilizer.reset()
-        if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
-            try:
-                diagnostics = adapter.collection_diagnostics(device, app_id)
-                self.recorder.log(format_android_collection_diagnostics(diagnostics))
-                self.recorder.set_collection_diagnostics(diagnostics)
-                self.app_hint_var.set(diagnostics.summary)
-                self._update_collection_links(diagnostics)
-            except Exception as exc:
-                self.recorder.log(f"Android 采集自检失败：{exc}")
         self.sampler = SamplerThread(adapter, device, app_id, interval, self.events)
         self.sampler.start()
         self.start_button.configure(state="disabled")
@@ -10034,6 +10025,9 @@ class App:
         self.status_var.set("采集中")
         self.session_var.set("00:00 · 0 samples")
         self._refresh_session_chips()
+        if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
+            self.app_hint_var.set("采集中，采集自检后台执行...")
+            self._start_app_background_task("collection_diagnostics", device, adapter, app_id=app_id)
         smoothing = "开启" if self.smoothing_var.get() else "关闭"
         self.append_log(f"采集已启动。稳定曲线：{smoothing}（报告仍保存原始采样）。")
         if device.platform == "Android":

@@ -506,6 +506,98 @@ class IOSServiceLaunchTest(unittest.TestCase):
 
         self.assertEqual(app.ensure_calls, 0)
 
+    def test_start_sampling_runs_android_preflight_in_background_after_sampler_starts(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.logs: list[str] = []
+
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, text: str) -> None:
+                self.logs.append(text)
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            instances: list["FakeSampler"] = []
+
+            def __init__(self, *_args: object) -> None:
+                self.started = False
+                FakeSampler.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+        class FakeAdapter(AndroidAdapter):
+            def collection_diagnostics(self, _device: DeviceInfo, _app_id: str) -> AndroidCollectionDiagnostics:
+                started.set()
+                release.wait(2.0)
+                return AndroidCollectionDiagnostics("ok", "Android 采集自检通过", [])
+
+        started = threading.Event()
+        release = threading.Event()
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.android = FakeAdapter()
+        app.adapter_for = lambda _device: app.android
+        app.app_var = FakeVar("com.example.game")
+        app.app_hint_var = FakeVar()
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = queue.Queue()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app.logs: list[str] = []
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+        app.app_task_thread = None
+        app.app_task_generation = 0
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertTrue(FakeSampler.instances[-1].started)
+        self.assertEqual(app.status_var.value, "采集中")
+        self.assertTrue(started.wait(0.5))
+        self.assertTrue(app.events.empty())
+        release.set()
+        app.app_task_thread.join(1.0)
+        self.assertFalse(app.events.empty())
+
 
 class FullscreenStartupTest(unittest.TestCase):
     def test_fullscreen_prefers_zoomed_state(self) -> None:
