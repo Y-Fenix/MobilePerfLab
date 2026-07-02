@@ -959,6 +959,17 @@ class ProxyTrafficHistoryTest(unittest.TestCase):
         self.assertEqual(snapshot.down_kbps, 1.0)
         self.assertEqual(proxy.traffic_history(), [])
 
+    def test_export_snapshot_does_not_consume_live_rate_baseline(self) -> None:
+        proxy = WeakNetworkProxy(lambda _text: None)
+        proxy.reset_traffic(now=10.0)
+        proxy._record_transfer("down", 1024, now=10.5)
+
+        export_snapshot = proxy.traffic_snapshot(now=11.0, record_history=False)
+        live_snapshot = proxy.traffic_snapshot(now=12.0)
+
+        self.assertEqual(export_snapshot.down_kbps, 1.0)
+        self.assertEqual(live_snapshot.down_kbps, 0.5)
+
 
 class ProxyTrafficChartCompatibilityTest(unittest.TestCase):
     def test_history_points_can_drive_a_graph_panel_like_curve(self) -> None:

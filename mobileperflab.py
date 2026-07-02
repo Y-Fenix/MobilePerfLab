@@ -2988,9 +2988,6 @@ class WeakNetworkProxy:
                 up_kbps = max(up_bytes - self._traffic_rate_base_up, 0) / 1024.0 / elapsed
                 down_kbps = max(down_bytes - self._traffic_rate_base_down, 0) / 1024.0 / elapsed
             last_age = None if self._traffic_last_activity is None else max(timestamp - self._traffic_last_activity, 0.0)
-            self._traffic_rate_base_time = timestamp
-            self._traffic_rate_base_up = up_bytes
-            self._traffic_rate_base_down = down_bytes
             snapshot = ProxyTrafficSnapshot(
                 up_bytes=up_bytes,
                 down_bytes=down_bytes,
@@ -3002,6 +2999,9 @@ class WeakNetworkProxy:
                 last_activity_age=last_age,
             )
             if record_history:
+                self._traffic_rate_base_time = timestamp
+                self._traffic_rate_base_up = up_bytes
+                self._traffic_rate_base_down = down_bytes
                 self._traffic_history.append(timestamp, snapshot)
             return snapshot
 
