@@ -6,6 +6,12 @@ from mobileperflab import APP_VERSION
 
 
 class PackagingScriptTest(unittest.TestCase):
+    def test_startup_command_launches_mobileperflab_script(self) -> None:
+        text = Path("一键启动.command").read_text(encoding="utf-8")
+
+        self.assertIn('SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"', text)
+        self.assertIn('"$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"', text)
+
     def test_packaging_script_syncs_app_bundle_version_from_source(self) -> None:
         script = Path("一键打包.command").read_text(encoding="utf-8")
 

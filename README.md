@@ -35,6 +35,16 @@ MobilePerfLab 是一款原创桌面移动端性能测试工具，工作流参考
 python3 mobileperflab.py
 ```
 
+### 本地运行自检
+
+```bash
+python3 -m py_compile mobileperflab.py
+python3 -m unittest discover -s tests
+python3 mobileperflab.py
+```
+
+窗口应全屏打开；无真机时点击“演示模式”可查看指标卡、4 个默认图表、向下滚动查看更多图表、弱网工具和报告导出流程。
+
 ## 测试
 
 ```bash
