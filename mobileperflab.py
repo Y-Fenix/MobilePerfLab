@@ -1009,6 +1009,10 @@ def workbench_top_status_items() -> list[dict[str, str]]:
     ]
 
 
+def workbench_primary_metric_order() -> list[str]:
+    return ["fps", "cpu_percent", "memory_mb", "rx_kbps", "tx_kbps", "jank_percent", "temperature_c", "power_w"]
+
+
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
     detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
@@ -1107,16 +1111,20 @@ def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, s
 
 
 def metric_graph_layout() -> list[dict[str, object]]:
-    return [
-        {"key": "fps", "title": "帧率", "unit": "FPS", "color": "#1F8FFF", "row": 0, "col": 0},
-        {"key": "jank_percent", "title": "Jank", "unit": "%", "color": "#E8590C", "row": 0, "col": 1},
-        {"key": "cpu_percent", "title": "CPU 占用", "unit": "%", "color": "#FF8A34", "row": 1, "col": 0},
-        {"key": "memory_mb", "title": "内存", "unit": "MB", "color": "#4F46E5", "row": 1, "col": 1},
-        {"key": "temperature_c", "title": "温度", "unit": "C", "color": "#EF4444", "row": 2, "col": 0},
-        {"key": "power_w", "title": "功耗", "unit": "W", "color": "#0E9F6E", "row": 2, "col": 1},
-        {"key": "rx_kbps", "title": "网络下行", "unit": "KB/s", "color": "#16A34A", "row": 3, "col": 0},
-        {"key": "tx_kbps", "title": "网络上行", "unit": "KB/s", "color": "#0D9488", "row": 3, "col": 1},
-    ]
+    definitions = {
+        "fps": {"title": "帧率", "unit": "FPS", "color": "#1F8FFF"},
+        "cpu_percent": {"title": "CPU 占用", "unit": "%", "color": "#FF8A34"},
+        "memory_mb": {"title": "内存", "unit": "MB", "color": "#4F46E5"},
+        "rx_kbps": {"title": "网络下行", "unit": "KB/s", "color": "#16A34A"},
+        "tx_kbps": {"title": "网络上行", "unit": "KB/s", "color": "#0D9488"},
+        "jank_percent": {"title": "Jank", "unit": "%", "color": "#E8590C"},
+        "temperature_c": {"title": "温度", "unit": "C", "color": "#EF4444"},
+        "power_w": {"title": "功耗", "unit": "W", "color": "#0E9F6E"},
+    }
+    layout: list[dict[str, object]] = []
+    for index, key in enumerate(workbench_primary_metric_order()):
+        layout.append({"key": key, **definitions[key], "row": index // 2, "col": index % 2})
+    return layout
 
 
 def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:

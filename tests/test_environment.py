@@ -27,6 +27,7 @@ from mobileperflab import (
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
+    workbench_primary_metric_order,
     workbench_sidebar_steps,
     workbench_top_status_items,
 )
@@ -161,6 +162,17 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertEqual(items[0]["label"], "设备")
         self.assertEqual(items[-1]["label"], "弱网")
 
+    def test_workbench_primary_metric_order_prioritizes_core_readability(self) -> None:
+        self.assertEqual(
+            workbench_primary_metric_order(),
+            ["fps", "cpu_percent", "memory_mb", "rx_kbps", "tx_kbps", "jank_percent", "temperature_c", "power_w"],
+        )
+
+    def test_metric_graph_layout_uses_workbench_priority_for_first_four_graphs(self) -> None:
+        layout = metric_graph_layout()
+
+        self.assertEqual([item["key"] for item in layout[:4]], ["fps", "cpu_percent", "memory_mb", "rx_kbps"])
+
 
 class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:
@@ -221,13 +233,13 @@ class GraphScrollBehaviorTest(unittest.TestCase):
             keys,
             [
                 "fps",
-                "jank_percent",
                 "cpu_percent",
                 "memory_mb",
-                "temperature_c",
-                "power_w",
                 "rx_kbps",
                 "tx_kbps",
+                "jank_percent",
+                "temperature_c",
+                "power_w",
             ],
         )
         self.assertEqual(
