@@ -769,6 +769,13 @@ def weak_proxy_preview_text(endpoint: str, device: DeviceInfo | None = None) -> 
                 "配置后触发 HTTP/HTTPS 请求，并观察代理真实流量曲线。",
             ]
         )
+    elif device is None:
+        lines.extend(
+            [
+                "",
+                "iOS 手动配置：选择 iOS 设备后，在设置 > Wi-Fi > 当前网络 中填写当前代理地址。",
+            ]
+        )
     lines.extend(
         [
             "",

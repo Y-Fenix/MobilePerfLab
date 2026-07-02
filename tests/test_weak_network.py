@@ -849,6 +849,15 @@ class WeakNetworkProxyTrafficTest(unittest.TestCase):
 
 
 class ProxyTrafficFormattingTest(unittest.TestCase):
+    def test_formats_proxy_preview_without_device_mentions_ios_manual_mode(self) -> None:
+        text = weak_proxy_preview_text("192.168.1.2:18888")
+
+        self.assertIn("当前代理地址：192.168.1.2:18888", text)
+        self.assertIn("Android 写入命令", text)
+        self.assertIn("iOS 手动配置", text)
+        self.assertIn("选择 iOS 设备后", text)
+        self.assertIn("设置 > Wi-Fi > 当前网络", text)
+
     def test_formats_proxy_preview_with_ios_manual_wifi_proxy_steps(self) -> None:
         text = weak_proxy_preview_text(
             "192.168.1.2:18888",
