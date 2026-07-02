@@ -8424,6 +8424,8 @@ class App:
         self.sampler: SamplerThread | None = None
         self.device_refresh_thread: threading.Thread | None = None
         self.device_refresh_generation = 0
+        self.app_task_thread: threading.Thread | None = None
+        self.app_task_generation = 0
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.recorder = SessionRecorder()
         self.last_notes: set[str] = set()
@@ -9833,6 +9835,7 @@ class App:
         if index >= len(self.devices):
             return
         self.selected_device = self.devices[index]
+        self.app_task_generation = getattr(self, "app_task_generation", 0) + 1
         device = self.selected_device
         self.device_var.set(f"{device.display_name} · OS {device.os_version or '-'} · {device.serial}")
         self.app_hint_var.set("可直接输入包名/Bundle ID，或点击读取前台应用。")
@@ -9861,16 +9864,73 @@ class App:
             messagebox.showinfo(APP_NAME, "请先选择设备。")
             return
         self.app_hint_var.set("正在读取应用列表...")
-        self.root.update_idletasks()
-        try:
-            apps = adapter.list_apps(device)
-        except Exception as exc:
-            self.app_hint_var.set(f"读取失败：{exc}")
+        self._start_app_background_task("list_apps", device, adapter)
+
+    def _start_app_background_task(self, kind: str, device: DeviceInfo, adapter: BaseAdapter) -> None:
+        if self.app_task_thread and self.app_task_thread.is_alive():
+            self.app_hint_var.set("正在处理上一个应用任务，请稍候...")
+            self._refresh_session_chips()
             return
-        self.app_list.delete(0, tk.END)
-        for app_id in apps[:500]:
-            self.app_list.insert(tk.END, app_id)
-        self.app_hint_var.set(f"已读取 {len(apps)} 个应用。" if apps else "未读取到应用，请手动输入。")
+        self.app_task_generation = getattr(self, "app_task_generation", 0) + 1
+        generation = self.app_task_generation
+        thread = threading.Thread(
+            target=self._run_app_task_in_background,
+            args=(generation, kind, device, adapter),
+            daemon=True,
+        )
+        self.app_task_thread = thread
+        thread.start()
+        self._refresh_session_chips()
+
+    def _run_app_task_in_background(
+        self,
+        generation: int,
+        kind: str,
+        device: DeviceInfo,
+        adapter: BaseAdapter,
+    ) -> None:
+        payload: dict[str, object] = {"generation": generation, "kind": kind, "error": ""}
+        try:
+            if kind == "list_apps":
+                payload["apps"] = adapter.list_apps(device)
+            elif kind == "foreground":
+                payload["app_id"] = adapter.foreground_app(device)
+            else:
+                payload["error"] = f"未知应用任务：{kind}"
+        except Exception as exc:
+            payload["error"] = str(exc)
+        self.events.put(("app_task", payload))
+
+    def _handle_app_task_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("generation") != getattr(self, "app_task_generation", None):
+            return
+        error = str(data.get("error") or "")
+        kind = str(data.get("kind") or "")
+        if error:
+            self.app_hint_var.set(f"读取失败：{error}")
+            self._refresh_session_chips()
+            return
+        if kind == "list_apps":
+            apps = data.get("apps", [])
+            apps = apps if isinstance(apps, list) else []
+            self.app_list.delete(0, tk.END)
+            for app_id in apps[:500]:
+                self.app_list.insert(tk.END, str(app_id))
+            self.app_hint_var.set(f"已读取 {len(apps)} 个应用。" if apps else "未读取到应用，请手动输入。")
+            self._refresh_session_chips()
+            return
+        if kind == "foreground":
+            app_id = str(data.get("app_id") or "")
+            if app_id:
+                self.app_var.set(app_id)
+                self.app_hint_var.set(f"前台应用：{app_id}")
+            else:
+                self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
+            self._refresh_session_chips()
+            return
+        self.app_hint_var.set("应用任务无结果，请重试。")
+        self._refresh_session_chips()
 
     def detect_foreground_app(self) -> None:
         device = self.selected_device
@@ -9878,17 +9938,8 @@ class App:
         if not device or not adapter:
             messagebox.showinfo(APP_NAME, "请先选择设备。")
             return
-        try:
-            app_id = adapter.foreground_app(device)
-        except Exception as exc:
-            app_id = ""
-            self.append_log(f"读取前台应用失败：{exc}")
-        if app_id:
-            self.app_var.set(app_id)
-            self.app_hint_var.set(f"前台应用：{app_id}")
-        else:
-            self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
-        self._refresh_session_chips()
+        self.app_hint_var.set("正在识别前台应用...")
+        self._start_app_background_task("foreground", device, adapter)
 
     def run_collection_diagnostics(self) -> None:
         device = self.selected_device
@@ -10059,6 +10110,8 @@ class App:
                     self._handle_sample(payload)
                 elif kind == "devices":
                     self._handle_device_refresh_result(payload)
+                elif kind == "app_task":
+                    self._handle_app_task_result(payload)
                 elif kind == "log":
                     self.append_log(str(payload))
                 elif kind == "note":

@@ -653,6 +653,141 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.devices, [demo_device])
         self.assertEqual(app.render_calls, 0)
 
+    def test_refresh_apps_runs_list_apps_in_background(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeAdapter:
+            def list_apps(self, _device: DeviceInfo) -> list[str]:
+                started.set()
+                release.wait(2.0)
+                return ["com.example.game"]
+
+        started = threading.Event()
+        release = threading.Event()
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app.app_hint_var = FakeVar()
+        app.events = queue.Queue()
+        app.app_task_thread = None
+        app.app_task_generation = 0
+        app.adapter_for = lambda _device: FakeAdapter()
+        app._refresh_session_chips = lambda: None
+
+        App.refresh_apps(app)
+
+        self.assertEqual(app.app_hint_var.value, "正在读取应用列表...")
+        self.assertTrue(started.wait(0.5))
+        self.assertTrue(app.events.empty())
+        release.set()
+        app.app_task_thread.join(1.0)
+        self.assertFalse(app.events.empty())
+
+    def test_detect_foreground_app_runs_lookup_in_background(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeAdapter:
+            def foreground_app(self, _device: DeviceInfo) -> str:
+                started.set()
+                release.wait(2.0)
+                return "com.example.game"
+
+        started = threading.Event()
+        release = threading.Event()
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app.app_hint_var = FakeVar()
+        app.events = queue.Queue()
+        app.app_task_thread = None
+        app.app_task_generation = 0
+        app.adapter_for = lambda _device: FakeAdapter()
+        app._refresh_session_chips = lambda: None
+
+        App.detect_foreground_app(app)
+
+        self.assertEqual(app.app_hint_var.value, "正在识别前台应用...")
+        self.assertTrue(started.wait(0.5))
+        self.assertTrue(app.events.empty())
+        release.set()
+        app.app_task_thread.join(1.0)
+        self.assertFalse(app.events.empty())
+
+    def test_app_list_result_event_updates_list_without_blocking_selection(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.items: list[str] = ["old"]
+
+            def delete(self, _start: object, _end: object = None) -> None:
+                self.items.clear()
+
+            def insert(self, _index: object, value: str) -> None:
+                self.items.append(value)
+
+        app = object.__new__(App)
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app.app_list = FakeList()
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(app, {"generation": 1, "kind": "list_apps", "apps": ["com.a", "com.b"], "error": ""})
+
+        self.assertEqual(app.app_list.items, ["com.a", "com.b"])
+        self.assertEqual(app.app_hint_var.value, "已读取 2 个应用。")
+
+    def test_foreground_result_event_updates_app_var(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(App)
+        app.app_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(app, {"generation": 1, "kind": "foreground", "app_id": "com.example.game", "error": ""})
+
+        self.assertEqual(app.app_var.value, "com.example.game")
+        self.assertEqual(app.app_hint_var.value, "前台应用：com.example.game")
+
+    def test_stale_app_task_result_does_not_override_current_app(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(App)
+        app.app_var = FakeVar("com.current")
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 2
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(app, {"generation": 1, "kind": "foreground", "app_id": "com.old", "error": ""})
+
+        self.assertEqual(app.app_var.value, "com.current")
+        self.assertEqual(app.app_hint_var.value, "")
+
 
 class WorkbenchLayoutContractTest(unittest.TestCase):
     def test_workbench_shell_has_professional_four_region_layout(self) -> None:
