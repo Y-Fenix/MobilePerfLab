@@ -166,7 +166,9 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)
+        self.assertEqual(graph_scroll_row_step(3), 1)
         self.assertEqual(graph_scroll_row_step(-1), -1)
+        self.assertEqual(graph_scroll_row_step(-4), -1)
         self.assertEqual(graph_scroll_row_step(0), 0)
 
     def test_graph_view_rows_defaults_to_two_visible_rows(self) -> None:
