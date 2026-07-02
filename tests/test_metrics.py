@@ -449,6 +449,27 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("先触发业务动作", text)
         self.assertNotIn("可分析性能", text)
 
+    def test_live_session_usability_limits_network_fallback(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=8.0,
+                elapsed=8.0,
+                fps=58.0,
+                cpu_percent=22.0,
+                memory_mb=512.0,
+                rx_kbps=4.0,
+                tx_kbps=2.0,
+                note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
+            )
+        )
+
+        text = live_session_usability_text(health)
+
+        self.assertIn("只可参考部分指标", text)
+        self.assertIn("网络设备级兜底", text)
+        self.assertIn("先确认网络来源", text)
+        self.assertNotIn("可分析性能", text)
+
     def test_summarizes_session_confidence_foreground_and_slow_sampling(self) -> None:
         tracker = LiveQualityTracker()
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))

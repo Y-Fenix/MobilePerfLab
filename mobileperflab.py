@@ -2253,6 +2253,8 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
             limited_label = "CPU 无增量"
         elif state == "idle" and label == "网络":
             limited_label = "网络无流量"
+        elif state == "fallback" and label == "网络":
+            limited_label = "网络设备级兜底"
         else:
             limited_label = ""
         if limited_label:
@@ -2266,7 +2268,8 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
     if missing:
         return f"会话可用性：只可参考部分指标 · {'/'.join(missing)}不可用"
     if limited:
-        return f"会话可用性：只可参考部分指标 · {'、'.join(limited)} · 先触发业务动作"
+        action = "先确认网络来源" if "网络设备级兜底" in limited else "先触发业务动作"
+        return f"会话可用性：只可参考部分指标 · {'、'.join(limited)} · {action}"
     return "会话可用性：可分析性能"
 
 
