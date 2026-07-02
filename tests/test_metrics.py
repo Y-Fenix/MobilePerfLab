@@ -477,6 +477,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(collection["trend_source"], "collection")
         self.assertEqual(collection["trend_label"], "趋势：采集波动")
 
+    def test_recent_window_health_marks_limited_samples_without_collection_failure(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=0.0, note="Android FPS 当前无帧增量"),
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, note="Android CPU 当前无进程增量"),
+            PerfSample(timestamp=3.0, elapsed=3.0, fps=58.0),
+        ]
+
+        health = build_recent_window_health(samples, expected_interval=1.0, window_size=4)
+
+        self.assertEqual(health["state"], "caution")
+        self.assertEqual(health["label"], "窗口：受限")
+        self.assertEqual(health["trend_source"], "limited")
+        self.assertEqual(health["trend_label"], "趋势：样本受限")
+        self.assertEqual(health["limited_samples"], 2)
+        self.assertIn("受限 2", health["detail"])
+
     def test_status_text_includes_recent_window_health(self) -> None:
         tracker = LiveQualityTracker()
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
@@ -541,6 +557,26 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(
             live_recent_window_summary(recent_window, low_end_display_mode=False, expected_interval=1.0),
             "性能波动 · 窗口：谨慎参考 · 按真实性能分析",
+        )
+
+    def test_live_recent_window_summary_distinguishes_limited_samples(self) -> None:
+        recent_window = {
+            "state": "caution",
+            "label": "窗口：受限",
+            "trend_source": "limited",
+            "trend_label": "趋势：样本受限",
+            "slow_samples": 0,
+            "issue_samples": 0,
+            "limited_samples": 2,
+        }
+
+        self.assertEqual(
+            live_sampling_action_label(recent_window, low_end_display_mode=False, expected_interval=1.0),
+            "建议：触发真实动画、CPU 负载或网络请求",
+        )
+        self.assertEqual(
+            live_recent_window_summary(recent_window, low_end_display_mode=False, expected_interval=1.0),
+            "受限样本 · 窗口：受限 · 触发业务动作",
         )
 
     def test_performance_conclusion_status_blocks_collection_jitter(self) -> None:

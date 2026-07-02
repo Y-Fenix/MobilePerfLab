@@ -1265,6 +1265,7 @@ def build_recent_window_health(
             "sample_count": 0,
             "issue_samples": 0,
             "fallback_samples": 0,
+            "limited_samples": 0,
             "slow_samples": 0,
             "detail": "最近窗口暂无样本。",
         }
@@ -1278,12 +1279,14 @@ def build_recent_window_health(
     slow_samples = min(slow_samples, total)
     issue_samples = sum(1 for sample in window if sample_quality_tag(sample) == "issue")
     fallback_samples = sum(1 for sample in window if "设备级网络兜底" in sample.note)
+    limited_samples = sum(1 for sample in window if sample_quality_tag(sample) == "limited")
     fps_values = [float(sample.fps) for sample in window if float(sample.fps or 0.0) > 0.0]
     fps_range = max(fps_values) - min(fps_values) if len(fps_values) >= 2 else 0.0
     fps_average = sum(fps_values) / len(fps_values) if fps_values else 0.0
     fps_variation_percent = fps_range / max(fps_average, 1.0) * 100.0 if fps_values else 0.0
     issue_ratio = issue_samples / total
     fallback_ratio = fallback_samples / total
+    limited_ratio = limited_samples / total
     slow_ratio = slow_samples / total
     if fps_variation_percent >= 25.0 and (slow_samples or issue_samples):
         trend_source = "collection"
@@ -1294,6 +1297,9 @@ def build_recent_window_health(
     elif slow_samples or issue_samples:
         trend_source = "collection"
         trend_label = "趋势：采集波动"
+    elif limited_samples:
+        trend_source = "limited"
+        trend_label = "趋势：样本受限"
     else:
         trend_source = "stable"
         trend_label = "趋势：平稳"
@@ -1303,15 +1309,21 @@ def build_recent_window_health(
     elif fallback_ratio >= 0.5:
         state = "caution"
         label = "窗口：网络兜底"
+    elif limited_ratio >= 0.5:
+        state = "caution"
+        label = "窗口：受限"
     elif issue_samples or slow_samples or fallback_samples:
         state = "caution"
         label = "窗口：谨慎参考"
+    elif limited_samples:
+        state = "caution"
+        label = "窗口：受限"
     else:
         state = "good"
         label = "窗口：稳定"
     detail = (
         f"最近 {total} 个样本：慢采样 {slow_samples}，"
-        f"异常 {issue_samples}，网络兜底 {fallback_samples}，"
+        f"异常 {issue_samples}，网络兜底 {fallback_samples}，受限 {limited_samples}，"
         f"FPS 波动 {fps_variation_percent:.1f}%。"
     )
     return {
@@ -1322,6 +1334,7 @@ def build_recent_window_health(
         "sample_count": total,
         "issue_samples": issue_samples,
         "fallback_samples": fallback_samples,
+        "limited_samples": limited_samples,
         "slow_samples": slow_samples,
         "fps_variation_percent": round(fps_variation_percent, 1),
         "detail": detail,
@@ -1351,12 +1364,15 @@ def live_sampling_action_label(
     slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     fallback_samples = int(recent_window.get("fallback_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    limited_samples = int(recent_window.get("limited_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     if state == "waiting":
         return "建议：等待更多样本"
     if trend_source == "collection" or slow_samples or issue_samples or low_end_display_mode:
         return f"建议：采样间隔调到 {next_low_end_interval_label(expected_interval)}，优先看稳定展示"
     if fallback_samples:
         return "建议：先确认网络来源"
+    if trend_source == "limited" or limited_samples:
+        return "建议：触发真实动画、CPU 负载或网络请求"
     if trend_source == "performance":
         return "建议：按真实性能波动分析"
     return "建议：继续采集"
@@ -1373,6 +1389,7 @@ def live_recent_window_summary(
     slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     fallback_samples = int(recent_window.get("fallback_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    limited_samples = int(recent_window.get("limited_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     if state == "waiting":
         return "等待数据 · 窗口：等待数据 · 继续采集"
     if trend_source == "collection" or slow_samples or issue_samples or low_end_display_mode:
@@ -1381,6 +1398,8 @@ def live_recent_window_summary(
         return f"性能波动 · {label} · 按真实性能分析"
     if fallback_samples:
         return f"网络兜底 · {label} · 确认网络来源"
+    if trend_source == "limited" or limited_samples:
+        return f"受限样本 · {label} · 触发业务动作"
     return f"采集稳定 · {label} · 继续采集"
 
 

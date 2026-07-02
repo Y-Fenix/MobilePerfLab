@@ -524,6 +524,12 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn('"qualityTag": "limited"', html_text)
         self.assertIn("受限样本", html_text)
         self.assertIn("2 / 100.0%", html_text)
+        self.assertEqual(quality["recent_window"]["state"], "caution")
+        self.assertEqual(quality["recent_window"]["label"], "窗口：受限")
+        self.assertEqual(quality["recent_window"]["trend_source"], "limited")
+        self.assertEqual(quality["recent_window"]["limited_samples"], 2)
+        self.assertEqual(quality["recent_window"]["summary"], "受限样本 · 窗口：受限 · 触发业务动作")
+        self.assertIn("受限样本 · 窗口：受限 · 触发业务动作", html_text)
 
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [
