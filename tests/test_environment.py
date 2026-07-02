@@ -215,6 +215,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn('format_workbench_status_chip("质量"', text)
         self.assertIn('format_workbench_status_chip("弱网"', text)
 
+    def test_control_rail_renders_step_titles_without_long_help_text(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        sidebar_start = text.index("def _build_sidebar")
+        sidebar_end = text.index("def refresh_recommended_sampling_interval_label", sidebar_start)
+        sidebar_body = text[sidebar_start:sidebar_end]
+
+        self.assertIn("for step in workbench_sidebar_steps()", sidebar_body)
+        self.assertIn("StepTitle.TLabel", text)
+        self.assertIn("StepDetail.TLabel", text)
+        self.assertIn("1 连接设备", text)
+        self.assertIn("2 选择应用", text)
+        self.assertIn("3 采集自检", text)
+        self.assertIn("4 开始采集", text)
+
 
 class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:

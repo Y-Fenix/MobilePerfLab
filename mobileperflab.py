@@ -8104,6 +8104,9 @@ class App:
         style.configure("TopTitle.TLabel", background="#172235", foreground="#FFFFFF", font=("Helvetica", 18, "bold"))
         style.configure("TopSub.TLabel", background="#172235", foreground="#B5C4D8", font=("Helvetica", 11))
         style.configure("Sidebar.TFrame", background="#FFFFFF")
+        style.configure("Step.TFrame", background="#F8FAFC")
+        style.configure("StepTitle.TLabel", background="#F8FAFC", foreground="#18212F", font=("Helvetica", 11, "bold"))
+        style.configure("StepDetail.TLabel", background="#F8FAFC", foreground="#64748B", font=("Helvetica", 9))
         style.configure("Panel.TFrame", background="#FFFFFF", relief="solid", borderwidth=1)
         style.configure("PanelBody.TFrame", background="#FFFFFF")
         style.configure("Card.TFrame", background="#FFFFFF", relief="solid", borderwidth=1)
@@ -8208,10 +8211,20 @@ class App:
     def _build_sidebar(self, master: tk.Widget) -> None:
         sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        sidebar.rowconfigure(4, weight=1)
-        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        sidebar.rowconfigure(5, weight=1)
+        steps_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        steps_panel.grid(row=0, column=0, sticky="ew")
+        steps_panel.columnconfigure(0, weight=1)
+        step_row = 0
+        for step in workbench_sidebar_steps():
+            row = ttk.Frame(steps_panel, style="Step.TFrame", padding=(10, 8))
+            row.grid(row=step_row, column=0, sticky="ew", pady=(0 if step_row == 0 else 6, 0))
+            ttk.Label(row, text=step["title"], style="StepTitle.TLabel").pack(anchor="w")
+            ttk.Label(row, text=step["detail"], style="StepDetail.TLabel", wraplength=270).pack(anchor="w", pady=(2, 0))
+            step_row += 1
+        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(14, 0))
         filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        filter_row.grid(row=1, column=0, sticky="ew", pady=(10, 8))
+        filter_row.grid(row=2, column=0, sticky="ew", pady=(10, 8))
         for label in ("All", "Android", "iOS", "Demo"):
             ttk.Radiobutton(
                 filter_row,
@@ -8221,7 +8234,7 @@ class App:
                 command=self._render_devices,
             ).pack(side="left", padx=(0, 8))
         button_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        button_row.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        button_row.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         ttk.Button(button_row, text="刷新设备", style="Tool.TButton", command=self.refresh_devices).pack(side="left")
         ttk.Button(button_row, text="演示模式", style="Tool.TButton", command=self.use_demo_devices).pack(side="left", padx=(8, 0))
         self.device_tree = ttk.Treeview(sidebar, columns=("platform", "status"), show="tree headings", height=8)
@@ -8231,10 +8244,10 @@ class App:
         self.device_tree.column("#0", width=164, stretch=True)
         self.device_tree.column("platform", width=72, anchor="center")
         self.device_tree.column("status", width=70, anchor="center")
-        self.device_tree.grid(row=3, column=0, sticky="ew")
+        self.device_tree.grid(row=4, column=0, sticky="ew")
         self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
         app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        app_panel.grid(row=4, column=0, sticky="nsew", pady=(16, 0))
+        app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
         app_panel.columnconfigure(0, weight=1)
         ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
@@ -8259,7 +8272,7 @@ class App:
         self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
         ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, sticky="ew")
         settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        settings.grid(row=5, column=0, sticky="ew", pady=(16, 0))
+        settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
