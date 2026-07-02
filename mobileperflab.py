@@ -1056,7 +1056,7 @@ def graph_display_series_for_context(
     if not smoothing_enabled:
         return normalized
     quality_values = list(qualities or [])
-    has_visible_issue = any(quality in {"issue", "fallback"} for quality in quality_values)
+    has_visible_issue = any(quality in {"issue", "fallback", "limited"} for quality in quality_values)
     if not low_end_display_mode and not has_visible_issue:
         return normalized
     alpha = 0.2 if low_end_display_mode else 0.28

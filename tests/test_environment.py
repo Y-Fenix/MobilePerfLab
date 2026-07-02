@@ -188,6 +188,21 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
         self.assertLess(display_range, raw_range)
 
+    def test_graph_context_series_smooths_limited_quality_points_before_low_end_mode(self) -> None:
+        raw = [(0.0, 60.0), (1.0, 0.0), (2.0, 58.0), (3.0, 55.0)]
+
+        display = graph_display_series_for_context(
+            raw,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+            qualities=["ok", "limited", "ok", "ok"],
+        )
+
+        raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
+        display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
+        self.assertEqual(len(display), len(raw))
+        self.assertLess(display_range, raw_range)
+
     def test_graph_axis_ignores_single_quality_spike_but_keeps_real_performance_spike(self) -> None:
         issue_axis = graph_display_max_value(
             [(0.0, 58.0, "ok"), (1.0, 300.0, "issue"), (2.0, 57.0, "ok")],
