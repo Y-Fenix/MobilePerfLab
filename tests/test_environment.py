@@ -230,6 +230,37 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("3 采集自检", text)
         self.assertIn("4 开始采集", text)
 
+    def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        diagnostics_start = text.index("def _build_diagnostics_rail")
+        diagnostics_end = text.index("def _build_header", diagnostics_start)
+        diagnostics_body = text[diagnostics_start:diagnostics_end]
+
+        self.assertIn("采集链路", diagnostics_body)
+        self.assertIn("弱网状态", diagnostics_body)
+        self.assertIn("质量事件", diagnostics_body)
+        self.assertIn("日志", diagnostics_body)
+        self.assertIn("self.collection_link_vars", diagnostics_body)
+        self.assertIn("self.weak_live_summary_var", diagnostics_body)
+        self.assertIn("self.quality_event_tree", diagnostics_body)
+        self.assertIn("self.log_text", diagnostics_body)
+        self.assertNotIn("将在这里汇总", diagnostics_body)
+
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end_marker = "def _build_bottom_event_log_area"
+        dashboard_end = (
+            text.index(dashboard_end_marker, dashboard_start)
+            if dashboard_end_marker in text[dashboard_start:]
+            else text.index("def _build_metric_health_strip", dashboard_start)
+        )
+        dashboard_body = text[dashboard_start:dashboard_end]
+
+        self.assertNotIn("self.quality_event_tree", dashboard_body)
+        self.assertNotIn("self.log_text", dashboard_body)
+        self.assertNotIn('text="质量事件"', dashboard_body)
+        self.assertNotIn('text="日志"', dashboard_body)
+
 
 class GraphScrollBehaviorTest(unittest.TestCase):
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:

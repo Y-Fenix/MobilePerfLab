@@ -8188,13 +8188,77 @@ class App:
         rail = ttk.Frame(master, style="Panel.TFrame", padding=(12, 12))
         rail.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
         rail.columnconfigure(0, weight=1)
-        ttk.Label(rail, text="诊断", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            rail,
-            text="采集链路、弱网状态、质量事件和日志将在这里汇总。",
-            style="Muted.TLabel",
-            wraplength=320,
-        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        rail.rowconfigure(3, weight=1)
+        rail.rowconfigure(4, weight=1)
+
+        ttk.Label(rail, text="采集链路", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        link_grid = ttk.Frame(rail, style="PanelBody.TFrame")
+        link_grid.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        link_grid.columnconfigure(0, weight=1)
+        for row, label in enumerate(("前台", "PID", "UID", "FPS", "网络")):
+            variable = tk.StringVar(value=f"{label}: 等待")
+            self.collection_link_vars[label] = variable
+            ttk.Label(link_grid, textvariable=variable, style="Health.TLabel", wraplength=320).grid(
+                row=row,
+                column=0,
+                sticky="ew",
+                pady=(0 if row == 0 else 5, 0),
+            )
+        self._reset_collection_links()
+
+        weak_panel = ttk.Frame(rail, style="PanelBody.TFrame")
+        weak_panel.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        weak_panel.columnconfigure(0, weight=1)
+        ttk.Label(weak_panel, text="弱网状态", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(weak_panel, textvariable=self.weak_readiness_var, style="GraphValue.TLabel", wraplength=320).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        ttk.Label(weak_panel, textvariable=self.weak_live_summary_var, style="Muted.TLabel", wraplength=320).grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(4, 0),
+        )
+
+        event_panel = ttk.Frame(rail, style="PanelBody.TFrame")
+        event_panel.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
+        event_panel.columnconfigure(0, weight=1)
+        event_panel.rowconfigure(1, weight=1)
+        ttk.Label(event_panel, text="质量事件", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        self.quality_event_tree = ttk.Treeview(
+            event_panel,
+            columns=("time", "kind", "detail"),
+            show="headings",
+            height=7,
+        )
+        self.quality_event_tree.heading("time", text="时间")
+        self.quality_event_tree.heading("kind", text="类型")
+        self.quality_event_tree.heading("detail", text="说明")
+        self.quality_event_tree.column("time", width=62, anchor="center", stretch=False)
+        self.quality_event_tree.column("kind", width=88, anchor="center", stretch=False)
+        self.quality_event_tree.column("detail", width=180, stretch=True)
+        self.quality_event_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+
+        log_panel = ttk.Frame(rail, style="PanelBody.TFrame")
+        log_panel.grid(row=4, column=0, sticky="nsew", pady=(14, 0))
+        log_panel.columnconfigure(0, weight=1)
+        log_panel.rowconfigure(1, weight=1)
+        ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        self.log_text = tk.Text(
+            log_panel,
+            height=7,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+            bg="#FFFFFF",
+            fg="#243044",
+            font=("Menlo", 10),
+        )
+        self.log_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.log_text.configure(state="disabled")
 
     def _build_header(self, master: tk.Widget) -> None:
         self._build_session_bar(master)
@@ -8594,7 +8658,6 @@ class App:
             )
 
         self._build_metric_health_strip(main, row=3)
-        self._build_collection_link_strip(main, row=4)
 
         self.graph_panel_row_height = 176
         self.graph_row_gap = 10
@@ -8603,7 +8666,7 @@ class App:
         self.graph_visible_rows = graph_visible_rows_for_height(screen_height)
         graph_view_height = format_graph_view_height(self.graph_visible_rows, self.graph_panel_row_height, self.graph_row_gap, 22)
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=5, column=0, sticky="ew")
+        graph_view.grid(row=4, column=0, sticky="ew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
@@ -8652,9 +8715,7 @@ class App:
         self._bind_graph_mousewheel(graph_view)
 
         bottom = ttk.Frame(main, style="Root.TFrame")
-        bottom.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
-        bottom.columnconfigure(1, weight=1)
-        bottom.columnconfigure(2, weight=1)
+        bottom.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
         bottom.rowconfigure(0, weight=1)
         marker_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
         marker_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
@@ -8662,37 +8723,6 @@ class App:
         ttk.Entry(marker_panel, textvariable=self.marker_var, width=18).grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(marker_panel, text="添加", style="Tool.TButton", command=self.add_marker).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         ttk.Button(marker_panel, text="截图", style="Tool.TButton", command=self.capture_screenshot).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        quality_event_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
-        quality_event_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
-        ttk.Label(quality_event_panel, text="质量事件", style="PanelTitle.TLabel").pack(anchor="w")
-        self.quality_event_tree = ttk.Treeview(
-            quality_event_panel,
-            columns=("time", "kind", "detail"),
-            show="headings",
-            height=5,
-        )
-        self.quality_event_tree.heading("time", text="时间")
-        self.quality_event_tree.heading("kind", text="类型")
-        self.quality_event_tree.heading("detail", text="说明")
-        self.quality_event_tree.column("time", width=70, anchor="center", stretch=False)
-        self.quality_event_tree.column("kind", width=96, anchor="center", stretch=False)
-        self.quality_event_tree.column("detail", width=280, stretch=True)
-        self.quality_event_tree.pack(fill="both", expand=True, pady=(8, 0))
-        log_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
-        log_panel.grid(row=0, column=2, sticky="nsew")
-        ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").pack(anchor="w")
-        self.log_text = tk.Text(
-            log_panel,
-            height=6,
-            wrap="word",
-            borderwidth=0,
-            highlightthickness=0,
-            bg="#FFFFFF",
-            fg="#243044",
-            font=("Menlo", 11),
-        )
-        self.log_text.pack(fill="both", expand=True, pady=(8, 0))
-        self.log_text.configure(state="disabled")
 
     def _build_metric_health_strip(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
