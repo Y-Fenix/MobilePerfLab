@@ -2,6 +2,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$SCRIPT_DIR/reports"
+STARTUP_LOG="$SCRIPT_DIR/reports/startup.log"
 if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
   PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
 else
@@ -35,6 +37,13 @@ fi
 PYTHON_APP_EXEC=""
 if [ -n "$PYTHON_APP" ]; then
   PYTHON_APP_EXEC="$PYTHON_APP/Contents/MacOS/Python"
+fi
+
+if [[ "$OSTYPE" == darwin* ]] && [ -d "$PYTHON_APP" ]; then
+  if open -na "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py" >> "$STARTUP_LOG" 2>&1; then
+    exit 0
+  fi
+  echo "macOS GUI 静默启动失败，回落到当前窗口启动。" >> "$STARTUP_LOG"
 fi
 
 if [ -x "$PYTHON_APP_EXEC" ]; then

@@ -13,9 +13,22 @@ class PackagingScriptTest(unittest.TestCase):
         self.assertIn('GUI_PYTHON_BIN="$(command -v python3 || true)"', text)
         self.assertIn('Resources/Python.app', text)
         self.assertIn('PYTHON_APP_EXEC="$PYTHON_APP/Contents/MacOS/Python"', text)
+        self.assertIn('STARTUP_LOG="$SCRIPT_DIR/reports/startup.log"', text)
+        self.assertIn('open -na "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"', text)
+        self.assertIn('exit 0', text)
         self.assertIn('"$PYTHON_APP_EXEC" "$SCRIPT_DIR/mobileperflab.py"', text)
-        self.assertNotIn('open -n -a "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"', text)
         self.assertIn('"$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"', text)
+
+    def test_startup_command_keeps_terminal_free_after_macos_gui_launch(self) -> None:
+        text = Path("一键启动.command").read_text(encoding="utf-8")
+
+        open_index = text.index('open -na "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"')
+        exit_index = text.index("exit 0", open_index)
+        fallback_index = text.index('"$PYTHON_APP_EXEC" "$SCRIPT_DIR/mobileperflab.py"', exit_index)
+
+        self.assertLess(open_index, exit_index)
+        self.assertLess(exit_index, fallback_index)
+        self.assertIn('mkdir -p "$SCRIPT_DIR/reports"', text)
 
     def test_packaging_script_syncs_app_bundle_version_from_source(self) -> None:
         script = Path("一键打包.command").read_text(encoding="utf-8")
