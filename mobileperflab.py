@@ -891,9 +891,10 @@ def format_weak_network_config(config: dict[str, object]) -> str:
 
 def format_quality_mode_label(smoothing_enabled: bool, low_end_bias: bool) -> str:
     smoothing_text = "稳定曲线：开" if smoothing_enabled else "稳定曲线：关"
+    report_text = "报告：稳态+原始" if smoothing_enabled else "报告：原始采样"
     if smoothing_enabled and low_end_bias:
-        return f"{smoothing_text} · 低端机保守模式"
-    return f"{smoothing_text} · 报告：原始采样"
+        return f"{smoothing_text} · 低端机保守模式 · {report_text}"
+    return f"{smoothing_text} · {report_text}"
 
 
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:

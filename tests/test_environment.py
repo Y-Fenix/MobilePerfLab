@@ -221,8 +221,8 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
 class QualityModeLabelTest(unittest.TestCase):
     def test_formats_low_end_bias_label(self) -> None:
-        self.assertEqual(format_quality_mode_label(True, False), "稳定曲线：开 · 报告：原始采样")
-        self.assertEqual(format_quality_mode_label(True, True), "稳定曲线：开 · 低端机保守模式")
+        self.assertEqual(format_quality_mode_label(True, False), "稳定曲线：开 · 报告：稳态+原始")
+        self.assertEqual(format_quality_mode_label(True, True), "稳定曲线：开 · 低端机保守模式 · 报告：稳态+原始")
         self.assertEqual(format_quality_mode_label(False, True), "稳定曲线：关 · 报告：原始采样")
 
     def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
