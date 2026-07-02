@@ -1369,12 +1369,15 @@ def metric_graph_layout() -> list[dict[str, object]]:
 def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:
     issue_count = sum(1 for _elapsed, _value, quality in points if quality == "issue")
     fallback_count = sum(1 for _elapsed, _value, quality in points if quality == "fallback")
+    recovery_count = sum(1 for _elapsed, _value, quality in points if quality == "recovery")
     limited_count = sum(1 for _elapsed, _value, quality in points if quality == "limited")
     parts: list[str] = []
     if issue_count:
         parts.append(f"异常 {issue_count}")
     if fallback_count:
         parts.append(f"兜底 {fallback_count}")
+    if recovery_count:
+        parts.append(f"恢复 {recovery_count}")
     if limited_count:
         parts.append(f"受限 {limited_count}")
     return " · ".join(parts)
@@ -1386,7 +1389,7 @@ def graph_quality_badge_text_for_context(
     low_end_display_mode: bool,
 ) -> str:
     base = graph_quality_badge_text(points)
-    has_visible_issue = any(quality in {"issue", "fallback", "limited"} for _elapsed, _value, quality in points)
+    has_visible_issue = any(quality in {"issue", "fallback", "recovery", "limited"} for _elapsed, _value, quality in points)
     if smoothing_enabled and (low_end_display_mode or has_visible_issue):
         return " · ".join(part for part in (base, "稳态") if part)
     return base
@@ -1451,7 +1454,7 @@ def graph_display_series_for_context(
     if not smoothing_enabled:
         return normalized
     quality_values = list(qualities or [])
-    has_visible_issue = any(quality in {"issue", "fallback", "limited"} for quality in quality_values)
+    has_visible_issue = any(quality in {"issue", "fallback", "recovery", "limited"} for quality in quality_values)
     if not low_end_display_mode and not has_visible_issue:
         return normalized
     alpha = 0.2 if low_end_display_mode else 0.28
@@ -1553,7 +1556,7 @@ def primary_quality_issue_note(note: str) -> str:
 def sample_quality_tag(sample: PerfSample) -> str:
     note = sample.note or ""
     if "恢复窗口内" in note:
-        return "fallback"
+        return "recovery"
     if note_has_quality_issue(note):
         return "issue"
     if "设备级网络兜底" in note:
@@ -2506,7 +2509,7 @@ def quality_intervals_from_points(points: list[tuple[float, str]]) -> list[dict[
     active_start: float | None = None
     active_end: float | None = None
     for elapsed, quality in sorted(points, key=lambda item: item[0]):
-        tag = quality if quality in ("issue", "fallback", "limited") else "ok"
+        tag = quality if quality in ("issue", "fallback", "recovery", "limited") else "ok"
         current = float(elapsed)
         if tag == "ok":
             if active_start is not None and active_end is not None:
@@ -2535,6 +2538,8 @@ def quality_interval_label(quality: str, note: str = "") -> str:
         return "采样耗时过长"
     if "目标应用不在前台" in note:
         return "目标离开前台"
+    if quality == "recovery":
+        return "前台恢复窗口"
     if quality == "fallback":
         return "设备级兜底"
     if quality == "issue":
@@ -3130,6 +3135,8 @@ class MetricStabilizer:
             weight = 1.0
         elif quality_tag == "fallback":
             weight = 0.65
+        elif quality_tag == "recovery":
+            weight = 0.65
         if not note:
             return weight
         tokens = (
@@ -3145,7 +3152,7 @@ class MetricStabilizer:
 
     @staticmethod
     def _should_isolate_quality_sample(quality_tag: str) -> bool:
-        return quality_tag in {"issue", "fallback", "limited"}
+        return quality_tag in {"issue", "fallback", "recovery", "limited"}
 
     def _quality_hold_extension(
         self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok"
@@ -7327,6 +7334,7 @@ class SessionRecorder:
     .legend-item { display: inline-flex; align-items: center; gap: 7px; }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; background: #2563eb; display: inline-block; }
     .legend-ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #f59e0b; display: inline-block; }
+    .legend-diamond { width: 11px; height: 11px; background: #a855f7; transform: rotate(45deg); display: inline-block; }
     .legend-square { width: 10px; height: 10px; border-radius: 2px; background: #38bdf8; display: inline-block; }
     .legend-triangle { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 11px solid #ef4444; display: inline-block; }
     .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -7377,6 +7385,7 @@ class SessionRecorder:
       <span class="legend-item">粗线：稳定展示</span>
       <span class="legend-item">细线：原始值</span>
       <span class="legend-item"><span class="legend-ring"></span>设备级网络兜底</span>
+      <span class="legend-item"><span class="legend-diamond"></span>前台恢复窗口</span>
       <span class="legend-item"><span class="legend-square"></span>受限样本</span>
       <span class="legend-item"><span class="legend-triangle"></span>采集异常样本</span>
       <span class="legend-item">浅蓝/浅橙/浅红背景表示连续受限、兜底或异常区间</span>
@@ -7519,7 +7528,7 @@ class SessionRecorder:
     function sampleQualityTag(sample) {
       const note = String(sample.note || '');
       if (sample.qualityTag) return sample.qualityTag;
-      if (note.includes('恢复窗口内')) return 'fallback';
+      if (note.includes('恢复窗口内')) return 'recovery';
       const issueTokens = ['未采集', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
       if (!note.includes('目标应用刚回到前台') && issueTokens.some(token => note.includes(token))) return 'issue';
       if (note.includes('设备级网络兜底')) return 'fallback';
@@ -7548,6 +7557,15 @@ class SessionRecorder:
         ctx.restore();
         return;
       }
+      if (tag === 'recovery') {
+        ctx.save();
+        ctx.fillStyle = '#a855f7';
+        ctx.translate(x, y);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillRect(-5, -5, 10, 10);
+        ctx.restore();
+        return;
+      }
       if (tag === 'issue') {
         ctx.save();
         ctx.fillStyle = '#ef4444';
@@ -7568,7 +7586,7 @@ class SessionRecorder:
         .map(point => ({ elapsed: Number(point.elapsed || 0), quality: sampleQualityTag(point) }))
         .sort((left, right) => left.elapsed - right.elapsed)
         .forEach(point => {
-          const tag = ['issue', 'fallback', 'limited'].includes(point.quality) ? point.quality : 'ok';
+          const tag = ['issue', 'fallback', 'recovery', 'limited'].includes(point.quality) ? point.quality : 'ok';
           if (tag === 'ok') {
             if (active) intervals.push(active);
             active = null;
@@ -7595,6 +7613,8 @@ class SessionRecorder:
           ? 'rgba(239, 68, 68, 0.10)'
           : interval.quality === 'limited'
             ? 'rgba(56, 189, 248, 0.12)'
+            : interval.quality === 'recovery'
+              ? 'rgba(168, 85, 247, 0.12)'
             : 'rgba(245, 158, 11, 0.14)';
         ctx.fillRect(x1, pad.top, x2 - x1, plotH);
         ctx.restore();
@@ -8172,6 +8192,8 @@ class GraphPanel(ttk.Frame):
                 fill = "#FEE2E2"
             elif quality == "limited":
                 fill = "#E0F2FE"
+            elif quality == "recovery":
+                fill = "#F3E8FF"
             else:
                 fill = "#FEF3C7"
             canvas.create_rectangle(x1, pad_top, x2, pad_top + plot_h, fill=fill, outline="")
@@ -8181,6 +8203,8 @@ class GraphPanel(ttk.Frame):
         for x, y, quality in quality_points:
             if quality == "fallback":
                 canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2)
+            elif quality == "recovery":
+                canvas.create_polygon(x, y - 6, x + 6, y, x, y + 6, x - 6, y, fill="#A855F7", outline="#FFFFFF")
             elif quality == "limited":
                 canvas.create_rectangle(x - 4.8, y - 4.8, x + 4.8, y + 4.8, fill="#38BDF8", outline="#FFFFFF", width=1)
             elif quality == "issue":

@@ -1030,7 +1030,7 @@ class SampleQualityTagTest(unittest.TestCase):
                     note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
                 )
             ),
-            "fallback",
+            "recovery",
         )
 
 
@@ -1044,9 +1044,11 @@ class QualityIntervalsTest(unittest.TestCase):
                 (3.0, "ok"),
                 (4.0, "fallback"),
                 (5.0, "fallback"),
-                (6.0, "limited"),
-                (7.0, "limited"),
-                (8.0, "ok"),
+                (6.0, "recovery"),
+                (7.0, "recovery"),
+                (8.0, "limited"),
+                (9.0, "limited"),
+                (10.0, "ok"),
             ]
         )
 
@@ -1055,7 +1057,8 @@ class QualityIntervalsTest(unittest.TestCase):
             [
                 {"start": 1.0, "end": 2.0, "quality": "issue"},
                 {"start": 4.0, "end": 5.0, "quality": "fallback"},
-                {"start": 6.0, "end": 7.0, "quality": "limited"},
+                {"start": 6.0, "end": 7.0, "quality": "recovery"},
+                {"start": 8.0, "end": 9.0, "quality": "limited"},
             ],
         )
 
@@ -1071,7 +1074,7 @@ class QualityIntervalsTest(unittest.TestCase):
             note="Android 网络使用设备级网络兜底，非目标 App 独占流量。",
         )
 
-        self.assertEqual(quality_interval_label("fallback", recovery.note), "前台恢复窗口")
+        self.assertEqual(quality_interval_label("recovery", recovery.note), "前台恢复窗口")
         self.assertEqual(quality_interval_label("fallback", network.note), "设备级兜底")
         self.assertEqual(quality_interval_label("limited", "Android FPS 当前无帧增量"), "受限样本")
         self.assertEqual(quality_interval_label("issue", "采样耗时 1.60s 超过采样间隔 1.00s"), "采样耗时过长")
