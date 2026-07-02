@@ -292,9 +292,14 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(availability["power_w"]["state"], "unavailable")
         self.assertEqual(availability["rx_kbps"]["state"], "unavailable")
         self.assertEqual(availability["tx_kbps"]["source"], "network_source=missing")
+        self.assertEqual(payload["quality"]["performance_conclusion"]["state"], "unavailable")
+        self.assertEqual(payload["quality"]["performance_conclusion"]["label"], "先恢复关键指标")
+        self.assertIn("FPS/CPU/网络不可用", payload["quality"]["performance_conclusion"]["detail"])
         self.assertIn("指标可用性", html_text)
         self.assertIn("FPS", html_text)
         self.assertIn("不可用", html_text)
+        self.assertIn("先恢复关键指标", html_text)
+        self.assertNotIn("结论可信", html_text)
         self.assertIn("memory_mb", json.dumps(payload["quality"]["metric_availability"], ensure_ascii=False))
 
     def test_metric_availability_marks_per_uid_zero_network_as_idle(self) -> None:

@@ -1512,7 +1512,7 @@ def constrain_performance_conclusion_by_usability(
     health: dict[str, "MetricHealth"],
 ) -> dict[str, str]:
     status = dict(status)
-    if status.get("state") == "blocked":
+    if status.get("state") == "blocked" and status.get("label") == "先修采集链路":
         return status
     required = {
         "fps": "FPS",
@@ -2060,6 +2060,30 @@ def build_session_usability(
         "detail": "FPS、CPU 和上下行网络等关键指标可用，可结合业务动作分析性能趋势。",
         "action": "继续结合标记、异常区间和弱网命中状态分析。",
     }
+
+
+def health_from_metric_availability(metric_availability: list[dict[str, object]]) -> dict[str, MetricHealth]:
+    state_map = {
+        "available": "ok",
+        "partial": "ok",
+        "fallback": "fallback",
+        "idle": "idle",
+        "no_frame_delta": "no_frame_delta",
+        "no_cpu_delta": "no_cpu_delta",
+        "unavailable": "missing",
+        "waiting": "waiting",
+    }
+    health: dict[str, MetricHealth] = {}
+    for item in metric_availability:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", ""))
+        if not key:
+            continue
+        state = state_map.get(str(item.get("state", "")), "waiting")
+        detail = str(item.get("detail", "") or metric_availability_state_label(str(item.get("state", ""))))
+        health[key] = MetricHealth(state, MetricHealthAnalyzer.LABELS.get(state, state), detail)
+    return health
 
 
 def build_display_strategy(
@@ -6288,6 +6312,7 @@ class SessionRecorder:
             quality["metric_availability"],
             quality["quality_gate"] if isinstance(quality.get("quality_gate"), dict) else {},
         )
+        self._constrain_report_performance_conclusion(quality)
         return quality
 
     @staticmethod
@@ -6320,6 +6345,38 @@ class SessionRecorder:
         recent_window["action"] = live_sampling_action_label(recent_window, conservative_display, self.expected_interval)
         recent_window["summary"] = live_recent_window_summary(recent_window, conservative_display, self.expected_interval)
         quality["performance_conclusion"] = performance_conclusion_status(recent_window)
+        self._constrain_report_performance_conclusion(quality)
+
+    @staticmethod
+    def _constrain_report_performance_conclusion(quality: dict[str, object]) -> None:
+        metric_availability = quality.get("metric_availability", [])
+        if not isinstance(metric_availability, list):
+            return
+        current = quality["performance_conclusion"] if isinstance(quality.get("performance_conclusion"), dict) else {}
+        if current.get("state") == "blocked" and current.get("label") == "先修采集链路":
+            health = health_from_metric_availability(metric_availability)
+            missing_core = [
+                label
+                for metric, label in {
+                    "fps": "FPS",
+                    "cpu_percent": "CPU",
+                    "rx_kbps": "网络",
+                    "tx_kbps": "网络",
+                }.items()
+                if health.get(metric) is not None and health[metric].state in {"missing", "waiting"}
+            ]
+            if missing_core:
+                missing_text = "/".join(dict.fromkeys(missing_core))
+                quality["performance_conclusion"] = {
+                    "state": "unavailable",
+                    "label": "先恢复关键指标",
+                    "detail": f"{missing_text}不可用，不能判断流畅度、CPU 占用或目标 App 上下行。",
+                }
+            return
+        quality["performance_conclusion"] = constrain_performance_conclusion_by_usability(
+            current,
+            health_from_metric_availability(metric_availability),
+        )
 
     def export_bundle(self, folder: Path, weak_network: dict[str, object] | None = None) -> tuple[Path, Path, Path]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -6377,6 +6434,7 @@ class SessionRecorder:
             quality["metric_availability"],
             quality["quality_gate"] if isinstance(quality.get("quality_gate"), dict) else {},
         )
+        self._constrain_report_performance_conclusion(quality)
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
         display_strategy = quality["display_strategy"]
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
