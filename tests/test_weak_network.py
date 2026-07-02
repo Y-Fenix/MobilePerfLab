@@ -1141,6 +1141,28 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertEqual(payload["diagnostics"]["rows"][2]["state"], "已确认")
         self.assertEqual(payload["diagnostics"]["rows"][3]["detail"], "Android 可连接本机代理端口")
 
+    def test_report_payload_risk_message_names_ios_manual_proxy_requirement(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready"),
+            current_proxy="",
+            proxy_reachable=None,
+        )
+
+        payload = build_weak_network_report_payload(
+            True,
+            "192.168.1.2:18888",
+            ProxyTrafficSnapshot(),
+            [],
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(payload["effectiveness"]["state"], "ios_manual_proxy")
+        self.assertIn("iOS 手动配置", payload["risk_message"])
+        self.assertIn("Wi-Fi HTTP 代理", payload["risk_message"])
+        self.assertIn("192.168.1.2:18888", payload["risk_message"])
+
 
 class ProxyTrafficHistoryTest(unittest.TestCase):
     def test_keeps_recent_proxy_rate_points_for_live_chart(self) -> None:

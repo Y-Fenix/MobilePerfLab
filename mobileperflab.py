@@ -970,6 +970,9 @@ def build_weak_network_report_payload(
         traffic_state,
         diagnostics,
     )
+    ios_manual_risk = ""
+    if effectiveness.get("state") == "ios_manual_proxy":
+        ios_manual_risk = f"iOS 手动配置 Wi-Fi HTTP 代理后才可确认弱网命中，代理地址：{endpoint}。"
     payload: dict[str, object] = {
         "running": running,
         "endpoint": endpoint,
@@ -978,7 +981,10 @@ def build_weak_network_report_payload(
         "hit_status": weak_hit_status_text(running, traffic_state),
         "effectiveness": effectiveness,
         "readiness_display": weak_readiness_display_text(effectiveness.get("test_readiness", {})),
-        "risk_message": weak_network_risk_message(traffic_state),
+        "risk_message": append_risk_message(
+            weak_network_risk_message(traffic_state),
+            ios_manual_risk,
+        ),
         "summary": format_live_proxy_summary(running, endpoint, snapshot, diagnostics=diagnostics),
         "config": dict(config or {}),
         "snapshot": asdict(snapshot),
