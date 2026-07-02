@@ -6848,7 +6848,25 @@ class SessionRecorder:
         data = json.dumps(report_samples, ensure_ascii=False).replace("</", "<\\/")
         display_data = json.dumps(display_samples, ensure_ascii=False).replace("</", "<\\/")
         markers = json.dumps(self.markers, ensure_ascii=False).replace("</", "<\\/")
-        chart_config = [dict(config, axisMax=axis_max_by_metric.get(str(config["key"]), 1.0)) for config in chart_config]
+        def availability_for_chart(key: str) -> dict[str, str]:
+            availability_key = "fps" if key == "jank_percent" else key
+            item = availability_by_key.get(availability_key)
+            if not isinstance(item, dict):
+                return {"availabilityState": "", "availabilityLabel": ""}
+            state = str(item.get("state", ""))
+            return {
+                "availabilityState": state,
+                "availabilityLabel": metric_availability_state_label(state),
+            }
+
+        chart_config = [
+            dict(
+                config,
+                axisMax=axis_max_by_metric.get(str(config["key"]), 1.0),
+                **availability_for_chart(str(config["key"])),
+            )
+            for config in chart_config
+        ]
         charts = json.dumps(chart_config, ensure_ascii=False).replace("</", "<\\/")
         html_text = """<!doctype html>
 <html lang="zh-CN">
@@ -7334,7 +7352,11 @@ class SessionRecorder:
       const peak = values.length ? Math.max(...values) : 0;
       const stat = document.getElementById(`stat-${config.key}`);
       if (stat) {
-        stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`;
+        if (['unavailable', 'waiting'].includes(config.availabilityState)) {
+          stat.textContent = config.availabilityLabel;
+        } else {
+          stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`;
+        }
       }
       if (stickToEnd) {
         scroller.dataset.autoScrolling = '1';
