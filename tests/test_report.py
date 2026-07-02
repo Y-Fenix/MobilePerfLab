@@ -506,6 +506,8 @@ class ReportExportTest(unittest.TestCase):
         labels = {str(issue["label"]) for issue in quality["issues"]}
 
         self.assertEqual(quality["quality_gate"]["label"], "高可信")
+        self.assertEqual(quality["limited_samples"], 2)
+        self.assertEqual(quality["limited_percent"], 100.0)
         self.assertEqual(quality["display_strategy"]["mode"], "standard")
         self.assertEqual(checklist["fps"]["state"], "warning")
         self.assertIn("无新增帧", checklist["fps"]["detail"])
@@ -521,6 +523,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertNotIn('"qualityTag": "issue"', html_text)
         self.assertIn('"qualityTag": "limited"', html_text)
         self.assertIn("受限样本", html_text)
+        self.assertIn("2 / 100.0%", html_text)
 
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [

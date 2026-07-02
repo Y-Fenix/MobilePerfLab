@@ -5970,6 +5970,8 @@ class SessionRecorder:
                 "network_source": "无数据",
                 "network_fallback_samples": 0,
                 "network_fallback_percent": 0.0,
+                "limited_samples": 0,
+                "limited_percent": 0.0,
                 "issues": [],
             }
             quality["recent_window"] = build_recent_window_health([], expected_interval=self.expected_interval)
@@ -5987,6 +5989,7 @@ class SessionRecorder:
         noted_samples = [sample for sample in self.samples if sample.note]
         fallback_samples = [sample for sample in self.samples if "设备级网络兜底" in sample.note]
         issue_count = sum(1 for sample in self.samples if sample_quality_tag(sample) == "issue")
+        limited_samples = [sample for sample in self.samples if sample_quality_tag(sample) == "limited"]
         foreground_count = sum(1 for sample in self.samples if "目标应用不在前台" in sample.note)
         cadence = sampling_cadence_summary(self.samples, expected_interval=self.expected_interval)
         cadence_slow_count = int(cadence.get("slow_intervals", 0) or 0)
@@ -6066,6 +6069,8 @@ class SessionRecorder:
             "network_source": network_source,
             "network_fallback_samples": len(fallback_samples),
             "network_fallback_percent": round(len(fallback_samples) / total * 100.0, 1),
+            "limited_samples": len(limited_samples),
+            "limited_percent": round(len(limited_samples) / total * 100.0, 1),
             "issues": issues,
         }
         quality["recent_window"] = build_recent_window_health(self.samples, expected_interval=self.expected_interval)
@@ -6311,6 +6316,7 @@ class SessionRecorder:
                 ),
                 ("样本数", str(quality.get("sample_count", 0)), "本次报告中的原始采样点数量。"),
                 ("带说明样本", f"{quality.get('noted_samples', 0)} / {quality.get('noted_percent', 0)}%", "出现采集说明、异常或兜底提示的样本。"),
+                ("受限样本", f"{quality.get('limited_samples', 0)} / {quality.get('limited_percent', 0)}%", "FPS 无新增帧、CPU 无增量或网络无流量；不计入异常，但会限制性能结论。"),
                 ("网络来源", str(quality.get("network_source", "无数据")), "优先目标 App per-UID；不可用时可能使用设备级兜底。"),
                 ("网络兜底", f"{quality.get('network_fallback_samples', 0)} / {quality.get('network_fallback_percent', 0)}%", "设备级网络兜底不是目标 App 独占流量。"),
             ]
