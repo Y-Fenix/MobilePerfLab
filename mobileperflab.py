@@ -9421,7 +9421,28 @@ class App:
             self.weak_proxy.stop()
         except Exception:
             pass
+        try:
+            self._cleanup_ios_service_process()
+        except Exception as exc:
+            self.append_log(f"退出前停止 iOS 采集服务失败：{exc}")
         self.root.destroy()
+
+    def _cleanup_ios_service_process(self) -> None:
+        process = getattr(self, "ios_service_process", None)
+        if process is None:
+            return
+        self.ios_service_process = None
+        try:
+            if process.poll() is not None:
+                return
+            process.terminate()
+            try:
+                process.wait(timeout=2.0)
+            except Exception:
+                process.kill()
+            self.append_log("退出前已停止 iOS 采集服务后台进程。")
+        except Exception as exc:
+            self.append_log(f"退出前停止 iOS 采集服务失败：{exc}")
 
     def start_ios_service(self) -> None:
         tool = getattr(getattr(self, "ios", None), "pymobiledevice3", None) or resolve_pymobiledevice3_path()

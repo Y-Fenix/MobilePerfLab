@@ -190,6 +190,60 @@ class IOSServiceLaunchTest(unittest.TestCase):
         self.assertIn("点击 iOS采集服务", text)
         self.assertIn("静默尝试启动", text)
 
+    def test_exit_cleanup_stops_only_ios_service_process_started_by_app(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.killed = False
+
+            def poll(self) -> None:
+                return None
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float) -> None:
+                raise TimeoutError("still running")
+
+            def kill(self) -> None:
+                self.killed = True
+
+        process = FakeProcess()
+        app = object.__new__(App)
+        app.ios_service_process = process
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+
+        App._cleanup_ios_service_process(app)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertIsNone(app.ios_service_process)
+        self.assertIn("退出前已停止 iOS 采集服务后台进程。", app.logs)
+
+    def test_exit_cleanup_ignores_missing_or_already_stopped_ios_service_process(self) -> None:
+        class StoppedProcess:
+            def __init__(self) -> None:
+                self.terminated = False
+
+            def poll(self) -> int:
+                return 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+        process = StoppedProcess()
+        app = object.__new__(App)
+        app.ios_service_process = process
+        app.logs: list[str] = []
+        app.append_log = lambda text: app.logs.append(text)
+
+        App._cleanup_ios_service_process(app)
+
+        self.assertFalse(process.terminated)
+        self.assertIsNone(app.ios_service_process)
+        self.assertEqual(app.logs, [])
+
 
 class FullscreenStartupTest(unittest.TestCase):
     def test_fullscreen_prefers_zoomed_state(self) -> None:
