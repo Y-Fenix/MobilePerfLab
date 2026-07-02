@@ -9711,7 +9711,7 @@ class App:
         for graph in self.graphs.values():
             graph.reset()
         for card in self.cards.values():
-            card.set_value(0.0, "等待数据")
+            card.set_value("--", "等待数据")
         self._reset_metric_health()
         self._reset_collection_links()
         self._refresh_graph_time_axis()

@@ -1030,6 +1030,54 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(app.cards["tx_kbps"].sub, "设备级网络兜底，非目标 App 独占流量")
         self.assertNotEqual(app.cards["tx_kbps"].sub, "发送速率")
 
+    def test_reset_metrics_uses_waiting_placeholders_not_zero_values(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.reset_called = False
+
+            def reset(self) -> None:
+                self.reset_called = True
+
+        app = object.__new__(App)
+        app.graphs = {item["key"]: FakeGraph() for item in metric_graph_layout()}
+        app.cards = {item["key"]: FakeCard() for item in metric_graph_layout()}
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.stabilizer = MetricStabilizer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app._clear_quality_events = lambda: None
+        app._refresh_graph_time_axis = lambda: None
+
+        App._reset_metrics(app)
+
+        self.assertTrue(all(graph.reset_called for graph in app.graphs.values()))
+        self.assertTrue(all(card.value == "--" for card in app.cards.values()))
+        self.assertTrue(all(card.sub == "等待数据" for card in app.cards.values()))
+
     def test_handle_sample_updates_live_performance_conclusion(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
