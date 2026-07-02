@@ -7675,7 +7675,7 @@ class App:
         self.performance_conclusion_var = tk.StringVar(value="性能结论：等待更多样本 · 样本不足，暂不输出性能结论。")
         self.quality_var = tk.StringVar(value="采集质量：等待数据")
         self.smoothing_var = tk.BooleanVar(value=True)
-        self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")
+        self.quality_mode_var = tk.StringVar(value=format_quality_mode_label(True, False))
         self.weak_profile_var = tk.StringVar(value="弱网")
         self.weak_port_var = tk.StringVar(value="18888")
         self.weak_latency_var = tk.StringVar(value="300")

@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from mobileperflab import (
     AndroidCollectionDiagnostics,
@@ -224,6 +225,14 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(format_quality_mode_label(True, False), "稳定曲线：开 · 报告：稳态+原始")
         self.assertEqual(format_quality_mode_label(True, True), "稳定曲线：开 · 低端机保守模式 · 报告：稳态+原始")
         self.assertEqual(format_quality_mode_label(False, True), "稳定曲线：关 · 报告：原始采样")
+
+    def test_app_default_quality_mode_label_matches_default_smoothing_state(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn('self.smoothing_var = tk.BooleanVar(value=True)', text)
+        self.assertIn('self.quality_mode_var = tk.StringVar(value=format_quality_mode_label(True, False))', text)
+        self.assertNotIn('self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")', text)
 
     def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
         self.assertIn("1.5", SAMPLING_INTERVAL_OPTIONS)
