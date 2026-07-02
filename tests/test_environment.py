@@ -708,6 +708,24 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn('text="质量事件"', dashboard_body)
         self.assertNotIn('text="日志"', dashboard_body)
 
+    def test_diagnostics_rail_owns_event_marker_controls(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        diagnostics_start = text.index("def _build_diagnostics_rail")
+        diagnostics_end = text.index("def _build_header", diagnostics_start)
+        diagnostics_body = text[diagnostics_start:diagnostics_end]
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
+        dashboard_body = text[dashboard_start:dashboard_end]
+
+        self.assertIn("事件标记", diagnostics_body)
+        self.assertIn("self.marker_var", diagnostics_body)
+        self.assertIn("command=self.add_marker", diagnostics_body)
+        self.assertIn("command=self.capture_screenshot", diagnostics_body)
+        self.assertNotIn("事件标记", dashboard_body)
+        self.assertNotIn("command=self.add_marker", dashboard_body)
+        self.assertNotIn("command=self.capture_screenshot", dashboard_body)
+
     def test_workbench_styles_use_professional_neutral_palette(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")

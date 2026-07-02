@@ -8701,8 +8701,8 @@ class App:
         rail = ttk.Frame(master, style="Panel.TFrame", padding=(12, 12))
         rail.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
         rail.columnconfigure(0, weight=1)
-        rail.rowconfigure(3, weight=1)
         rail.rowconfigure(4, weight=1)
+        rail.rowconfigure(5, weight=1)
 
         ttk.Label(rail, text="采集链路", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         link_grid = ttk.Frame(rail, style="PanelBody.TFrame")
@@ -8736,8 +8736,28 @@ class App:
             pady=(4, 0),
         )
 
+        marker_panel = ttk.Frame(rail, style="PanelBody.TFrame")
+        marker_panel.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        marker_panel.columnconfigure(0, weight=1)
+        ttk.Label(marker_panel, text="事件标记", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Entry(marker_panel, textvariable=self.marker_var).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(marker_panel, text="添加", style="Tool.TButton", command=self.add_marker).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(8, 0),
+            pady=(8, 0),
+        )
+        ttk.Button(marker_panel, text="截图", style="Tool.TButton", command=self.capture_screenshot).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
         event_panel = ttk.Frame(rail, style="PanelBody.TFrame")
-        event_panel.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
+        event_panel.grid(row=4, column=0, sticky="nsew", pady=(14, 0))
         event_panel.columnconfigure(0, weight=1)
         event_panel.rowconfigure(1, weight=1)
         ttk.Label(event_panel, text="质量事件", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
@@ -8756,7 +8776,7 @@ class App:
         self.quality_event_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
         log_panel = ttk.Frame(rail, style="PanelBody.TFrame")
-        log_panel.grid(row=4, column=0, sticky="nsew", pady=(14, 0))
+        log_panel.grid(row=5, column=0, sticky="nsew", pady=(14, 0))
         log_panel.columnconfigure(0, weight=1)
         log_panel.rowconfigure(1, weight=1)
         ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
@@ -9206,16 +9226,6 @@ class App:
         self.graph_canvas.configure(scrollregion=(0, 0, 1, graph_rows * self.graph_row_scroll_pixels))
         self._set_graph_scrollbar_state()
         self._bind_graph_mousewheel(graph_view)
-
-        bottom = ttk.Frame(main, style="Root.TFrame")
-        bottom.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
-        bottom.rowconfigure(0, weight=1)
-        marker_panel = ttk.Frame(bottom, style="Panel.TFrame", padding=(12, 10))
-        marker_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
-        ttk.Label(marker_panel, text="事件标记", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Entry(marker_panel, textvariable=self.marker_var, width=18).grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(marker_panel, text="添加", style="Tool.TButton", command=self.add_marker).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Button(marker_panel, text="截图", style="Tool.TButton", command=self.capture_screenshot).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     def _build_metric_health_strip(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
