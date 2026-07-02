@@ -719,6 +719,12 @@ def weak_network_test_readiness(effectiveness_state: str) -> dict[str, str]:
             "label": "确认目标流量",
             "detail": "代理已有流量，但还不能证明来自目标 App。",
         }
+    if effectiveness_state == "ios_manual_proxy":
+        return {
+            "state": "blocked",
+            "label": "配置 iOS 代理",
+            "detail": "iOS 需要先手动配置 Wi-Fi HTTP 代理，再用真实流量确认弱网命中。",
+        }
     return {
         "state": "blocked",
         "label": "先修弱网链路",

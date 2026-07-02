@@ -514,6 +514,8 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["state"], "ios_manual_proxy")
         self.assertEqual(result["label"], "iOS 手动代理待确认")
         self.assertEqual(result["test_readiness"]["state"], "blocked")
+        self.assertEqual(result["test_readiness"]["label"], "配置 iOS 代理")
+        self.assertIn("Wi-Fi HTTP 代理", result["test_readiness"]["detail"])
         action = str(result["action"])
         self.assertIn("设置 > Wi-Fi > 当前网络", action)
         self.assertIn("Wi-Fi HTTP 代理", action)
