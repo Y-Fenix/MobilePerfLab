@@ -637,7 +637,10 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(by_key["port_reachability"]["state"], "ok")
         self.assertEqual(by_key["proxy_traffic"]["state"], "waiting")
         self.assertEqual(by_key["target_hit"]["state"], "blocked")
+        self.assertIn("App 有上下行", by_key["proxy_traffic"]["detail"])
+        self.assertIn("代理未捕获", by_key["proxy_traffic"]["detail"])
         self.assertIn("疑似绕过代理", by_key["target_hit"]["detail"])
+        self.assertIn("QUIC/UDP", by_key["target_hit"]["detail"])
 
     def test_proxy_hit_without_app_traffic_still_requires_target_confirmation(self) -> None:
         diagnostics = build_weak_network_diagnostics(
@@ -662,6 +665,29 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertLess(result["score"], 100)
         self.assertIn("代理已捕获流量", result["detail"])
         self.assertIn("目标 App 上下行", result["action"])
+
+    def test_status_lights_show_target_confirmation_action_when_proxy_has_unattributed_traffic(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        lights = weak_network_status_lights(
+            running=True,
+            traffic_state="hit",
+            diagnostics=diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+        by_key = {light["key"]: light for light in lights}
+
+        self.assertEqual(by_key["proxy_traffic"]["state"], "ok")
+        self.assertEqual(by_key["target_hit"]["state"], "warning")
+        self.assertIn("代理有流量，目标待确认", by_key["target_hit"]["detail"])
+        self.assertIn("目标 App 上下行", by_key["target_hit"]["detail"])
 
     def test_scores_possible_proxy_bypass_when_app_has_traffic_but_proxy_waits(self) -> None:
         diagnostics = build_weak_network_diagnostics(

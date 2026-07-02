@@ -629,6 +629,7 @@ def weak_network_status_lights(
     app_rx_kbps: float = 0.0,
     app_tx_kbps: float = 0.0,
 ) -> list[dict[str, str]]:
+    app_has_traffic = max(float(app_rx_kbps or 0.0), 0.0) > 0.0 or max(float(app_tx_kbps or 0.0), 0.0) > 0.0
     rows = _weak_network_diagnostic_rows(diagnostics)
     effectiveness = build_weak_network_effectiveness(
         running,
@@ -679,6 +680,9 @@ def weak_network_status_lights(
     elif traffic_state == "dropped":
         proxy_state = "warning"
         proxy_detail = "代理已有丢弃命中，结合业务日志确认目标请求。"
+    elif traffic_state == "waiting" and app_has_traffic:
+        proxy_state = "waiting"
+        proxy_detail = "App 有上下行但代理未捕获，疑似绕过系统代理。"
     else:
         proxy_state = "waiting"
         proxy_detail = "代理链路就绪后，在 App 内触发 HTTP/HTTPS 请求。"
@@ -686,6 +690,10 @@ def weak_network_status_lights(
     effect_state = str(effectiveness.get("state", "off"))
     effect_label = str(effectiveness.get("label", "未知"))
     effect_detail = str(effectiveness.get("detail", ""))
+    effect_action = str(effectiveness.get("action", ""))
+    target_detail = f"{effect_label}：{effect_detail}"
+    if effect_action and effect_state in {"bypass", "target_unconfirmed"}:
+        target_detail = f"{target_detail} 下一步：{effect_action}"
     if effect_state == "effective":
         target_state = "ok"
     elif effect_state in {"waiting", "target_unconfirmed", "dropped", "ios_manual_proxy"}:
@@ -698,7 +706,7 @@ def weak_network_status_lights(
         {"key": "device_proxy", "label": "设备代理", "state": device_state, "detail": device_detail},
         {"key": "port_reachability", "label": "端口连通", "state": port_state, "detail": port_detail},
         {"key": "proxy_traffic", "label": "代理流量", "state": proxy_state, "detail": proxy_detail},
-        {"key": "target_hit", "label": "目标命中", "state": target_state, "detail": f"{effect_label}：{effect_detail}"},
+        {"key": "target_hit", "label": "目标命中", "state": target_state, "detail": target_detail},
     ]
 
 
