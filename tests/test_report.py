@@ -234,6 +234,7 @@ class ReportExportTest(unittest.TestCase):
 
         recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
         ordered_keys = [item["key"] for item in payload["quality"]["recommendations"]]
+        recommendation_summary = payload["quality"]["recommendation_summary"]
 
         self.assertIn("fps", recommendations)
         self.assertIn("network", recommendations)
@@ -250,6 +251,9 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("uid_source=missing", recommendations["uid"]["reason"])
         self.assertIn("重新选择当前前台应用", recommendations["pid"]["action"])
         self.assertIn("dumpsys package", recommendations["uid"]["action"])
+        self.assertEqual(recommendation_summary["p0_count"], 5)
+        self.assertIn("P0 5项", recommendation_summary["label"])
+        self.assertIn("P0 5项", html_text)
         self.assertIn("<th>优先级</th>", html_text)
         self.assertIn("<td>P0</td>", html_text)
         self.assertIn("fps_source=missing", html_text)

@@ -6706,6 +6706,7 @@ class SessionRecorder:
             quality["validation_checklist"] = build_validation_checklist([], quality)
             quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
             self._add_sampling_action_recommendation(quality)
+            self._update_recommendation_summary(quality)
             quality["metric_availability"] = build_metric_availability([], quality)
             quality["session_usability"] = build_session_usability(
                 quality["metric_availability"],
@@ -6805,6 +6806,7 @@ class SessionRecorder:
         quality["validation_checklist"] = build_validation_checklist(self.samples, quality)
         quality["recommendations"] = build_quality_recommendations(quality["validation_checklist"])
         self._add_sampling_action_recommendation(quality)
+        self._update_recommendation_summary(quality)
         quality["metric_availability"] = build_metric_availability(self.samples, quality)
         quality["session_usability"] = build_session_usability(
             quality["metric_availability"],
@@ -6833,6 +6835,34 @@ class SessionRecorder:
                 "action": f"{action.replace('建议：', '')}曲线；复测后再用原始曲线确认真实性能波动。",
             }
         )
+
+    @staticmethod
+    def _update_recommendation_summary(quality: dict[str, object]) -> None:
+        recommendations = quality.get("recommendations", [])
+        counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+        if isinstance(recommendations, list):
+            for item in recommendations:
+                if not isinstance(item, dict):
+                    continue
+                priority = str(item.get("priority", "P3") or "P3")
+                counts[priority if priority in counts else "P3"] += 1
+        total = sum(counts.values())
+        label = f"P0 {counts['P0']}项 · P1 {counts['P1']}项 · P2 {counts['P2']}项" if total else "暂无修复建议"
+        if counts["P0"] > 0:
+            detail = "优先修复 P0 采集链路，再判断性能和弱网结论。"
+        elif total:
+            detail = "按优先级处理建议，复测后再导出报告。"
+        else:
+            detail = "当前报告未生成修复建议。"
+        quality["recommendation_summary"] = {
+            "label": label,
+            "detail": detail,
+            "p0_count": counts["P0"],
+            "p1_count": counts["P1"],
+            "p2_count": counts["P2"],
+            "p3_count": counts["P3"],
+            "total": total,
+        }
 
     def _update_recent_window_guidance(self, quality: dict[str, object]) -> None:
         recent_window = quality.get("recent_window", {})
@@ -6923,6 +6953,7 @@ class SessionRecorder:
             collection_diagnostics_payload,
         )
         self._add_sampling_action_recommendation(quality)
+        self._update_recommendation_summary(quality)
         quality["metric_availability"] = build_metric_availability(
             self.samples,
             quality,
@@ -6938,6 +6969,7 @@ class SessionRecorder:
         conservative_display = isinstance(display_strategy, dict) and display_strategy.get("mode") == "conservative"
         self._update_recent_window_guidance(quality)
         self._add_sampling_action_recommendation(quality)
+        self._update_recommendation_summary(quality)
         display_samples = build_display_samples(
             self.samples,
             conservative=conservative_display,
@@ -7062,6 +7094,9 @@ class SessionRecorder:
         session_usability = quality.get("session_usability", {})
         if not isinstance(session_usability, dict):
             session_usability = {}
+        recommendation_summary = quality.get("recommendation_summary", {})
+        if not isinstance(recommendation_summary, dict):
+            recommendation_summary = {}
         quality_cards = "".join(
             "<article class='quality-card'>"
             f"<span>{html.escape(label)}</span>"
@@ -7098,6 +7133,11 @@ class SessionRecorder:
                     "会话可用性",
                     str(session_usability.get("label", "等待更多样本")),
                     f"{session_usability.get('detail', '样本不足，暂无法判断会话可用性。')} {session_usability.get('action', '')}".strip(),
+                ),
+                (
+                    "修复优先级",
+                    str(recommendation_summary.get("label", "暂无修复建议")),
+                    str(recommendation_summary.get("detail", "当前报告未生成修复建议。")),
                 ),
                 (
                     "展示策略",
