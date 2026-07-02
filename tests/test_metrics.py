@@ -698,6 +698,40 @@ class SampleQualityTagTest(unittest.TestCase):
 
         self.assertEqual(sample_quality_tag(sample), "ok")
 
+    def test_does_not_mark_no_delta_samples_as_collection_issue(self) -> None:
+        fps_idle = PerfSample(
+            timestamp=1.0,
+            elapsed=1.0,
+            fps=0.0,
+            note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+        )
+        cpu_idle = PerfSample(
+            timestamp=2.0,
+            elapsed=2.0,
+            fps=58.0,
+            cpu_percent=0.0,
+            note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+        )
+
+        self.assertEqual(sample_quality_tag(fps_idle), "ok")
+        self.assertEqual(sample_quality_tag(cpu_idle), "ok")
+        self.assertIsNone(quality_event_from_sample(fps_idle))
+        self.assertIsNone(quality_event_from_sample(cpu_idle))
+
+    def test_keeps_hard_collection_issue_when_no_delta_note_is_mixed_with_failure(self) -> None:
+        sample = PerfSample(
+            timestamp=1.0,
+            elapsed=1.0,
+            fps=0.0,
+            note="Android FPS 当前无帧增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "issue")
+        self.assertEqual(
+            quality_event_from_sample(sample),
+            ("1.0s", "采集异常", "Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"),
+        )
+
     def test_classifies_slow_sampling_window_as_issue(self) -> None:
         sample = PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)
         annotated = append_sampling_latency_note(sample, spent_seconds=1.6, interval_seconds=1.0)
@@ -824,6 +858,18 @@ class QualityEventTest(unittest.TestCase):
 
     def test_ignores_ok_sample(self) -> None:
         self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))
+
+    def test_ignores_no_delta_samples_as_realtime_events(self) -> None:
+        self.assertIsNone(
+            quality_event_from_sample(
+                PerfSample(timestamp=1.0, elapsed=1.0, fps=0.0, note="Android FPS 当前无帧增量")
+            )
+        )
+        self.assertIsNone(
+            quality_event_from_sample(
+                PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, note="Android CPU 当前无进程增量")
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -447,6 +447,77 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("PID 可用", availability["cpu_percent"]["detail"])
         self.assertIn("CPU 无增量", html_text)
 
+    def test_no_delta_report_states_do_not_count_as_collection_failures(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="ok",
+                summary="Android 采集链路正常",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "已获取", "101"),
+                    ("UID", "已获取", "10234"),
+                    ("FPS", "可用", "gfxinfo counters"),
+                    ("网络", "per-UID", "目标 App 独占上下行"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="pidof",
+                pids=[101],
+                uid_source="dumpsys package",
+                uid=10234,
+                fps_source="gfxinfo counters",
+                network_source="per-UID",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=512.0,
+                rx_kbps=0.0,
+                tx_kbps=0.0,
+                note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=0.0,
+                cpu_percent=0.0,
+                memory_mb=514.0,
+                rx_kbps=0.0,
+                tx_kbps=0.0,
+                note="Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        quality = payload["quality"]
+        checklist = {item["key"]: item for item in quality["validation_checklist"]}
+        labels = {str(issue["label"]) for issue in quality["issues"]}
+
+        self.assertEqual(quality["quality_gate"]["label"], "高可信")
+        self.assertEqual(quality["display_strategy"]["mode"], "standard")
+        self.assertEqual(checklist["fps"]["state"], "warning")
+        self.assertIn("无新增帧", checklist["fps"]["detail"])
+        self.assertEqual(checklist["cpu"]["state"], "warning")
+        self.assertIn("CPU 无增量", checklist["cpu"]["detail"])
+        self.assertNotIn("FPS 无帧增量", labels)
+        self.assertNotIn("CPU 无进程增量", labels)
+        self.assertIn("只可参考部分指标", quality["session_usability"]["label"])
+        self.assertIn("FPS 无新增帧", quality["session_usability"]["detail"])
+        self.assertIn("CPU 无增量", quality["session_usability"]["detail"])
+        self.assertNotIn('"qualityTag": "issue"', html_text)
+
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [
             {"key": "fps", "state": "unavailable", "coverage_percent": 0.0},

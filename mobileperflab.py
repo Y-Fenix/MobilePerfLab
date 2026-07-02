@@ -1078,8 +1078,6 @@ def graph_display_max_value(
 
 QUALITY_ISSUE_TOKENS = (
     "未采集",
-    "无帧增量",
-    "无进程增量",
     "未匹配",
     "无法按应用统计",
     "采集失败",
@@ -1438,11 +1436,15 @@ def build_validation_checklist(
             {"key": "sample", "name": "采样数据", "state": "waiting", "detail": "暂无样本，无法判断实机采集链路。"}
         ]
 
-    fps_issue = note_count("FPS 未采集", "FPS 当前无帧增量", "无帧增量")
+    fps_issue = note_count("FPS 未采集")
+    fps_no_delta = note_count("FPS 当前无帧增量", "无帧增量")
     fps_positive = positive_count("fps")
     if fps_issue:
         fps_state = "fail" if fps_positive == 0 or fps_issue / total >= 0.3 else "warning"
-        fps_detail = f"FPS 链路出现 {fps_issue}/{total} 个异常样本，请检查 Surface/gfxinfo/页面是否静止。"
+        fps_detail = f"FPS 链路出现 {fps_issue}/{total} 个采集失败样本，请检查 Surface/gfxinfo。"
+    elif fps_no_delta:
+        fps_state = "warning"
+        fps_detail = f"FPS 来源可用但 {fps_no_delta}/{total} 个样本无新增帧，请确认页面是否静止或拉长低端机采样窗口。"
     elif fps_positive:
         fps_state = "pass"
         fps_detail = f"FPS 链路有 {fps_positive}/{total} 个有效样本。"
@@ -1450,11 +1452,15 @@ def build_validation_checklist(
         fps_state = "waiting"
         fps_detail = "FPS 尚无有效样本。"
 
-    cpu_issue = note_count("CPU 当前无进程增量", "CPU 采集失败")
+    cpu_issue = note_count("CPU 采集失败")
+    cpu_no_delta = note_count("CPU 当前无进程增量")
     cpu_positive = positive_count("cpu_percent")
     if cpu_issue:
         cpu_state = "fail" if cpu_positive == 0 or cpu_issue / total > 0.5 else "warning"
         cpu_detail = f"CPU 链路出现 {cpu_issue}/{total} 个异常样本，请检查目标 PID 和 /proc 读取权限。"
+    elif cpu_no_delta:
+        cpu_state = "warning"
+        cpu_detail = f"PID 可用但 {cpu_no_delta}/{total} 个样本 CPU 无增量，进程空闲或采样窗口过短时常见。"
     elif cpu_positive:
         cpu_state = "pass"
         cpu_detail = f"CPU 链路有 {cpu_positive}/{total} 个有效样本。"
@@ -1799,11 +1805,24 @@ def build_session_usability(
         "tx_kbps": "网络",
     }
     missing_labels: list[str] = []
+    limited_labels: list[str] = []
     for key, label in required.items():
         item = availability_by_key.get(key)
         state = str(item.get("state", "waiting") if isinstance(item, dict) else "waiting")
         coverage = float(item.get("coverage_percent", 0.0) or 0.0) if isinstance(item, dict) else 0.0
         if state in {"unavailable", "waiting"} or coverage <= 0.0:
+            if state == "no_frame_delta":
+                limited = "FPS 无新增帧"
+            elif state == "no_cpu_delta":
+                limited = "CPU 无增量"
+            elif state == "idle" and label == "网络":
+                limited = "网络无流量"
+            else:
+                limited = ""
+            if limited:
+                if limited not in limited_labels:
+                    limited_labels.append(limited)
+                continue
             if label not in missing_labels:
                 missing_labels.append(label)
     gate = quality_gate if isinstance(quality_gate, dict) else {}
@@ -1816,6 +1835,14 @@ def build_session_usability(
             "label": "只可参考部分指标",
             "detail": f"{missing_text}不可用，本次报告只能参考已采到的内存、温度等指标；质量门禁：{gate_label}。",
             "action": "不能用于判断流畅度、CPU 占用或目标 App 上下行；先执行采集自检，修复 FPS/CPU/网络链路后再复测。",
+        }
+    if limited_labels:
+        limited_text = "、".join(limited_labels)
+        return {
+            "state": "limited",
+            "label": "只可参考部分指标",
+            "detail": f"{limited_text}，关键链路有来源但当前缺少有效变化；质量门禁：{gate_label}。",
+            "action": "先制造真实动画、CPU 负载和上下行业务请求，低端机可把采样间隔调到 1.5s 或 2s 后复测。",
         }
     if gate_state == "bad":
         return {
@@ -5948,8 +5975,6 @@ class SessionRecorder:
         slow_count = max(noted_slow_count, cadence_slow_count)
         missing_tokens = {
             "FPS 未采集": ("FPS 未采集", "帧率数据缺失，通常与 Surface 识别、页面静止或系统输出受限有关。"),
-            "FPS 当前无帧增量": ("FPS 无帧增量", "采样窗口内没有新增帧，低端机或静止页面可能更常见。"),
-            "CPU 当前无进程增量": ("CPU 无进程增量", "CPU 进程计数未变化，可能是采样间隔过短或 /proc 读取受限。"),
             "CPU 采集失败": ("CPU 采集失败", "CPU 采集通道失败，本轮仍保留其它可用指标。"),
             "内存 采集失败": ("内存采集失败", "内存采集通道失败，本轮仍保留其它可用指标。"),
             "网络未匹配": ("网络未匹配 UID", "未拿到目标 App UID，无法确认 per-UID 上下行。"),
@@ -6119,6 +6144,10 @@ class SessionRecorder:
             self.samples,
             quality,
             collection_diagnostics_payload,
+        )
+        quality["session_usability"] = build_session_usability(
+            quality["metric_availability"],
+            quality["quality_gate"] if isinstance(quality.get("quality_gate"), dict) else {},
         )
         quality["display_strategy"] = build_display_strategy(self.samples, quality)
         display_strategy = quality["display_strategy"]
