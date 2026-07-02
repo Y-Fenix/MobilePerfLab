@@ -7925,20 +7925,24 @@ class App:
         self.root.after(250, self._drain_events)
         self.root.after(1000, self._tick)
 
+    @staticmethod
+    def _open_fullscreen_window_for_root(root: tk.Tk) -> None:
+        try:
+            root.state("zoomed")
+            return
+        except Exception:
+            pass
+        try:
+            root.attributes("-zoomed", True)
+            return
+        except Exception:
+            pass
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.geometry(f"{width}x{height}+0+0")
+
     def _open_fullscreen_window(self) -> None:
-        try:
-            self.root.state("zoomed")
-            return
-        except Exception:
-            pass
-        try:
-            self.root.attributes("-zoomed", True)
-            return
-        except Exception:
-            pass
-        width = self.root.winfo_screenwidth()
-        height = self.root.winfo_screenheight()
-        self.root.geometry(f"{width}x{height}+0+0")
+        self._open_fullscreen_window_for_root(self.root)
 
     def _threadsafe_log(self, text: str) -> None:
         self.events.put(("log", text))

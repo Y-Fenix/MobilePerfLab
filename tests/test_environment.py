@@ -27,6 +27,32 @@ from mobileperflab import (
 )
 
 
+class FakeFullscreenRoot:
+    def __init__(self, fail_state: bool = False, fail_attributes: bool = False) -> None:
+        self.fail_state = fail_state
+        self.fail_attributes = fail_attributes
+        self.calls: list[tuple[str, object]] = []
+
+    def state(self, value: str) -> None:
+        self.calls.append(("state", value))
+        if self.fail_state:
+            raise RuntimeError("state unsupported")
+
+    def attributes(self, key: str, value: bool) -> None:
+        self.calls.append(("attributes", (key, value)))
+        if self.fail_attributes:
+            raise RuntimeError("attributes unsupported")
+
+    def winfo_screenwidth(self) -> int:
+        return 1440
+
+    def winfo_screenheight(self) -> int:
+        return 900
+
+    def geometry(self, value: str) -> None:
+        self.calls.append(("geometry", value))
+
+
 class EnvironmentCheckTest(unittest.TestCase):
     def test_marks_android_adb_as_required_for_real_android_sampling(self) -> None:
         checks = build_environment_checks(
@@ -77,6 +103,29 @@ class EnvironmentCheckTest(unittest.TestCase):
         self.assertIn("Android ADB：缺失", text)
         self.assertIn("iOS pymobiledevice3：可用", text)
         self.assertIn("Xcode xcrun：缺失", text)
+
+
+class FullscreenStartupTest(unittest.TestCase):
+    def test_fullscreen_prefers_zoomed_state(self) -> None:
+        root = FakeFullscreenRoot()
+
+        App._open_fullscreen_window_for_root(root)
+
+        self.assertEqual(root.calls, [("state", "zoomed")])
+
+    def test_fullscreen_falls_back_to_screen_geometry(self) -> None:
+        root = FakeFullscreenRoot(fail_state=True, fail_attributes=True)
+
+        App._open_fullscreen_window_for_root(root)
+
+        self.assertEqual(
+            root.calls,
+            [
+                ("state", "zoomed"),
+                ("attributes", ("-zoomed", True)),
+                ("geometry", "1440x900+0+0"),
+            ],
+        )
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):
