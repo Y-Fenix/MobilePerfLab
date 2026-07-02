@@ -32,8 +32,13 @@ if [[ "$OSTYPE" == darwin* ]]; then
   fi
 fi
 
+PYTHON_APP_EXEC=""
 if [ -n "$PYTHON_APP" ]; then
-  open -n -a "$PYTHON_APP" --args "$SCRIPT_DIR/mobileperflab.py"
+  PYTHON_APP_EXEC="$PYTHON_APP/Contents/MacOS/Python"
+fi
+
+if [ -x "$PYTHON_APP_EXEC" ]; then
+  "$PYTHON_APP_EXEC" "$SCRIPT_DIR/mobileperflab.py"
 else
   "$PYTHON_BIN" "$SCRIPT_DIR/mobileperflab.py"
 fi

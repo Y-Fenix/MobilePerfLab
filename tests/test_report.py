@@ -255,6 +255,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("P0 5项", recommendation_summary["label"])
         self.assertEqual(recommendation_summary["top_title"], "恢复 FPS 链路")
         self.assertIn("保持目标页面可见", recommendation_summary["top_action"])
+        self.assertLessEqual(len(recommendation_summary["detail"]), 72)
         self.assertIn("P0 5项", html_text)
         self.assertIn("先处理：恢复 FPS 链路", html_text)
         self.assertIn("保持目标页面可见", html_text)
