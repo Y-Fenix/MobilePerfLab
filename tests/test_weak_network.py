@@ -292,7 +292,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.weak_diagnostic_summary_var.value, "iOS 需要手动配置 Wi-Fi 代理")
         rows = [(name.value, state.value, detail.value) for name, state, detail in app.weak_diagnostic_row_vars]
         self.assertIn(("iOS 设备", "已选择", "iPhone"), rows)
-        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写 192.168.1.2:18888"), rows)
+        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写服务器 192.168.1.2、端口 18888"), rows)
 
     def test_selecting_device_refreshes_weak_proxy_preview_and_diagnostics(self) -> None:
         class FakeVar:
@@ -510,7 +510,7 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(diagnostics.summary, "iOS 需要手动配置 Wi-Fi 代理")
         self.assertIn(("iOS 设备", "已选择", "iPhone"), diagnostics.rows)
-        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写 192.168.1.2:18888"), diagnostics.rows)
+        self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写服务器 192.168.1.2、端口 18888"), diagnostics.rows)
         self.assertEqual(result["state"], "ios_manual_proxy")
         self.assertEqual(result["label"], "iOS 手动代理待确认")
         self.assertEqual(result["test_readiness"]["state"], "blocked")
@@ -521,6 +521,8 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertIn("Wi-Fi HTTP 代理", action)
         self.assertIn("手动", action)
         self.assertIn("192.168.1.2:18888", action)
+        self.assertIn("服务器 192.168.1.2", action)
+        self.assertIn("端口 18888", action)
         self.assertIn("触发 HTTP/HTTPS 请求", action)
         self.assertIn("刷新状态", action)
         self.assertIn("真实流量", action)
@@ -893,8 +895,18 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("Wi-Fi HTTP 代理", text)
         self.assertIn("手动", text)
         self.assertIn("192.168.1.2:18888", text)
+        self.assertIn("服务器：192.168.1.2", text)
+        self.assertIn("端口：18888", text)
         self.assertIn("触发 HTTP/HTTPS 请求", text)
         self.assertIn("真实流量", text)
+
+    def test_formats_ios_proxy_preview_placeholder_as_separate_fields(self) -> None:
+        text = weak_proxy_preview_text(
+            "",
+            DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready"),
+        )
+
+        self.assertIn("服务器：<host>\n端口：<port>", text)
 
     def test_formats_proxy_traffic_for_live_panel(self) -> None:
         values = format_proxy_traffic_snapshot(
@@ -1184,6 +1196,8 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
         self.assertIn("iOS 手动配置", payload["risk_message"])
         self.assertIn("Wi-Fi HTTP 代理", payload["risk_message"])
         self.assertIn("192.168.1.2:18888", payload["risk_message"])
+        self.assertIn("服务器 192.168.1.2", payload["risk_message"])
+        self.assertIn("端口 18888", payload["risk_message"])
 
 
 class ProxyTrafficHistoryTest(unittest.TestCase):

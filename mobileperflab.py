@@ -421,6 +421,7 @@ def build_weak_network_diagnostics(
     rows: list[tuple[str, str, str]] = []
     normalized_proxy = normalize_android_proxy_value(current_proxy)
     endpoint = endpoint.strip()
+    ios_endpoint_text = format_ios_manual_proxy_endpoint(endpoint)
 
     if proxy_running:
         rows.append(("本机代理", "运行中", endpoint))
@@ -461,7 +462,7 @@ def build_weak_network_diagnostics(
             rows.append(("iOS 代理", "未检查", "启动代理后，在 iPhone Wi-Fi 中手动填写 HTTP 代理"))
             rows.append(("流量命中", "未检查", "触发业务请求后观察代理真实流量"))
             return WeakNetworkDiagnostics("warning", "弱网代理未就绪", rows)
-        rows.append(("iOS 代理", "手动配置", f"在 iPhone Wi-Fi HTTP 代理中填写 {endpoint}"))
+        rows.append(("iOS 代理", "手动配置", f"在 iPhone Wi-Fi HTTP 代理中填写{ios_endpoint_text}"))
         rows.append(("流量命中", "待验证", "配置后触发 HTTP/HTTPS 请求，观察代理真实流量曲线"))
         return WeakNetworkDiagnostics("warning", "iOS 需要手动配置 Wi-Fi 代理", rows)
 
@@ -766,8 +767,31 @@ def live_weak_network_action_text(effectiveness: dict[str, object] | object) -> 
     return f"弱网：{label}"
 
 
+def format_ios_manual_proxy_endpoint(endpoint: str, separator: str = "、") -> str:
+    endpoint = endpoint.strip()
+    if not endpoint or endpoint == "<host>:<port>":
+        return f"服务器 <host>{separator}端口 <port>"
+    host, sep, port = endpoint.rpartition(":")
+    if sep and host and port:
+        return f"服务器 {host}{separator}端口 {port}"
+    return f"服务器和端口 {endpoint}"
+
+
+def extract_ios_manual_proxy_endpoint(detail: str) -> str:
+    detail = str(detail or "")
+    direct_match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3}:\d+)", detail)
+    if direct_match:
+        return direct_match.group(1)
+    host_match = re.search(r"服务器[：:\s]*([^\s、，,;；]+)", detail)
+    port_match = re.search(r"端口[：:\s]*(\d+)", detail)
+    if host_match and port_match:
+        return f"{host_match.group(1)}:{port_match.group(1)}"
+    return ""
+
+
 def weak_proxy_preview_text(endpoint: str, device: DeviceInfo | None = None) -> str:
     endpoint = endpoint.strip() or "<host>:<port>"
+    ios_endpoint_lines = format_ios_manual_proxy_endpoint(endpoint, separator="\n").replace("服务器 ", "服务器：").replace("端口 ", "端口：")
     lines = [
         f"当前代理地址：{endpoint}",
         f"Android 写入命令：settings put global http_proxy {endpoint}",
@@ -778,7 +802,7 @@ def weak_proxy_preview_text(endpoint: str, device: DeviceInfo | None = None) -> 
             [
                 "",
                 "iOS 手动配置：设置 > Wi-Fi > 当前网络 > Wi-Fi HTTP 代理 > 手动",
-                f"服务器和端口：{endpoint}",
+                ios_endpoint_lines,
                 "配置后触发 HTTP/HTTPS 请求，并观察代理真实流量曲线。",
             ]
         )
@@ -850,11 +874,12 @@ def build_weak_network_effectiveness(
         ios_proxy_endpoint = ""
         for name, state, detail in diagnostic_rows:
             if name == "iOS 代理" and state == "手动配置":
-                match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3}:\d+)", detail)
-                if match:
-                    ios_proxy_endpoint = match.group(1)
+                ios_proxy_endpoint = extract_ios_manual_proxy_endpoint(detail)
                 break
-        endpoint_hint = f" {ios_proxy_endpoint}" if ios_proxy_endpoint else "本机弱网代理地址和端口"
+        if ios_proxy_endpoint:
+            endpoint_hint = f" {ios_proxy_endpoint}（{format_ios_manual_proxy_endpoint(ios_proxy_endpoint)}）"
+        else:
+            endpoint_hint = "本机弱网代理地址和端口"
         return _weak_network_effectiveness_result(
             state="ios_manual_proxy",
             label="iOS 手动代理待确认",
@@ -985,7 +1010,7 @@ def build_weak_network_report_payload(
     )
     ios_manual_risk = ""
     if effectiveness.get("state") == "ios_manual_proxy":
-        ios_manual_risk = f"iOS 手动配置 Wi-Fi HTTP 代理后才可确认弱网命中，代理地址：{endpoint}。"
+        ios_manual_risk = f"iOS 手动配置 Wi-Fi HTTP 代理后才可确认弱网命中，代理地址：{endpoint}（{format_ios_manual_proxy_endpoint(endpoint)}）。"
     payload: dict[str, object] = {
         "running": running,
         "endpoint": endpoint,
