@@ -1408,6 +1408,7 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
     state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
     slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    fallback_samples = int(recent_window.get("fallback_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     limited_samples = int(recent_window.get("limited_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     if state == "waiting":
         return {
@@ -1420,6 +1421,12 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
             "state": "blocked",
             "label": "先修采集链路",
             "detail": "最近窗口主要是采集波动，不能直接作为性能结论。",
+        }
+    if fallback_samples:
+        return {
+            "state": "caution",
+            "label": "先确认网络来源",
+            "detail": "最近窗口包含设备级网络兜底，不能当作目标 App 独占上下行结论。",
         }
     if trend_source == "limited" or limited_samples:
         return {

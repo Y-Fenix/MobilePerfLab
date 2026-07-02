@@ -680,6 +680,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(status["label"], "先触发业务动作")
         self.assertIn("缺少有效变化", status["detail"])
 
+    def test_performance_conclusion_status_warns_for_network_fallback_window(self) -> None:
+        status = performance_conclusion_status(
+            {
+                "state": "caution",
+                "label": "窗口：网络兜底",
+                "trend_source": "stable",
+                "slow_samples": 0,
+                "issue_samples": 0,
+                "fallback_samples": 3,
+            }
+        )
+
+        self.assertEqual(status["state"], "caution")
+        self.assertEqual(status["label"], "先确认网络来源")
+        self.assertIn("设备级网络兜底", status["detail"])
+
     def test_performance_conclusion_text_formats_realtime_summary(self) -> None:
         self.assertEqual(
             performance_conclusion_text({"label": "先修采集链路", "detail": "最近窗口主要是采集波动，不能直接作为性能结论。"}),
