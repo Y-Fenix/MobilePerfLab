@@ -628,17 +628,32 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
     def test_control_rail_renders_step_titles_without_long_help_text(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
-        sidebar_start = text.index("def _build_sidebar")
-        sidebar_end = text.index("def refresh_recommended_sampling_interval_label", sidebar_start)
-        sidebar_body = text[sidebar_start:sidebar_end]
+        control_start = text.index("def _build_control_rail")
+        control_end = text.index("def _build_observability_workspace", control_start)
+        control_body = text[control_start:control_end]
 
-        self.assertIn("for step in workbench_sidebar_steps()", sidebar_body)
+        self.assertIn("for step in workbench_sidebar_steps()", control_body)
         self.assertIn("StepTitle.TLabel", text)
         self.assertIn("StepDetail.TLabel", text)
         self.assertIn("1 连接设备", text)
         self.assertIn("2 选择应用", text)
         self.assertIn("3 采集自检", text)
         self.assertIn("4 开始采集", text)
+
+    def test_control_rail_owns_sidebar_body_and_sidebar_is_compatibility_wrapper(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        control_start = text.index("def _build_control_rail")
+        control_end = text.index("def _build_observability_workspace", control_start)
+        control_body = text[control_start:control_end]
+        sidebar_start = text.index("def _build_sidebar")
+        sidebar_end = text.index("def refresh_recommended_sampling_interval_label", sidebar_start)
+        sidebar_body = text[sidebar_start:sidebar_end]
+
+        self.assertIn('ttk.Frame(master, style="Sidebar.TFrame"', control_body)
+        self.assertIn("for step in workbench_sidebar_steps()", control_body)
+        self.assertNotIn("self._build_sidebar(master)", control_body)
+        self.assertIn("self._build_control_rail(master)", sidebar_body)
 
     def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"

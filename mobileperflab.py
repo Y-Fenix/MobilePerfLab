@@ -8586,7 +8586,102 @@ class App:
         self._refresh_session_chips()
 
     def _build_control_rail(self, master: tk.Widget) -> None:
-        self._build_sidebar(master)
+        sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
+        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        sidebar.rowconfigure(5, weight=1)
+        steps_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        steps_panel.grid(row=0, column=0, sticky="ew")
+        steps_panel.columnconfigure(0, weight=1)
+        step_row = 0
+        for step in workbench_sidebar_steps():
+            row = ttk.Frame(steps_panel, style="Step.TFrame", padding=(10, 8))
+            row.grid(row=step_row, column=0, sticky="ew", pady=(0 if step_row == 0 else 6, 0))
+            ttk.Label(row, text=step["title"], style="StepTitle.TLabel").pack(anchor="w")
+            ttk.Label(row, text=step["detail"], style="StepDetail.TLabel", wraplength=270).pack(anchor="w", pady=(2, 0))
+            step_row += 1
+        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(14, 0))
+        filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        filter_row.grid(row=2, column=0, sticky="ew", pady=(10, 8))
+        for label in ("All", "Android", "iOS", "Demo"):
+            ttk.Radiobutton(
+                filter_row,
+                text=label,
+                variable=self.platform_filter,
+                value=label,
+                command=self._render_devices,
+            ).pack(side="left", padx=(0, 8))
+        button_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        button_row.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(button_row, text="刷新设备", style="Tool.TButton", command=self.refresh_devices).pack(side="left")
+        ttk.Button(button_row, text="演示模式", style="Tool.TButton", command=self.use_demo_devices).pack(side="left", padx=(8, 0))
+        self.device_tree = ttk.Treeview(sidebar, columns=("platform", "status"), show="tree headings", height=8)
+        self.device_tree.heading("#0", text="名称")
+        self.device_tree.heading("platform", text="平台")
+        self.device_tree.heading("status", text="状态")
+        self.device_tree.column("#0", width=164, stretch=True)
+        self.device_tree.column("platform", width=72, anchor="center")
+        self.device_tree.column("status", width=70, anchor="center")
+        self.device_tree.grid(row=4, column=0, sticky="ew")
+        self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
+        app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
+        app_panel.columnconfigure(0, weight=1)
+        ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
+        app_actions = ttk.Frame(app_panel, style="Sidebar.TFrame")
+        app_actions.grid(row=2, column=0, sticky="ew")
+        ttk.Button(app_actions, text="前台应用", style="Tool.TButton", command=self.detect_foreground_app).pack(side="left")
+        ttk.Button(app_actions, text="应用列表", style="Tool.TButton", command=self.refresh_apps).pack(side="left", padx=(8, 0))
+        ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
+        self.app_list = tk.Listbox(
+            app_panel,
+            height=8,
+            borderwidth=1,
+            highlightthickness=0,
+            activestyle="none",
+            font=("Helvetica", 11),
+            bg="#FFFFFF",
+            fg="#18212F",
+            selectbackground="#DCEBFF",
+            selectforeground="#0A4E92",
+        )
+        self.app_list.grid(row=3, column=0, sticky="nsew", pady=(10, 8))
+        self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
+        ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, sticky="ew")
+        settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
+        settings.columnconfigure(1, weight=1)
+        ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
+        interval.grid(row=0, column=1, sticky="e")
+        interval.bind("<<ComboboxSelected>>", lambda _event: self.refresh_recommended_sampling_interval_label())
+        ttk.Button(
+            settings,
+            textvariable=self.recommended_interval_var,
+            style="Tool.TButton",
+            command=self.apply_recommended_sampling_interval,
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(10, 0),
+        )
+        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(12, 0),
+        )
+        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
     def _build_observability_workspace(self, master: tk.Widget) -> None:
         workspace = ttk.Frame(master, style="Root.TFrame")
@@ -8691,102 +8786,7 @@ class App:
         self.session_chip_vars["weak_network"].set(format_workbench_status_chip("弱网", self.weak_live_summary_var.get()))
 
     def _build_sidebar(self, master: tk.Widget) -> None:
-        sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
-        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        sidebar.rowconfigure(5, weight=1)
-        steps_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        steps_panel.grid(row=0, column=0, sticky="ew")
-        steps_panel.columnconfigure(0, weight=1)
-        step_row = 0
-        for step in workbench_sidebar_steps():
-            row = ttk.Frame(steps_panel, style="Step.TFrame", padding=(10, 8))
-            row.grid(row=step_row, column=0, sticky="ew", pady=(0 if step_row == 0 else 6, 0))
-            ttk.Label(row, text=step["title"], style="StepTitle.TLabel").pack(anchor="w")
-            ttk.Label(row, text=step["detail"], style="StepDetail.TLabel", wraplength=270).pack(anchor="w", pady=(2, 0))
-            step_row += 1
-        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(14, 0))
-        filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        filter_row.grid(row=2, column=0, sticky="ew", pady=(10, 8))
-        for label in ("All", "Android", "iOS", "Demo"):
-            ttk.Radiobutton(
-                filter_row,
-                text=label,
-                variable=self.platform_filter,
-                value=label,
-                command=self._render_devices,
-            ).pack(side="left", padx=(0, 8))
-        button_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        button_row.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(button_row, text="刷新设备", style="Tool.TButton", command=self.refresh_devices).pack(side="left")
-        ttk.Button(button_row, text="演示模式", style="Tool.TButton", command=self.use_demo_devices).pack(side="left", padx=(8, 0))
-        self.device_tree = ttk.Treeview(sidebar, columns=("platform", "status"), show="tree headings", height=8)
-        self.device_tree.heading("#0", text="名称")
-        self.device_tree.heading("platform", text="平台")
-        self.device_tree.heading("status", text="状态")
-        self.device_tree.column("#0", width=164, stretch=True)
-        self.device_tree.column("platform", width=72, anchor="center")
-        self.device_tree.column("status", width=70, anchor="center")
-        self.device_tree.grid(row=4, column=0, sticky="ew")
-        self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
-        app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
-        app_panel.columnconfigure(0, weight=1)
-        ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
-        app_actions = ttk.Frame(app_panel, style="Sidebar.TFrame")
-        app_actions.grid(row=2, column=0, sticky="ew")
-        ttk.Button(app_actions, text="前台应用", style="Tool.TButton", command=self.detect_foreground_app).pack(side="left")
-        ttk.Button(app_actions, text="应用列表", style="Tool.TButton", command=self.refresh_apps).pack(side="left", padx=(8, 0))
-        ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
-        self.app_list = tk.Listbox(
-            app_panel,
-            height=8,
-            borderwidth=1,
-            highlightthickness=0,
-            activestyle="none",
-            font=("Helvetica", 11),
-            bg="#FFFFFF",
-            fg="#18212F",
-            selectbackground="#DCEBFF",
-            selectforeground="#0A4E92",
-        )
-        self.app_list.grid(row=3, column=0, sticky="nsew", pady=(10, 8))
-        self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
-        ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, sticky="ew")
-        settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
-        settings.columnconfigure(1, weight=1)
-        ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
-        interval.grid(row=0, column=1, sticky="e")
-        interval.bind("<<ComboboxSelected>>", lambda _event: self.refresh_recommended_sampling_interval_label())
-        ttk.Button(
-            settings,
-            textvariable=self.recommended_interval_var,
-            style="Tool.TButton",
-            command=self.apply_recommended_sampling_interval,
-        ).grid(
-            row=1,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
-        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
-            row=2,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(10, 0),
-        )
-        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(12, 0),
-        )
-        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self._build_control_rail(master)
 
     def refresh_recommended_sampling_interval_label(self) -> None:
         try:
