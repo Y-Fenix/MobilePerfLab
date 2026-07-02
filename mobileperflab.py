@@ -2607,7 +2607,7 @@ class MetricStabilizer:
 
     @staticmethod
     def _should_isolate_quality_sample(quality_tag: str) -> bool:
-        return quality_tag in {"issue", "fallback"}
+        return quality_tag in {"issue", "fallback", "limited"}
 
     def _quality_hold_extension(
         self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok"
