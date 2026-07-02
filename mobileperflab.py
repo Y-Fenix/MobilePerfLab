@@ -2185,6 +2185,19 @@ def build_quality_recommendations(
         },
     }
     severity_rank = {"fail": 0, "warning": 1, "waiting": 2}
+    priority_by_key = {
+        "pid": "P0",
+        "uid": "P0",
+        "fps": "P0",
+        "cpu": "P0",
+        "network": "P0",
+        "foreground": "P1",
+        "cadence": "P1",
+        "sampling_action": "P1",
+        "weak_network": "P2",
+        "sample": "P3",
+    }
+    priority_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     recommendations: list[dict[str, str]] = []
 
     def upsert_recommendation(key: str, severity: str, reason: str) -> None:
@@ -2204,6 +2217,7 @@ def build_quality_recommendations(
                 "key": key,
                 "severity": severity,
                 "title": template["title"],
+                "priority": priority_by_key.get(key, "P3"),
                 "reason": reason,
                 "action": template["action"],
             }
@@ -2259,7 +2273,13 @@ def build_quality_recommendations(
             upsert_recommendation("network", "warning", "Android 自检：network_source=device，只能使用设备级网络兜底。")
         elif network_source and network_source != "per-UID":
             upsert_recommendation("network", "warning", f"Android 自检：network_source={network_source}。")
-    recommendations.sort(key=lambda row: (severity_rank.get(str(row.get("severity", "")), 9), str(row.get("key", ""))))
+    recommendations.sort(
+        key=lambda row: (
+            priority_rank.get(str(row.get("priority", "")), 9),
+            severity_rank.get(str(row.get("severity", "")), 9),
+            str(row.get("key", "")),
+        )
+    )
     return recommendations
 
 
@@ -7118,6 +7138,7 @@ class SessionRecorder:
         ) or "<tr><td colspan='3'>暂无实机验证结论</td></tr>"
         recommendation_rows = "".join(
             "<tr>"
+            f"<td>{html.escape(str(item.get('priority', 'P3')))}</td>"
             f"<td>{html.escape(str(item.get('title', '')))}</td>"
             f"<td>{html.escape(validation_state_label(str(item.get('severity', ''))))}</td>"
             f"<td>{html.escape(str(item.get('reason', '')))}</td>"
@@ -7125,7 +7146,7 @@ class SessionRecorder:
             "</tr>"
             for item in quality.get("recommendations", [])
             if isinstance(item, dict)
-        ) or "<tr><td colspan='4'>暂无修复建议</td></tr>"
+        ) or "<tr><td colspan='5'>暂无修复建议</td></tr>"
         quality_tags = sample_quality_tags_with_cadence(self.samples, self.expected_interval)
         quality_intervals = quality_intervals_from_points(
             [(float(sample.elapsed), quality_tag) for sample, quality_tag in zip(self.samples, quality_tags)]
@@ -7424,7 +7445,7 @@ class SessionRecorder:
     <h2>实机验证清单</h2>
     <table class="issue-table"><tr><th>链路</th><th>状态</th><th>结论</th></tr>__VALIDATION_ROWS__</table>
     <h2>修复建议</h2>
-    <table class="issue-table"><tr><th>问题</th><th>级别</th><th>原因</th><th>建议动作</th></tr>__RECOMMENDATION_ROWS__</table>
+    <table class="issue-table"><tr><th>优先级</th><th>问题</th><th>级别</th><th>原因</th><th>建议动作</th></tr>__RECOMMENDATION_ROWS__</table>
     __COLLECTION_DIAGNOSTICS_SECTION__
     <h2>异常区间</h2>
     <table class="issue-table"><tr><th>类型</th><th>开始</th><th>结束</th><th>持续</th></tr>__INTERVAL_ROWS__</table>

@@ -233,17 +233,25 @@ class ReportExportTest(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
 
         recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+        ordered_keys = [item["key"] for item in payload["quality"]["recommendations"]]
 
         self.assertIn("fps", recommendations)
         self.assertIn("network", recommendations)
         self.assertIn("pid", recommendations)
         self.assertIn("uid", recommendations)
+        self.assertEqual(recommendations["pid"]["priority"], "P0")
+        self.assertEqual(recommendations["uid"]["priority"], "P0")
+        self.assertEqual(recommendations["fps"]["priority"], "P0")
+        self.assertEqual(recommendations["network"]["priority"], "P0")
+        self.assertLess(ordered_keys.index("pid"), ordered_keys.index("weak_network"))
         self.assertIn("fps_source=missing", recommendations["fps"]["reason"])
         self.assertIn("network_source=missing", recommendations["network"]["reason"])
         self.assertIn("pid_source=missing", recommendations["pid"]["reason"])
         self.assertIn("uid_source=missing", recommendations["uid"]["reason"])
         self.assertIn("重新选择当前前台应用", recommendations["pid"]["action"])
         self.assertIn("dumpsys package", recommendations["uid"]["action"])
+        self.assertIn("<th>优先级</th>", html_text)
+        self.assertIn("<td>P0</td>", html_text)
         self.assertIn("fps_source=missing", html_text)
         self.assertIn("network_source=missing", html_text)
 
