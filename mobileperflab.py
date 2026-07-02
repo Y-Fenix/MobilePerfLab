@@ -6850,7 +6850,7 @@ class SessionRecorder:
       const issueTokens = ['未采集', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
       if (!note.includes('目标应用刚回到前台') && issueTokens.some(token => note.includes(token))) return 'issue';
       if (note.includes('设备级网络兜底')) return 'fallback';
-      if (note.includes('FPS 当前无帧增量') || note.includes('CPU 当前无进程增量')) return 'limited';
+      if (note.includes('FPS 当前无帧增量') || note.includes('CPU 当前无进程增量') || (note.includes('网络无流量') && !note.includes('网络采集'))) return 'limited';
       return 'ok';
     }
 
