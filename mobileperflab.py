@@ -2240,6 +2240,7 @@ class LiveQualityTracker:
     def __init__(self, expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> None:
         self.sample_count = 0
         self.issue_count = 0
+        self.limited_sample_count = 0
         self.network_fallback_count = 0
         self.network_missing_count = 0
         self.foreground_issue_count = 0
@@ -2254,6 +2255,7 @@ class LiveQualityTracker:
     def reset(self) -> None:
         self.sample_count = 0
         self.issue_count = 0
+        self.limited_sample_count = 0
         self.network_fallback_count = 0
         self.network_missing_count = 0
         self.foreground_issue_count = 0
@@ -2272,9 +2274,12 @@ class LiveQualityTracker:
         self._recent_samples.append(sample)
         self._recent_samples = self._recent_samples[-8:]
         self.last_metric_health = self._health_analyzer.analyze(sample)
+        quality_tag = sample_quality_tag(sample)
         has_issue = self._has_quality_issue(note)
         if has_issue:
             self.issue_count += 1
+        if quality_tag == "limited":
+            self.limited_sample_count += 1
         if "设备级网络兜底" in note:
             self.network_fallback_count += 1
         if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
@@ -2291,6 +2296,7 @@ class LiveQualityTracker:
         total = max(self.sample_count, 1)
         issue_percent = self.issue_count / total * 100.0
         fallback_percent = self.network_fallback_count / total * 100.0
+        limited_percent = self.limited_sample_count / total * 100.0
         gate = self.quality_gate()
         metric_summary = live_metric_availability_summary(self.last_metric_health)
         display_label = "低端机保守" if self.low_end_display_mode() else "标准稳定"
@@ -2306,6 +2312,7 @@ class LiveQualityTracker:
             f"{metric_summary} · "
             f"异常样本 {self.issue_count}/{self.sample_count} ({issue_percent:.1f}%) · "
             f"兜底 {self.network_fallback_count}/{self.sample_count} ({fallback_percent:.1f}%) · "
+            f"受限 {self.limited_sample_count}/{self.sample_count} ({limited_percent:.1f}%) · "
             f"前台 {self.foreground_issue_count} · 慢采样 {self.slow_sample_count}"
         )
 

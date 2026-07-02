@@ -378,6 +378,19 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("可用：内存/温度", text)
         self.assertIn("不可用：FPS/CPU/Power/下行/上行", text)
 
+    def test_status_text_counts_limited_samples(self) -> None:
+        tracker = LiveQualityTracker()
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=0.0, note="Android FPS 当前无帧增量"))
+        text = tracker.update(
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, cpu_percent=0.0, note="Android CPU 当前无进程增量")
+        )
+
+        self.assertIn("受限 2/2 (100.0%)", text)
+
+        tracker.reset()
+
+        self.assertEqual(tracker.limited_sample_count, 0)
+
     def test_live_session_usability_blocks_when_core_metrics_are_missing(self) -> None:
         health = MetricHealthAnalyzer().analyze(
             PerfSample(
