@@ -1217,6 +1217,7 @@ class QualityModeLabelTest(unittest.TestCase):
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
         App._handle_sample(app, PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, cpu_percent=22.0))
 
+        self.assertIn("正常", app.cards["cpu_percent"].sub)
         self.assertIn("进程占用", app.cards["cpu_percent"].sub)
         self.assertIn("均值 21.0%", app.cards["cpu_percent"].sub)
         self.assertIn("峰值 22.0%", app.cards["cpu_percent"].sub)

@@ -9875,7 +9875,8 @@ class App:
             return
         units = {str(item["key"]): str(item["unit"]) for item in metric_graph_layout()}
         recent_summary = metric_card_recent_summary(getattr(self.recorder, "samples", []), metric, units.get(metric, ""))
-        sub = " · ".join(part for part in (default_sub, recent_summary) if part)
+        healthy_label = status.label if status is not None and status.state == "ok" else ""
+        sub = " · ".join(part for part in (healthy_label, default_sub, recent_summary) if part)
         self.cards[metric].set_value(value, sub)
 
     def _update_metric_health(self, sample: PerfSample) -> dict[str, MetricHealth]:
