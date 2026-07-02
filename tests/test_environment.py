@@ -11,6 +11,7 @@ from mobileperflab import (
     format_quality_mode_label,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
+    graph_latest_display_value_for_context,
     graph_display_max_value,
     graph_display_series,
     graph_display_series_for_context,
@@ -275,6 +276,19 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
         self.assertEqual(len(display), len(raw))
         self.assertLess(display_range, raw_range)
+        self.assertEqual(raw[1], (1.0, 0.0))
+
+    def test_graph_latest_display_value_uses_stable_value_without_mutating_raw_points(self) -> None:
+        points = [(0.0, 60.0, "ok"), (1.0, 0.0, "limited")]
+
+        latest = graph_latest_display_value_for_context(
+            points,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+        )
+
+        self.assertGreater(latest, 0.0)
+        self.assertEqual(points[-1], (1.0, 0.0, "limited"))
 
     def test_graph_axis_ignores_single_quality_spike_but_keeps_real_performance_spike(self) -> None:
         issue_axis = graph_display_max_value(
@@ -637,6 +651,95 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("等待 FPS/CPU/网络重新建立基线", app.performance_conclusion_var.value)
         self.assertIn("恢复中：FPS/CPU/下行/上行", app.quality_var.value)
         self.assertNotIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
+
+    def test_handle_sample_feeds_graphs_raw_values_while_cards_show_stable_values(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+        class SpyStabilizer(MetricStabilizer):
+            def __init__(self) -> None:
+                super().__init__()
+                self.outputs: list[PerfSample] = []
+
+            def smooth_sample(self, sample: PerfSample, conservative: bool = False, quality_tag: str = "ok") -> PerfSample:
+                display = super().smooth_sample(sample, conservative=conservative, quality_tag=quality_tag)
+                self.outputs.append(display)
+                return display
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = SpyStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
+        App._handle_sample(
+            app,
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=0.0, cpu_percent=95.0, note="Android FPS 当前无帧增量"),
+        )
+
+        self.assertGreater(app.stabilizer.outputs[-1].fps, 0.0)
+        self.assertEqual(app.graphs["fps"].points[-1], (2.0, 0.0, "limited"))
+        self.assertEqual(app.recorder.samples[-1].fps, 0.0)
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

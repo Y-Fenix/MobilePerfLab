@@ -1138,6 +1138,24 @@ def graph_display_series_for_context(
     return smooth_graph_series(normalized, alpha=alpha)
 
 
+def graph_latest_display_value_for_context(
+    points: list[tuple[float, float, str]],
+    smoothing_enabled: bool,
+    low_end_display_mode: bool,
+) -> float | None:
+    if not points:
+        return None
+    display_values = graph_display_series_for_context(
+        [(elapsed, value) for elapsed, value, _quality in points],
+        smoothing_enabled=smoothing_enabled,
+        low_end_display_mode=low_end_display_mode,
+        qualities=[quality for _elapsed, _value, quality in points],
+    )
+    if not display_values:
+        return None
+    return float(display_values[-1][1])
+
+
 def graph_display_max_value(
     points: list[tuple[float, float, str]],
     metric: str,
@@ -7648,7 +7666,12 @@ class GraphPanel(ttk.Frame):
     def append(self, elapsed: float, value: float, quality: str = "ok") -> None:
         self.points.append((max(0.0, float(elapsed)), float(value), quality))
         self.points = self.points[-self.max_points :]
-        self.value_var.set(self._format(value))
+        latest_display = graph_latest_display_value_for_context(
+            self.points,
+            smoothing_enabled=self.smoothing_enabled,
+            low_end_display_mode=self.low_end_display_mode,
+        )
+        self.value_var.set(self._format(float(value) if latest_display is None else latest_display))
         self.redraw()
 
     def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
@@ -9249,14 +9272,14 @@ class App:
         self._set_metric_card("power_w", display_sample.power_w, "估算功耗", metric_health)
         self._set_metric_card("rx_kbps", display_sample.rx_kbps, "接收速率", metric_health)
         self._set_metric_card("tx_kbps", display_sample.tx_kbps, "发送速率", metric_health)
-        self.graphs["fps"].append(display_sample.elapsed, display_sample.fps, quality_tag)
-        self.graphs["jank_percent"].append(display_sample.elapsed, display_sample.jank_percent, quality_tag)
-        self.graphs["cpu_percent"].append(display_sample.elapsed, display_sample.cpu_percent, quality_tag)
-        self.graphs["memory_mb"].append(display_sample.elapsed, display_sample.memory_mb, quality_tag)
-        self.graphs["temperature_c"].append(display_sample.elapsed, display_sample.temperature_c, quality_tag)
-        self.graphs["power_w"].append(display_sample.elapsed, display_sample.power_w, quality_tag)
-        self.graphs["rx_kbps"].append(display_sample.elapsed, display_sample.rx_kbps, quality_tag)
-        self.graphs["tx_kbps"].append(display_sample.elapsed, display_sample.tx_kbps, quality_tag)
+        self.graphs["fps"].append(sample.elapsed, sample.fps, quality_tag)
+        self.graphs["jank_percent"].append(sample.elapsed, sample.jank_percent, quality_tag)
+        self.graphs["cpu_percent"].append(sample.elapsed, sample.cpu_percent, quality_tag)
+        self.graphs["memory_mb"].append(sample.elapsed, sample.memory_mb, quality_tag)
+        self.graphs["temperature_c"].append(sample.elapsed, sample.temperature_c, quality_tag)
+        self.graphs["power_w"].append(sample.elapsed, sample.power_w, quality_tag)
+        self.graphs["rx_kbps"].append(sample.elapsed, sample.rx_kbps, quality_tag)
+        self.graphs["tx_kbps"].append(sample.elapsed, sample.tx_kbps, quality_tag)
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
         self._refresh_proxy_traffic()
