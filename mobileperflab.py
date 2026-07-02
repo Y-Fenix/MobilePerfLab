@@ -9587,6 +9587,7 @@ class App:
                 self.app_hint_var.set("该 iOS 设备当前离线或不可连接，请解锁设备、信任电脑并确认 USB/网络连接。")
             else:
                 self.app_hint_var.set("iOS 请填写 Bundle ID；电量/温度可直接采集，CPU/内存需要启动 iOS 采集服务。")
+        self._refresh_proxy_preview()
         self._refresh_weak_diagnostics()
         self._refresh_session_chips()
 

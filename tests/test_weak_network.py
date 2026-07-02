@@ -294,6 +294,50 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn(("iOS 设备", "已选择", "iPhone"), rows)
         self.assertIn(("iOS 代理", "手动配置", "在 iPhone Wi-Fi HTTP 代理中填写 192.168.1.2:18888"), rows)
 
+    def test_selecting_device_refreshes_weak_proxy_preview_and_diagnostics(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeTree:
+            def selection(self) -> tuple[str, ...]:
+                return ("0",)
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.deleted = False
+
+            def delete(self, _start: int, _end: object) -> None:
+                self.deleted = True
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.device_tree = FakeTree()
+        app.devices = [DeviceInfo("iOS", "ios-1", "iPhone", "17", "iPhone", "ready")]
+        app.device_var = FakeVar()
+        app.app_hint_var = FakeVar()
+        app.status_var = FakeVar()
+        app.app_list = FakeList()
+        app.preview_calls = 0
+        app.diagnostic_calls = 0
+        app.session_chip_calls = 0
+        app._refresh_proxy_preview = lambda: setattr(app, "preview_calls", app.preview_calls + 1)
+        app._refresh_weak_diagnostics = lambda: setattr(app, "diagnostic_calls", app.diagnostic_calls + 1)
+        app._refresh_session_chips = lambda: setattr(app, "session_chip_calls", app.session_chip_calls + 1)
+
+        App._on_device_selected(app)
+
+        self.assertEqual(app.selected_device.platform, "iOS")
+        self.assertEqual(app.preview_calls, 1)
+        self.assertEqual(app.diagnostic_calls, 1)
+        self.assertEqual(app.session_chip_calls, 1)
+        self.assertTrue(app.app_list.deleted)
+        self.assertIn("CPU/内存", app.app_hint_var.value)
+
     def test_refresh_proxy_traffic_updates_five_status_lights(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
