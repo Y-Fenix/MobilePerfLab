@@ -726,6 +726,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn("command=self.add_marker", dashboard_body)
         self.assertNotIn("command=self.capture_screenshot", dashboard_body)
 
+    def test_diagnostics_rail_keeps_logs_fixed_below_quality_events(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        diagnostics_start = text.index("def _build_diagnostics_rail")
+        diagnostics_end = text.index("def _build_header", diagnostics_start)
+        diagnostics_body = text[diagnostics_start:diagnostics_end]
+        log_start = diagnostics_body.index("self.log_text = tk.Text")
+        log_end = diagnostics_body.index("self.log_text.grid", log_start)
+        log_body = diagnostics_body[log_start:log_end]
+
+        self.assertIn("rail.rowconfigure(4, weight=1)", diagnostics_body)
+        self.assertNotIn("rail.rowconfigure(5, weight=1)", diagnostics_body)
+        self.assertIn("height=6", log_body)
+        self.assertNotIn("height=7", log_body)
+
     def test_workbench_styles_use_professional_neutral_palette(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")

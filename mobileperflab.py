@@ -8702,7 +8702,6 @@ class App:
         rail.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
         rail.columnconfigure(0, weight=1)
         rail.rowconfigure(4, weight=1)
-        rail.rowconfigure(5, weight=1)
 
         ttk.Label(rail, text="采集链路", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         link_grid = ttk.Frame(rail, style="PanelBody.TFrame")
@@ -8782,7 +8781,7 @@ class App:
         ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.log_text = tk.Text(
             log_panel,
-            height=7,
+            height=6,
             wrap="word",
             borderwidth=0,
             highlightthickness=0,
