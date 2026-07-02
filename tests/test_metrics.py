@@ -789,6 +789,35 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("CPU 无增量", text)
         self.assertIn("网络无流量", text)
 
+    def test_live_realtime_conclusion_does_not_trust_stable_window_when_core_metrics_missing(self) -> None:
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(
+                timestamp=8.0,
+                elapsed=8.0,
+                memory_mb=512.0,
+                temperature_c=36.8,
+                note="Android FPS 未采集到 Surface；Android CPU 当前无进程增量；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+            )
+        )
+        recent_window = {
+            "state": "ok",
+            "label": "窗口：稳定",
+            "trend_source": "stable",
+            "slow_samples": 0,
+            "issue_samples": 0,
+            "fallback_samples": 0,
+            "limited_samples": 0,
+        }
+
+        text = live_realtime_conclusion_text(recent_window, health, expected_interval=1.0)
+
+        self.assertTrue(text.startswith("性能结论：先恢复关键指标"))
+        self.assertIn("FPS/CPU/网络不可用", text)
+        self.assertIn("\n会话可用性：只可参考部分指标", text)
+        self.assertNotIn("性能结论：结论可信", text)
+        self.assertNotIn("性能结论：可分析性能", text)
+        self.assertNotIn("采样间隔 1.0s", text)
+
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
         self.assertEqual(recommended_sampling_interval(1.0), 1.5)
         self.assertEqual(recommended_sampling_interval(1.5), 2.0)

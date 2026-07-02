@@ -1507,12 +1507,66 @@ def performance_conclusion_text(status: dict[str, str], expected_interval: float
     return " · ".join(parts)
 
 
+def constrain_performance_conclusion_by_usability(
+    status: dict[str, str],
+    health: dict[str, "MetricHealth"],
+) -> dict[str, str]:
+    status = dict(status)
+    if status.get("state") == "blocked":
+        return status
+    required = {
+        "fps": "FPS",
+        "cpu_percent": "CPU",
+        "rx_kbps": "网络",
+        "tx_kbps": "网络",
+    }
+    missing: list[str] = []
+    limited: list[str] = []
+    for metric, label in required.items():
+        metric_health = health.get(metric)
+        state = metric_health.state if metric_health is not None else "waiting"
+        if state in {"missing", "waiting"}:
+            if label not in missing:
+                missing.append(label)
+        elif state == "no_frame_delta":
+            if "FPS 无新增帧" not in limited:
+                limited.append("FPS 无新增帧")
+        elif state == "no_cpu_delta":
+            if "CPU 无增量" not in limited:
+                limited.append("CPU 无增量")
+        elif state == "idle" and label == "网络":
+            if "网络无流量" not in limited:
+                limited.append("网络无流量")
+        elif state == "fallback" and label == "网络":
+            if "网络设备级兜底" not in limited:
+                limited.append("网络设备级兜底")
+    if missing:
+        missing_text = "/".join(missing)
+        return {
+            "state": "unavailable",
+            "label": "先恢复关键指标",
+            "detail": f"{missing_text}不可用，不能判断流畅度、CPU 占用或目标 App 上下行。",
+        }
+    if limited and status.get("state") in {"trusted", "actionable"}:
+        action = "先确认网络来源" if "网络设备级兜底" in limited else "先触发业务动作"
+        return {
+            "state": "limited",
+            "label": action,
+            "detail": f"{'、'.join(limited)}，关键链路当前缺少可直接分析的有效变化。",
+        }
+    return status
+
+
 def live_realtime_conclusion_text(
     recent_window: dict[str, object],
     health: dict[str, "MetricHealth"],
     expected_interval: float = DEFAULT_INTERVAL_SECONDS,
 ) -> str:
-    conclusion = performance_conclusion_text(performance_conclusion_status(recent_window), expected_interval)
+    status = constrain_performance_conclusion_by_usability(
+        performance_conclusion_status(recent_window),
+        health,
+    )
+    conclusion = performance_conclusion_text(status, expected_interval)
     usability = live_session_usability_text(health)
     return "\n".join(part for part in (conclusion, usability) if part)
 
