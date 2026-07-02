@@ -802,12 +802,20 @@ def build_weak_network_effectiveness(
             action="点击启动代理，并应用到 Android 后刷新状态。",
         )
     if ios_manual_proxy:
+        ios_proxy_endpoint = ""
+        for name, state, detail in diagnostic_rows:
+            if name == "iOS 代理" and state == "手动配置":
+                match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3}:\d+)", detail)
+                if match:
+                    ios_proxy_endpoint = match.group(1)
+                break
+        endpoint_hint = f" {ios_proxy_endpoint}" if ios_proxy_endpoint else "本机弱网代理地址和端口"
         return _weak_network_effectiveness_result(
             state="ios_manual_proxy",
             label="iOS 手动代理待确认",
             score=40,
             detail="iOS 已选择，但当前桌面工具不能自动写入 iPhone Wi-Fi HTTP 代理，需要手动配置后用真实流量确认命中。",
-            action="在 iPhone 设置 > Wi-Fi > 当前网络 > Wi-Fi HTTP 代理选择手动，填写本机弱网代理地址和端口，然后触发 HTTP/HTTPS 请求。",
+            action=f"在 iPhone 设置 > Wi-Fi > 当前网络 > Wi-Fi HTTP 代理选择手动，填写{endpoint_hint}，触发 HTTP/HTTPS 请求后点击刷新状态，并观察代理真实流量曲线。",
         )
     if unsupported_device:
         return _weak_network_effectiveness_result(

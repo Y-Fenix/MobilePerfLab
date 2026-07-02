@@ -438,7 +438,14 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result["state"], "ios_manual_proxy")
         self.assertEqual(result["label"], "iOS 手动代理待确认")
         self.assertEqual(result["test_readiness"]["state"], "blocked")
-        self.assertIn("Wi-Fi HTTP 代理", result["action"])
+        action = str(result["action"])
+        self.assertIn("设置 > Wi-Fi > 当前网络", action)
+        self.assertIn("Wi-Fi HTTP 代理", action)
+        self.assertIn("手动", action)
+        self.assertIn("192.168.1.2:18888", action)
+        self.assertIn("触发 HTTP/HTTPS 请求", action)
+        self.assertIn("刷新状态", action)
+        self.assertIn("真实流量", action)
 
     def test_warns_when_proxy_is_confirmed_but_port_is_unreachable(self) -> None:
         device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")
