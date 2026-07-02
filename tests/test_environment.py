@@ -1528,11 +1528,70 @@ class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
 
         rows = collection_diagnostic_status_rows(diagnostics)
 
-        self.assertEqual(rows[0], ("前台", "异常", "当前前台 com.example.home", "issue"))
-        self.assertEqual(rows[1], ("PID", "异常", "App 可能未运行", "issue"))
-        self.assertEqual(rows[2], ("UID", "异常", "上下行网络无法按 App 统计", "issue"))
-        self.assertEqual(rows[3], ("FPS", "异常", "未发现帧数据", "issue"))
-        self.assertEqual(rows[4], ("网络", "兜底", "非目标 App 独占流量", "fallback"))
+        self.assertEqual(rows[0][0:2], ("前台", "异常"))
+        self.assertIn("当前前台 com.example.home", rows[0][2])
+        self.assertEqual(rows[0][3], "issue")
+        self.assertEqual(rows[1][0:2], ("PID", "异常"))
+        self.assertIn("App 可能未运行", rows[1][2])
+        self.assertEqual(rows[1][3], "issue")
+        self.assertEqual(rows[2][0:2], ("UID", "异常"))
+        self.assertIn("上下行网络无法按 App 统计", rows[2][2])
+        self.assertEqual(rows[2][3], "issue")
+        self.assertEqual(rows[3][0:2], ("FPS", "异常"))
+        self.assertIn("未发现帧数据", rows[3][2])
+        self.assertEqual(rows[3][3], "issue")
+        self.assertEqual(rows[4][0:2], ("网络", "兜底"))
+        self.assertIn("非目标 App 独占流量", rows[4][2])
+        self.assertEqual(rows[4][3], "fallback")
+
+    def test_collection_link_hints_include_operator_next_steps_for_missing_android_sources(self) -> None:
+        diagnostics = AndroidCollectionDiagnostics(
+            overall_state="warning",
+            summary="Android 采集自检发现 5 项风险",
+            rows=[
+                ("前台", "前台不一致", "当前前台 com.example.home"),
+                ("PID", "未找到", "App 可能未运行"),
+                ("UID", "未找到", "上下行网络无法按 App 统计"),
+                ("FPS", "不可用", "未发现帧数据"),
+                ("网络", "不可用", "未读取到 per-UID 或设备级网络计数"),
+            ],
+            foreground_state="mismatch",
+            pid_source="missing",
+            uid_source="missing",
+            fps_source="missing",
+            network_source="missing",
+        )
+
+        rows = {name: (label, hint, state) for name, label, hint, state in collection_diagnostic_status_rows(diagnostics)}
+
+        self.assertIn("保持目标 App 在前台", rows["前台"][1])
+        self.assertIn("重新读取前台应用", rows["PID"][1])
+        self.assertIn("检查包名", rows["UID"][1])
+        self.assertIn("保持页面可见", rows["FPS"][1])
+        self.assertIn("下载/上传", rows["网络"][1])
+
+    def test_update_collection_links_keeps_next_step_visible_in_right_rail(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(App)
+        app.collection_link_vars = {"网络": FakeVar()}
+        diagnostics = AndroidCollectionDiagnostics(
+            overall_state="warning",
+            summary="Android 采集自检发现 1 项风险",
+            rows=[("网络", "不可用", "未读取到 per-UID 或设备级网络计数")],
+            network_source="missing",
+        )
+
+        App._update_collection_links(app, diagnostics)
+
+        self.assertIn("网络: 异常", app.collection_link_vars["网络"].value)
+        self.assertIn("下一步", app.collection_link_vars["网络"].value)
+        self.assertIn("下载/上传", app.collection_link_vars["网络"].value)
 
 
 if __name__ == "__main__":

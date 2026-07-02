@@ -1260,6 +1260,13 @@ def format_workbench_status_chip(label: str, value: str, max_length: int = 28) -
     return text[: max(max_length - 1, 1)] + "…"
 
 
+def trim_text(text: str, max_length: int) -> str:
+    clean = str(text or "")
+    if len(clean) <= max_length:
+        return clean
+    return clean[: max(max_length - 1, 1)] + "…"
+
+
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
     detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
@@ -1284,6 +1291,22 @@ def android_collection_diagnostics_payload(diagnostics: AndroidCollectionDiagnos
     }
 
 
+def collection_diagnostic_operator_hint(name: str, label: str, hint: str) -> str:
+    if label == "正常":
+        return hint
+    actions = {
+        "前台": "下一步：保持目标 App 在前台，重新读取前台应用。",
+        "PID": "下一步：重新读取前台应用或重启目标 App，再执行采集自检。",
+        "UID": "下一步：检查包名和 UID 权限；UID 缺失时上下行无法归因到目标 App。",
+        "FPS": "下一步：保持页面可见并产生动画/滚动，再检查 gfxinfo 或 SurfaceFlinger 来源。",
+        "网络": "下一步：制造明确下载/上传动作，确认 per-UID 网络统计可读；设备级兜底只作趋势参考。",
+    }
+    action = actions.get(name, "")
+    if not action or action in hint:
+        return hint
+    return f"{hint}。{action}"
+
+
 def collection_diagnostic_status_rows(diagnostics: AndroidCollectionDiagnostics) -> list[tuple[str, str, str, str]]:
     rows: list[tuple[str, str, str, str]] = []
     for name, status, hint in diagnostics.rows:
@@ -1296,7 +1319,7 @@ def collection_diagnostic_status_rows(diagnostics: AndroidCollectionDiagnostics)
         else:
             label = "异常"
             state = "issue"
-        rows.append((name, label, hint, state))
+        rows.append((name, label, collection_diagnostic_operator_hint(name, label, hint), state))
     return rows
 
 
@@ -9887,7 +9910,7 @@ class App:
             if not variable:
                 continue
             prefix = prefixes.get(state, "○")
-            short_hint = hint if len(hint) <= 34 else f"{hint[:33]}..."
+            short_hint = trim_text(hint, 72)
             variable.set(f"{prefix} {name}: {label} · {short_hint}")
 
     def _drain_events(self) -> None:
