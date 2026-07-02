@@ -869,13 +869,14 @@ def enrich_weak_network_with_app_traffic(
                 continue
             proxy_down_peak = max(proxy_down_peak, float(point.get("down_kbps", 0.0) or 0.0))
             proxy_up_peak = max(proxy_up_peak, float(point.get("up_kbps", 0.0) or 0.0))
-    payload["bypass_evidence"] = build_weak_network_bypass_evidence(
+    bypass_evidence = build_weak_network_bypass_evidence(
         traffic_state,
         app_rx_peak,
         app_tx_peak,
         proxy_down_peak,
         proxy_up_peak,
     )
+    payload["bypass_evidence"] = bypass_evidence
     diagnostics = payload.get("diagnostics")
     payload["effectiveness"] = build_weak_network_effectiveness(
         bool(payload.get("running", False)),
@@ -884,6 +885,19 @@ def enrich_weak_network_with_app_traffic(
         app_rx_kbps=app_rx_peak,
         app_tx_kbps=app_tx_peak,
     )
+    if (
+        isinstance(payload.get("effectiveness"), dict)
+        and payload["effectiveness"].get("state") == "effective"
+        and bypass_evidence.get("state") == "mismatch"
+    ):
+        mismatch_detail = str(bypass_evidence.get("detail", "App 与弱网代理流量不匹配。"))
+        payload["effectiveness"] = _weak_network_effectiveness_result(
+            state="target_unconfirmed",
+            label="目标流量待确认",
+            score=70,
+            detail=f"{mismatch_detail} 代理虽有流量，但不能证明目标 App 主流量已完整经过弱网。",
+            action="在目标 App 内触发明确下载/上传或 HTTP/HTTPS 请求，确认 App 上下行和弱网代理流量同步变化。",
+        )
     payload["readiness_display"] = weak_readiness_display_text(payload["effectiveness"].get("test_readiness", {}))
     payload["hit_status"] = weak_hit_status_text(
         bool(payload.get("running", False)),
@@ -906,6 +920,12 @@ def enrich_weak_network_with_app_traffic(
             "请检查 QUIC/UDP、自建网络栈、代理白名单或证书/代理配置。"
         )
         payload["risk_message"] = append_risk_message(current_risk, bypass_risk)
+    elif bypass_evidence.get("state") == "mismatch":
+        mismatch_risk = (
+            "报告期间 App 与弱网代理流量不匹配，不能确认目标 App 主流量已经过弱网；"
+            "请观察 App 上下行和代理真实流量是否同步变化。"
+        )
+        payload["risk_message"] = append_risk_message(current_risk, mismatch_risk)
     elif isinstance(payload.get("effectiveness"), dict) and payload["effectiveness"].get("state") == "target_unconfirmed":
         target_risk = (
             "报告期间弱网代理已有流量，但目标 App 上下行未确认，不能认定弱网命中当前测试 App；"
@@ -1687,6 +1707,9 @@ def build_validation_checklist(
         if effectiveness_state == "bypass" or bypass_state == "bypass":
             weak_state = "fail"
             weak_detail = f"疑似绕过代理：{bypass_detail}" if bypass_detail else "App 有上下行流量但弱网代理未捕获请求，疑似绕过代理。"
+        elif bypass_state == "mismatch":
+            weak_state = "warning"
+            weak_detail = f"App 与弱网代理流量不匹配：{bypass_detail}" if bypass_detail else "App 与弱网代理流量不匹配，需确认目标请求是否完整经过弱网。"
         elif effectiveness_state == "target_unconfirmed":
             weak_state = "warning"
             weak_detail = "弱网代理已捕获流量，但目标 App 上下行未确认，需先证明请求来自当前测试 App。"

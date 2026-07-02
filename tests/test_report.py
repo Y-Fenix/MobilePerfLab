@@ -1086,6 +1086,55 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("弱网绕过证据", html_text)
         self.assertIn("App 峰值 144.0 KB/s", html_text)
 
+    def test_report_does_not_mark_weak_network_ready_when_app_and_proxy_traffic_mismatch(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=52.0, cpu_percent=24.0, memory_mb=520.0))
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=53.0,
+                cpu_percent=25.0,
+                memory_mb=522.0,
+                rx_kbps=500.0,
+                tx_kbps=80.0,
+            )
+        )
+
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "hit",
+            "traffic_state_label": "代理有真实流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 代理有真实流量 · ↓1.0 KB/s ↑0.2 KB/s · 1/2 连接 · 丢弃 0",
+            "config": {"profile": "弱网", "port": 18888},
+            "snapshot": {"down_kbps": 1.0, "up_kbps": 0.2, "total_connections": 2},
+            "snapshot_display": {},
+            "history": [{"elapsed": 0.0, "down_kbps": 1.0, "up_kbps": 0.2}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+        checklist = {item["key"]: item for item in payload["quality"]["validation_checklist"]}
+
+        self.assertEqual(payload["weak_network"]["bypass_evidence"]["state"], "mismatch")
+        self.assertEqual(payload["weak_network"]["effectiveness"]["state"], "target_unconfirmed")
+        self.assertEqual(payload["weak_network"]["effectiveness"]["test_readiness"]["state"], "attention")
+        self.assertLess(payload["weak_network"]["effectiveness"]["score"], 100)
+        self.assertIn("峰值比 483.33x", payload["weak_network"]["bypass_evidence"]["detail"])
+        self.assertIn("App 与弱网代理流量不匹配", payload["weak_network"]["risk_message"])
+        self.assertEqual(checklist["weak_network"]["state"], "warning")
+        self.assertIn("流量不匹配", checklist["weak_network"]["detail"])
+        self.assertIn("流量不匹配", recommendations["weak_network"]["reason"])
+        self.assertIn("同步变化", recommendations["weak_network"]["action"])
+        self.assertIn("峰值比 483.33x", html_text)
+        self.assertNotIn("弱网链路和真实流量均已确认", html_text)
+
     def test_export_bundle_includes_actionable_quality_recommendations(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
