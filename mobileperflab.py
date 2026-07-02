@@ -1059,6 +1059,19 @@ def format_graph_view_height(visible_rows: int, row_height: int, row_gap: int, s
     return row_height * rows + row_gap * max(rows - 1, 0) + scrollbar_height
 
 
+def metric_graph_layout() -> list[dict[str, object]]:
+    return [
+        {"key": "fps", "title": "帧率", "unit": "FPS", "color": "#1F8FFF", "row": 0, "col": 0},
+        {"key": "jank_percent", "title": "Jank", "unit": "%", "color": "#E8590C", "row": 0, "col": 1},
+        {"key": "cpu_percent", "title": "CPU 占用", "unit": "%", "color": "#FF8A34", "row": 1, "col": 0},
+        {"key": "memory_mb", "title": "内存", "unit": "MB", "color": "#4F46E5", "row": 1, "col": 1},
+        {"key": "temperature_c", "title": "温度", "unit": "C", "color": "#EF4444", "row": 2, "col": 0},
+        {"key": "power_w", "title": "功耗", "unit": "W", "color": "#0E9F6E", "row": 2, "col": 1},
+        {"key": "rx_kbps", "title": "网络下行", "unit": "KB/s", "color": "#16A34A", "row": 3, "col": 0},
+        {"key": "tx_kbps", "title": "网络上行", "unit": "KB/s", "color": "#0D9488", "row": 3, "col": 1},
+    ]
+
+
 def graph_quality_badge_text(points: list[tuple[float, float, str]]) -> str:
     issue_count = sum(1 for _elapsed, _value, quality in points if quality == "issue")
     fallback_count = sum(1 for _elapsed, _value, quality in points if quality == "fallback")
@@ -8423,29 +8436,23 @@ class App:
         graphs.columnconfigure(1, weight=1)
         for row in range(4):
             graphs.rowconfigure(row, minsize=self.graph_panel_row_height, weight=0)
-        self.graphs: dict[str, GraphPanel] = {
-            "fps": GraphPanel(graphs, "帧率", "fps", "FPS", "#1F8FFF"),
-            "jank_percent": GraphPanel(graphs, "Jank", "jank_percent", "%", "#E8590C"),
-            "cpu_percent": GraphPanel(graphs, "CPU 占用", "cpu_percent", "%", "#FF8A34"),
-            "memory_mb": GraphPanel(graphs, "内存", "memory_mb", "MB", "#4F46E5"),
-            "temperature_c": GraphPanel(graphs, "温度", "temperature_c", "C", "#EF4444"),
-            "power_w": GraphPanel(graphs, "功耗", "power_w", "W", "#0E9F6E"),
-            "rx_kbps": GraphPanel(graphs, "网络下行", "rx_kbps", "KB/s", "#16A34A"),
-            "tx_kbps": GraphPanel(graphs, "网络上行", "tx_kbps", "KB/s", "#0D9488"),
+        layout = metric_graph_layout()
+        self.graphs = {
+            str(item["key"]): GraphPanel(
+                graphs,
+                str(item["title"]),
+                str(item["key"]),
+                str(item["unit"]),
+                str(item["color"]),
+            )
+            for item in layout
         }
-        positions = [
-            ("fps", 0, 0),
-            ("jank_percent", 0, 1),
-            ("cpu_percent", 1, 0),
-            ("memory_mb", 1, 1),
-            ("temperature_c", 2, 0),
-            ("power_w", 2, 1),
-            ("rx_kbps", 3, 0),
-            ("tx_kbps", 3, 1),
-        ]
-        for key, row, col in positions:
+        for item in layout:
+            key = str(item["key"])
+            row = int(item["row"])
+            col = int(item["col"])
             self.graphs[key].grid(row=row, column=col, sticky="nsew", padx=(0 if col == 0 else 10, 0), pady=(0 if row == 0 else 10, 0))
-        graph_rows = 4
+        graph_rows = max(int(item["row"]) for item in layout) + 1
         self.graph_canvas.configure(scrollregion=(0, 0, 1, graph_rows * self.graph_row_scroll_pixels))
         self._set_graph_scrollbar_state()
         self._bind_graph_mousewheel(graph_view)

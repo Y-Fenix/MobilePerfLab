@@ -20,6 +20,7 @@ from mobileperflab import (
     LiveQualityTracker,
     MetricHealthAnalyzer,
     MetricStabilizer,
+    metric_graph_layout,
     PerfSample,
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
@@ -178,6 +179,28 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
     def test_graph_view_height_shows_exactly_two_rows_plus_scrollbar(self) -> None:
         self.assertEqual(format_graph_view_height(2, 176, 10, 22), 384)
+
+    def test_metric_graph_layout_contains_all_required_graphs(self) -> None:
+        layout = metric_graph_layout()
+        keys = [item["key"] for item in layout]
+
+        self.assertEqual(
+            keys,
+            [
+                "fps",
+                "jank_percent",
+                "cpu_percent",
+                "memory_mb",
+                "temperature_c",
+                "power_w",
+                "rx_kbps",
+                "tx_kbps",
+            ],
+        )
+        self.assertEqual(
+            [(item["row"], item["col"]) for item in layout],
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1)],
+        )
 
     def test_smooth_graph_series_reduces_display_oscillation_without_changing_length(self) -> None:
         raw = [(0.0, 0.0), (1.0, 10.0), (2.0, 0.0), (3.0, 10.0)]
