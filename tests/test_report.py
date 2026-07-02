@@ -556,6 +556,24 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("FPS/CPU/网络不可用", usability["detail"])
         self.assertIn("不能用于判断流畅度", usability["action"])
 
+    def test_session_usability_limits_network_fallback(self) -> None:
+        availability = [
+            {"key": "fps", "state": "available", "coverage_percent": 100.0},
+            {"key": "cpu_percent", "state": "available", "coverage_percent": 100.0},
+            {"key": "rx_kbps", "state": "fallback", "coverage_percent": 100.0},
+            {"key": "tx_kbps", "state": "fallback", "coverage_percent": 100.0},
+        ]
+
+        usability = build_session_usability(
+            availability,
+            {"state": "good", "label": "高可信", "confidence_percent": 100.0},
+        )
+
+        self.assertEqual(usability["state"], "limited")
+        self.assertEqual(usability["label"], "只可参考部分指标")
+        self.assertIn("网络设备级兜底", usability["detail"])
+        self.assertIn("不能用于判断目标 App 独占上下行", usability["action"])
+
     def test_report_exports_session_usability_for_memory_temperature_only_runs(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

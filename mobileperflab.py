@@ -1883,6 +1883,10 @@ def build_session_usability(
                 continue
             if label not in missing_labels:
                 missing_labels.append(label)
+        elif state == "fallback" and label == "网络":
+            limited = "网络设备级兜底"
+            if limited not in limited_labels:
+                limited_labels.append(limited)
     gate = quality_gate if isinstance(quality_gate, dict) else {}
     gate_state = str(gate.get("state", "waiting"))
     gate_label = str(gate.get("label", "无数据"))
@@ -1900,7 +1904,7 @@ def build_session_usability(
             "state": "limited",
             "label": "只可参考部分指标",
             "detail": f"{limited_text}，关键链路有来源但当前缺少有效变化；质量门禁：{gate_label}。",
-            "action": "先制造真实动画、CPU 负载和上下行业务请求，低端机可把采样间隔调到 1.5s 或 2s 后复测。",
+            "action": "先制造真实动画、CPU 负载和上下行业务请求；网络设备级兜底不能用于判断目标 App 独占上下行，低端机可把采样间隔调到 1.5s 或 2s 后复测。",
         }
     if gate_state == "bad":
         return {
