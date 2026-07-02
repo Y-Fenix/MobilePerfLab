@@ -1718,7 +1718,26 @@ def build_quality_recommendations(
             risk_message = str(weak_network.get("risk_message", ""))
             if risk_message and risk_message not in detail:
                 detail = f"{detail} {risk_message}".strip()
+            effectiveness = weak_network.get("effectiveness", {})
+            effectiveness_state = str(effectiveness.get("state", "") if isinstance(effectiveness, dict) else "")
+            if effectiveness_state == "target_unconfirmed":
+                detail = (
+                    f"{detail} 弱网代理已有流量，但目标 App 上下行未确认；"
+                    "需要制造可归因到当前 App 的下载/上传或 HTTP/HTTPS 请求。"
+                ).strip()
         upsert_recommendation(key, state, detail)
+
+        if key == "weak_network" and weak_network is not None:
+            effectiveness = weak_network.get("effectiveness", {})
+            effectiveness_state = str(effectiveness.get("state", "") if isinstance(effectiveness, dict) else "")
+            if effectiveness_state == "target_unconfirmed":
+                for row in recommendations:
+                    if row.get("key") == "weak_network":
+                        row["action"] = (
+                            "在目标 App 内触发明确下载/上传或 HTTP/HTTPS 请求，确认目标 App 上下行和弱网代理流量同步变化；"
+                            "同步变化后再导出报告，才可认定弱网命中目标 App。"
+                        )
+                        break
 
     if collection_diagnostics is not None:
         pid_source = str(collection_diagnostics.get("pid_source", ""))

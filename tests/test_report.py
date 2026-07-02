@@ -955,6 +955,8 @@ class ReportExportTest(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
             payload = json.loads(json_path.read_text(encoding="utf-8"))
 
+        recommendations = {item["key"]: item for item in payload["quality"]["recommendations"]}
+
         self.assertIn("weak_network", payload)
         self.assertEqual(payload["weak_network"]["endpoint"], "127.0.0.1:18888")
         self.assertEqual(payload["weak_network"]["traffic_state"], "hit")
@@ -963,6 +965,9 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["weak_network"]["diagnostics"]["summary"], "弱网代理已确认生效，端口可达")
         self.assertEqual(payload["weak_network"]["hit_status"], "代理有流量 · 目标 App 待确认")
         self.assertEqual(payload["weak_network"]["effectiveness"]["state"], "target_unconfirmed")
+        self.assertIn("weak_network", recommendations)
+        self.assertIn("目标 App 上下行", recommendations["weak_network"]["reason"])
+        self.assertIn("下载/上传", recommendations["weak_network"]["action"])
         self.assertIn("弱网真实流量", html_text)
         self.assertIn("弱网链路诊断", html_text)
         self.assertIn("弱网配置", html_text)
