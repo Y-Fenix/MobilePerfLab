@@ -530,6 +530,10 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(quality["recent_window"]["limited_samples"], 2)
         self.assertEqual(quality["recent_window"]["summary"], "受限样本 · 窗口：受限 · 触发业务动作")
         self.assertIn("受限样本 · 窗口：受限 · 触发业务动作", html_text)
+        self.assertEqual(quality["performance_conclusion"]["state"], "limited")
+        self.assertEqual(quality["performance_conclusion"]["label"], "先触发业务动作")
+        self.assertIn("缺少有效变化", quality["performance_conclusion"]["detail"])
+        self.assertIn("先触发业务动作", html_text)
 
     def test_session_usability_blocks_performance_conclusion_when_core_metrics_are_missing(self) -> None:
         availability = [

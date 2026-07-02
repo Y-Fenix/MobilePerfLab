@@ -609,6 +609,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(status["label"], "可分析性能")
         self.assertIn("真实性能波动", status["detail"])
 
+    def test_performance_conclusion_status_requires_business_action_for_limited_window(self) -> None:
+        status = performance_conclusion_status(
+            {
+                "state": "caution",
+                "label": "窗口：受限",
+                "trend_source": "limited",
+                "slow_samples": 0,
+                "issue_samples": 0,
+                "limited_samples": 2,
+            }
+        )
+
+        self.assertEqual(status["state"], "limited")
+        self.assertEqual(status["label"], "先触发业务动作")
+        self.assertIn("缺少有效变化", status["detail"])
+
     def test_performance_conclusion_text_formats_realtime_summary(self) -> None:
         self.assertEqual(
             performance_conclusion_text({"label": "先修采集链路", "detail": "最近窗口主要是采集波动，不能直接作为性能结论。"}),

@@ -1408,6 +1408,7 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
     state = str(recent_window.get("state", "waiting") if isinstance(recent_window, dict) else "waiting")
     slow_samples = int(recent_window.get("slow_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     issue_samples = int(recent_window.get("issue_samples", 0) or 0) if isinstance(recent_window, dict) else 0
+    limited_samples = int(recent_window.get("limited_samples", 0) or 0) if isinstance(recent_window, dict) else 0
     if state == "waiting":
         return {
             "state": "waiting",
@@ -1419,6 +1420,12 @@ def performance_conclusion_status(recent_window: dict[str, object]) -> dict[str,
             "state": "blocked",
             "label": "先修采集链路",
             "detail": "最近窗口主要是采集波动，不能直接作为性能结论。",
+        }
+    if trend_source == "limited" or limited_samples:
+        return {
+            "state": "limited",
+            "label": "先触发业务动作",
+            "detail": "最近窗口样本缺少有效变化，请先触发动画、CPU 负载或上下行业务请求后再分析性能。",
         }
     if trend_source == "performance":
         return {
