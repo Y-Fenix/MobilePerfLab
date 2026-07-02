@@ -572,6 +572,17 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
 
         self.assertEqual([item["key"] for item in layout[:4]], ["fps", "cpu_percent", "memory_mb", "rx_kbps"])
 
+    def test_metric_cards_follow_workbench_priority_for_first_screen_readability(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
+        dashboard_body = text[dashboard_start:dashboard_end]
+
+        self.assertIn("card_definitions", dashboard_body)
+        self.assertIn("for key in workbench_primary_metric_order()", dashboard_body)
+        self.assertNotIn("for index, card in enumerate(self.cards.values())", dashboard_body)
+
     def test_weak_network_workspace_surfaces_three_step_path_and_status_lights(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")

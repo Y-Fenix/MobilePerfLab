@@ -9124,17 +9124,22 @@ class App:
         cards.grid(row=2, column=0, sticky="ew", pady=(12, 12))
         for col in range(4):
             cards.columnconfigure(col, weight=1)
-        self.cards: dict[str, MetricCard] = {
-            "fps": MetricCard(cards, "FPS", "", "#1F8FFF"),
-            "jank_percent": MetricCard(cards, "Jank", "%", "#E8590C"),
-            "cpu_percent": MetricCard(cards, "CPU", "%", "#FF8A34"),
-            "memory_mb": MetricCard(cards, "Memory", "MB", "#4F46E5"),
-            "temperature_c": MetricCard(cards, "Temp", "C", "#EF4444"),
-            "power_w": MetricCard(cards, "Power", "W", "#0E9F6E"),
-            "rx_kbps": MetricCard(cards, "Down", "KB/s", "#16A34A"),
-            "tx_kbps": MetricCard(cards, "Up", "KB/s", "#0D9488"),
+        card_definitions = {
+            "fps": ("FPS", "", "#1F8FFF"),
+            "cpu_percent": ("CPU", "%", "#FF8A34"),
+            "memory_mb": ("Memory", "MB", "#4F46E5"),
+            "rx_kbps": ("Down", "KB/s", "#16A34A"),
+            "tx_kbps": ("Up", "KB/s", "#0D9488"),
+            "jank_percent": ("Jank", "%", "#E8590C"),
+            "temperature_c": ("Temp", "C", "#EF4444"),
+            "power_w": ("Power", "W", "#0E9F6E"),
         }
-        for index, card in enumerate(self.cards.values()):
+        self.cards = {
+            key: MetricCard(cards, *card_definitions[key])
+            for key in workbench_primary_metric_order()
+        }
+        for index, key in enumerate(workbench_primary_metric_order()):
+            card = self.cards[key]
             row = index // 4
             col = index % 4
             card.grid(
