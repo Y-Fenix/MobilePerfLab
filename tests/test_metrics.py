@@ -213,6 +213,28 @@ class MetricStabilizerTest(unittest.TestCase):
         self.assertGreater(conservative_display.fps, normal_display.fps + 2.0)
         self.assertLess(conservative_display.cpu_percent, normal_display.cpu_percent - 2.0)
 
+    def test_quality_issue_gap_does_not_amplify_low_end_display_swing(self) -> None:
+        short_gap = MetricStabilizer()
+        long_gap = MetricStabilizer()
+        first = PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0)
+        short_gap.smooth_sample(first, conservative=True)
+        long_gap.smooth_sample(first, conservative=True)
+        note = "采样耗时 2.20s 超过采样间隔 1.00s，低端机或 adb 慢命令可能导致曲线时间窗不稳定。"
+
+        short_display = short_gap.smooth_sample(
+            PerfSample(timestamp=2.0, elapsed=2.0, fps=20.0, cpu_percent=90.0, note=note),
+            conservative=True,
+            quality_tag="issue",
+        )
+        long_display = long_gap.smooth_sample(
+            PerfSample(timestamp=3.2, elapsed=3.2, fps=20.0, cpu_percent=90.0, note=note),
+            conservative=True,
+            quality_tag="issue",
+        )
+
+        self.assertGreaterEqual(long_display.fps, short_display.fps - 0.1)
+        self.assertLessEqual(long_display.cpu_percent, short_display.cpu_percent + 0.1)
+
 
 class MetricHealthAnalyzerTest(unittest.TestCase):
     def test_marks_missing_android_metrics_from_note(self) -> None:

@@ -2636,7 +2636,8 @@ class MetricStabilizer:
     ) -> float:
         previous = self._values.get(metric)
         previous_timestamp = self._timestamps.get(metric, timestamp)
-        elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
+        raw_elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
+        elapsed_delta = self._display_elapsed_delta(raw_elapsed_delta, quality_tag)
         historical_volatility = self._volatility.get(metric, 0.0)
         if value <= 0 and previous and previous > 0:
             hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(
@@ -2675,6 +2676,12 @@ class MetricStabilizer:
         if timestamp <= previous_timestamp:
             return 1.0
         return min(max(timestamp - previous_timestamp, 0.25), 6.0)
+
+    @classmethod
+    def _display_elapsed_delta(cls, elapsed_delta: float, quality_tag: str = "ok") -> float:
+        if cls._should_isolate_quality_sample(quality_tag):
+            return min(max(elapsed_delta, 0.25), 1.0)
+        return elapsed_delta
 
     @staticmethod
     def _time_adjusted_alpha(alpha: float, elapsed_delta: float) -> float:
