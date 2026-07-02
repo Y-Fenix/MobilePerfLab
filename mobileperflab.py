@@ -6492,6 +6492,30 @@ class SessionRecorder:
             "avg_rx_kbps": "KB/s",
             "avg_tx_kbps": "KB/s",
         }
+        summary_metric_keys = {
+            "avg_fps": "fps",
+            "avg_cpu_percent": "cpu_percent",
+            "peak_memory_mb": "memory_mb",
+            "peak_temperature_c": "temperature_c",
+            "avg_power_w": "power_w",
+            "avg_rx_kbps": "rx_kbps",
+            "avg_tx_kbps": "tx_kbps",
+        }
+        availability_by_key = {
+            str(item.get("key", "")): item
+            for item in quality.get("metric_availability", [])
+            if isinstance(item, dict)
+        }
+
+        def display_summary_value(key: str) -> tuple[str, str]:
+            metric_key = summary_metric_keys.get(key, "")
+            item = availability_by_key.get(metric_key)
+            if isinstance(item, dict):
+                state = str(item.get("state", ""))
+                if state in {"unavailable", "waiting"}:
+                    return metric_availability_state_label(state), ""
+            return str(summary.get(key, "-")), summary_units.get(key, "")
+
         kpi_keys = [
             "duration_seconds",
             "avg_fps",
@@ -6500,18 +6524,24 @@ class SessionRecorder:
             "peak_temperature_c",
             "avg_power_w",
         ]
-        kpi_cards = "".join(
-            "<article class='kpi'>"
-            f"<span>{html.escape(summary_labels.get(key, key))}</span>"
-            f"<strong>{html.escape(str(summary.get(key, '-')))}</strong>"
-            f"<em>{html.escape(summary_units.get(key, ''))}</em>"
-            "</article>"
-            for key in kpi_keys
-        )
-        rows = "".join(
-            f"<tr><th>{html.escape(summary_labels.get(key, key))}</th><td>{html.escape(str(value))} {html.escape(summary_units.get(key, ''))}</td></tr>"
-            for key, value in summary.items()
-        )
+        kpi_card_parts: list[str] = []
+        for key in kpi_keys:
+            value_text, unit_text = display_summary_value(key)
+            kpi_card_parts.append(
+                "<article class='kpi'>"
+                f"<span>{html.escape(summary_labels.get(key, key))}</span>"
+                f"<strong>{html.escape(value_text)}</strong>"
+                f"<em>{html.escape(unit_text)}</em>"
+                "</article>"
+            )
+        kpi_cards = "".join(kpi_card_parts)
+        row_parts: list[str] = []
+        for key, _value in summary.items():
+            value_text, unit_text = display_summary_value(key)
+            row_parts.append(
+                f"<tr><th>{html.escape(summary_labels.get(key, key))}</th><td>{html.escape(value_text)} {html.escape(unit_text)}</td></tr>"
+            )
+        rows = "".join(row_parts)
         marker_rows = "".join(
             f"<tr><td>{index}</td><td>{html.escape(str(marker.get('elapsed', '')))}s</td><td>{html.escape(str(marker.get('label', '')))}</td></tr>"
             for index, marker in enumerate(self.markers, start=1)

@@ -636,6 +636,10 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("会话可用性", html_text)
         self.assertIn("只可参考部分指标", html_text)
         self.assertIn("不能用于判断流畅度", html_text)
+        self.assertIn("平均 FPS", html_text)
+        self.assertIn("不可用", html_text)
+        self.assertNotIn("<strong>0.0</strong><em>FPS</em>", html_text)
+        self.assertNotIn("<strong>0.0</strong><em>%</em>", html_text)
 
     def test_export_bundle_keeps_raw_samples_and_adds_display_smoothed_samples(self) -> None:
         recorder = SessionRecorder()
