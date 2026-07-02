@@ -752,6 +752,18 @@ def weak_network_risk_message(traffic_state: str) -> str:
     return ""
 
 
+def append_risk_message(current: str, extra: str) -> str:
+    current = str(current or "").strip()
+    extra = str(extra or "").strip()
+    if not extra:
+        return current
+    if not current:
+        return extra
+    if extra in current:
+        return current
+    return f"{current} {extra}".strip()
+
+
 def build_weak_network_report_payload(
     running: bool,
     endpoint: str,
@@ -893,7 +905,13 @@ def enrich_weak_network_with_app_traffic(
             "报告期间 App 上下行已有流量，但弱网代理没有捕获请求，疑似绕过系统代理；"
             "请检查 QUIC/UDP、自建网络栈、代理白名单或证书/代理配置。"
         )
-        payload["risk_message"] = f"{current_risk} {bypass_risk}".strip() if current_risk else bypass_risk
+        payload["risk_message"] = append_risk_message(current_risk, bypass_risk)
+    elif isinstance(payload.get("effectiveness"), dict) and payload["effectiveness"].get("state") == "target_unconfirmed":
+        target_risk = (
+            "报告期间弱网代理已有流量，但目标 App 上下行未确认，不能认定弱网命中当前测试 App；"
+            "请触发明确下载/上传或 HTTP/HTTPS 请求后复测。"
+        )
+        payload["risk_message"] = append_risk_message(current_risk, target_risk)
     else:
         payload["risk_message"] = current_risk
     return payload
