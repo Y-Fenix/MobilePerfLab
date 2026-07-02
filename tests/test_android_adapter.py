@@ -256,6 +256,32 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(adapter._pid_cache[(self.device.serial, "com.example.game")], 101)
         self.assertEqual(adapter._pid_list_cache[(self.device.serial, "com.example.game")], [101, 202])
 
+    def test_cpu_percent_keeps_cached_render_pid_when_low_end_pidof_temporarily_omits_it(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "pidof com.example.game": "\n---NEXT---\n".join(["101 202", "101"]),
+                "getconf CLK_TCK": "100",
+                "cat /proc/101/stat": "\n---NEXT---\n".join(
+                    [
+                        stat_line(101, "main", 10, 5),
+                        stat_line(101, "main", 30, 15),
+                    ]
+                ),
+                "cat /proc/202/stat": "\n---NEXT---\n".join(
+                    [
+                        stat_line(202, "render", 20, 5),
+                        stat_line(202, "render", 35, 10),
+                    ]
+                ),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[100.0, 101.0]):
+            self.assertIsNone(adapter._cpu_percent_from_proc(self.device, "com.example.game"))
+            self.assertAlmostEqual(adapter._cpu_percent_from_proc(self.device, "com.example.game"), 50.0)
+
+        self.assertEqual(adapter._pid_list_cache[(self.device.serial, "com.example.game")], [101, 202])
+
     def test_cpu_percent_falls_back_to_top_when_cpuinfo_is_empty(self) -> None:
         adapter = FakeAndroidAdapter(
             {

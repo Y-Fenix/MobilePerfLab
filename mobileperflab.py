@@ -3867,13 +3867,25 @@ class AndroidAdapter(BaseAdapter):
 
     def _refresh_cached_process_pids(self, device: DeviceInfo, app_id: str) -> list[int]:
         key = (device.serial, app_id)
+        cached = self._pid_list_cache.get(key, [])
         output = self._shell(device.serial, f"pidof {shlex.quote(app_id)}", timeout=2.0)
         pids = self._parse_pid_list(output)
         if pids:
-            self._pid_list_cache[key] = pids
-            self._pid_cache[key] = pids[0]
-            return pids
-        return self._pid_list_cache.get(key, [])
+            merged = self._stable_pid_refresh(cached, pids)
+            self._pid_list_cache[key] = merged
+            self._pid_cache[key] = merged[0]
+            return merged
+        return cached
+
+    @staticmethod
+    def _stable_pid_refresh(cached: list[int], fresh: list[int]) -> list[int]:
+        if not cached:
+            return list(fresh)
+        merged = list(cached)
+        for pid in fresh:
+            if pid not in merged:
+                merged.append(pid)
+        return merged
 
     @staticmethod
     def _parse_pid_list(output: str) -> list[int]:
@@ -3975,6 +3987,11 @@ class AndroidAdapter(BaseAdapter):
             jiffies = self._jiffies_from_proc_stat(stat)
             if jiffies is not None:
                 process_jiffies[pid] = jiffies
+        if process_jiffies:
+            readable_pids = [pid for pid in pids if pid in process_jiffies]
+            if readable_pids != self._pid_list_cache.get(key):
+                self._pid_list_cache[key] = readable_pids
+                self._pid_cache[key] = readable_pids[0]
         if not process_jiffies:
             self._pid_cache.pop(key, None)
             self._pid_list_cache.pop(key, None)
