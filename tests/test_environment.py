@@ -96,6 +96,26 @@ class EnvironmentCheckTest(unittest.TestCase):
         self.assertEqual(ios.state, "ok")
         self.assertEqual(ios.level, "optional")
         self.assertIn("iOS", ios.detail)
+        self.assertIn("iOS采集服务", ios.action)
+        self.assertNotIn("启动iOS采集服务.command", ios.action)
+
+    def test_ios_environment_action_stays_inside_app_when_pymobiledevice3_is_missing(self) -> None:
+        checks = build_environment_checks(
+            {
+                "python": "/usr/bin/python3",
+                "adb": "/opt/android/adb",
+                "pymobiledevice3": "",
+                "xcrun": "/usr/bin/xcrun",
+            }
+        )
+
+        ios = next(check for check in checks if check.key == "pymobiledevice3")
+
+        self.assertEqual(ios.state, "missing")
+        self.assertIn("安装iOS依赖.command", ios.action)
+        self.assertIn("iOS采集服务", ios.action)
+        self.assertNotIn("双击", ios.action)
+        self.assertNotIn("启动iOS采集服务.command", ios.action)
 
     def test_formats_environment_checks_for_sidebar_and_logs(self) -> None:
         checks = build_environment_checks(

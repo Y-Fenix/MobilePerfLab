@@ -378,7 +378,7 @@ def build_environment_checks(paths: dict[str, str | None]) -> list[EnvironmentCh
             state="ok" if pymobiledevice_path else "missing",
             level="optional",
             detail=f"iOS 采集工具可用：{pymobiledevice_path}" if pymobiledevice_path else "iOS CPU/内存/FPS/网络采集需要 pymobiledevice3 和 tunneld。",
-            action="双击“安装iOS依赖.command”，再按需启动“启动iOS采集服务.command”。",
+            action="先运行“安装iOS依赖.command”安装 pymobiledevice3；安装后在工具内点击 iOS采集服务，应用会静默尝试启动 DVT tunnel。",
         ),
         EnvironmentCheck(
             key="xcrun",
