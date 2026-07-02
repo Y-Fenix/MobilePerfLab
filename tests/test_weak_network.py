@@ -16,6 +16,7 @@ from mobileperflab import (
     format_weak_network_config,
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
+    live_weak_network_action_text,
     weak_hit_status_text,
     weak_readiness_display_text,
     verify_android_proxy_state,
@@ -162,6 +163,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
 
         App._refresh_proxy_traffic(app)
 
+        self.assertTrue(app.weak_live_summary_var.value.startswith("弱网：先修弱网链路 · 端口不可达\n"))
         self.assertIn("端口不可达", app.weak_live_summary_var.value)
         self.assertIn("先修弱网链路", app.weak_readiness_var.value)
         self.assertIn("防火墙", app.weak_readiness_var.value)
@@ -207,6 +209,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
 
         App._refresh_proxy_traffic(app)
 
+        self.assertTrue(app.weak_live_summary_var.value.startswith("弱网：先修弱网链路 · 疑似绕过代理\n"))
         self.assertIn("先修弱网链路", app.weak_readiness_var.value)
         self.assertIn("QUIC/UDP", app.weak_readiness_var.value)
         self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
@@ -410,6 +413,44 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
 
     def test_formats_weak_readiness_display_text_without_empty_separator(self) -> None:
         self.assertEqual(weak_readiness_display_text({"label": "可以开始测试"}), "可以开始测试")
+
+    def test_formats_compact_live_weak_network_action_text(self) -> None:
+        self.assertEqual(
+            live_weak_network_action_text(
+                {
+                    "label": "弱网已生效",
+                    "test_readiness": {
+                        "label": "可以开始测试",
+                        "action": "继续执行业务场景并观察代理真实流量曲线。",
+                    },
+                }
+            ),
+            "弱网：可以开始测试 · 弱网已生效",
+        )
+        self.assertEqual(
+            live_weak_network_action_text(
+                {
+                    "label": "等待目标流量",
+                    "test_readiness": {
+                        "label": "先触发业务请求",
+                        "action": "在目标 App 内触发明确 HTTP/HTTPS 请求，再观察代理真实流量。",
+                    },
+                }
+            ),
+            "弱网：先触发业务请求 · 等待目标流量",
+        )
+        self.assertEqual(
+            live_weak_network_action_text(
+                {
+                    "label": "端口不可达",
+                    "test_readiness": {
+                        "label": "先修弱网链路",
+                        "action": "确认手机和电脑在同一网络，检查防火墙、USB 网络或热点隔离。",
+                    },
+                }
+            ),
+            "弱网：先修弱网链路 · 端口不可达",
+        )
 
     def test_scores_unreachable_proxy_before_traffic_checks(self) -> None:
         diagnostics = build_weak_network_diagnostics(

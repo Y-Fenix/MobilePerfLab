@@ -577,6 +577,19 @@ def weak_readiness_display_text(readiness: dict[str, object] | object) -> str:
     return f"{label} · {action}" if action else label
 
 
+def live_weak_network_action_text(effectiveness: dict[str, object] | object) -> str:
+    if not isinstance(effectiveness, dict):
+        return "弱网：未知"
+    label = str(effectiveness.get("label", "未知") or "未知")
+    readiness = effectiveness.get("test_readiness", {})
+    readiness_label = ""
+    if isinstance(readiness, dict):
+        readiness_label = str(readiness.get("label", "") or "")
+    if readiness_label:
+        return f"弱网：{readiness_label} · {label}"
+    return f"弱网：{label}"
+
+
 def _weak_network_effectiveness_result(
     state: str,
     label: str,
@@ -8344,15 +8357,17 @@ class App:
             if variable:
                 variable.set(text)
         if hasattr(self, "weak_live_summary_var"):
+            action_text = live_weak_network_action_text(effectiveness)
+            detail_text = format_live_proxy_summary(
+                self.weak_proxy.is_running(),
+                self.weak_proxy.local_endpoint(),
+                snapshot,
+                self.last_app_rx_kbps,
+                self.last_app_tx_kbps,
+                self.last_weak_diagnostics,
+            )
             self.weak_live_summary_var.set(
-                format_live_proxy_summary(
-                    self.weak_proxy.is_running(),
-                    self.weak_proxy.local_endpoint(),
-                    snapshot,
-                    self.last_app_rx_kbps,
-                    self.last_app_tx_kbps,
-                    self.last_weak_diagnostics,
-                )
+                f"{action_text}\n{detail_text}"
             )
         if hasattr(self, "weak_traffic_chart"):
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
