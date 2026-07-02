@@ -190,9 +190,14 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(diagnostics["uid"], 10234)
         self.assertEqual(diagnostics["network_source"], "device")
         self.assertEqual(diagnostics["rows"][3]["name"], "FPS")
+        self.assertIn("保持页面可见", diagnostics["rows"][3]["action_detail"])
+        self.assertIn("下载/上传", diagnostics["rows"][4]["action_detail"])
         self.assertIn("采集链路自检", html_text)
         self.assertIn("Android 采集链路需关注", html_text)
         self.assertIn("设备级兜底", html_text)
+        self.assertIn("下一步", html_text)
+        self.assertIn("保持页面可见", html_text)
+        self.assertIn("下载/上传", html_text)
 
     def test_recommendations_include_android_collection_diagnostic_sources(self) -> None:
         recorder = SessionRecorder()

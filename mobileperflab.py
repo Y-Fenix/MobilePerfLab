@@ -1272,25 +1272,6 @@ def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnost
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
 
 
-def android_collection_diagnostics_payload(diagnostics: AndroidCollectionDiagnostics) -> dict[str, object]:
-    return {
-        "overall_state": diagnostics.overall_state,
-        "summary": diagnostics.summary,
-        "rows": [
-            {"name": name, "state": state, "detail": detail}
-            for name, state, detail in diagnostics.rows
-        ],
-        "foreground_app": diagnostics.foreground_app,
-        "foreground_state": diagnostics.foreground_state,
-        "pid_source": diagnostics.pid_source,
-        "pids": list(diagnostics.pids),
-        "uid_source": diagnostics.uid_source,
-        "uid": diagnostics.uid,
-        "fps_source": diagnostics.fps_source,
-        "network_source": diagnostics.network_source,
-    }
-
-
 def collection_diagnostic_operator_hint(name: str, label: str, hint: str) -> str:
     if label == "正常":
         return hint
@@ -1321,6 +1302,36 @@ def collection_diagnostic_status_rows(diagnostics: AndroidCollectionDiagnostics)
             state = "issue"
         rows.append((name, label, collection_diagnostic_operator_hint(name, label, hint), state))
     return rows
+
+
+def android_collection_diagnostics_payload(diagnostics: AndroidCollectionDiagnostics) -> dict[str, object]:
+    status_rows = {
+        name: {"label": label, "action_detail": action_detail, "state_class": state_class}
+        for name, label, action_detail, state_class in collection_diagnostic_status_rows(diagnostics)
+    }
+    return {
+        "overall_state": diagnostics.overall_state,
+        "summary": diagnostics.summary,
+        "rows": [
+            {
+                "name": name,
+                "state": state,
+                "detail": detail,
+                "label": status_rows.get(name, {}).get("label", state),
+                "action_detail": status_rows.get(name, {}).get("action_detail", detail),
+                "state_class": status_rows.get(name, {}).get("state_class", ""),
+            }
+            for name, state, detail in diagnostics.rows
+        ],
+        "foreground_app": diagnostics.foreground_app,
+        "foreground_state": diagnostics.foreground_state,
+        "pid_source": diagnostics.pid_source,
+        "pids": list(diagnostics.pids),
+        "uid_source": diagnostics.uid_source,
+        "uid": diagnostics.uid,
+        "fps_source": diagnostics.fps_source,
+        "network_source": diagnostics.network_source,
+    }
 
 
 def session_quality_gate(
@@ -7122,10 +7133,11 @@ class SessionRecorder:
                 f"<td>{html.escape(str(row.get('name', '')))}</td>"
                 f"<td>{html.escape(str(row.get('state', '')))}</td>"
                 f"<td>{html.escape(str(row.get('detail', '')))}</td>"
+                f"<td>{html.escape(str(row.get('action_detail', '')))}</td>"
                 "</tr>"
                 for row in diagnostic_rows
                 if isinstance(row, dict)
-            ) or "<tr><td colspan='3'>未记录自检明细</td></tr>"
+            ) or "<tr><td colspan='4'>未记录自检明细</td></tr>"
             source_rows = [
                 ("前台应用", collection_diagnostics.get("foreground_app", "")),
                 ("PID 来源", collection_diagnostics.get("pid_source", "")),
@@ -7148,7 +7160,7 @@ class SessionRecorder:
                     f"<tr><th>状态</th><td>{html.escape(str(collection_diagnostics.get('overall_state', '')))}</td></tr>",
                     source_rows_html,
                     "</table>",
-                    "<table class='issue-table' style='margin-top: 12px;'><tr><th>链路</th><th>状态</th><th>说明</th></tr>",
+                    "<table class='issue-table' style='margin-top: 12px;'><tr><th>链路</th><th>状态</th><th>说明</th><th>结论 / 下一步</th></tr>",
                     diagnostic_rows_html,
                     "</table>",
                 ]
