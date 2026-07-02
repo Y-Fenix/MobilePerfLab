@@ -4,6 +4,7 @@ from pathlib import Path
 from mobileperflab import (
     AndroidCollectionDiagnostics,
     App,
+    WORKBENCH_SHELL_REGIONS,
     collection_diagnostic_status_rows,
     build_environment_checks,
     format_environment_checks,
@@ -26,6 +27,8 @@ from mobileperflab import (
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
+    workbench_sidebar_steps,
+    workbench_top_status_items,
 )
 
 
@@ -128,6 +131,35 @@ class FullscreenStartupTest(unittest.TestCase):
                 ("geometry", "1440x900+0+0"),
             ],
         )
+
+
+class WorkbenchLayoutContractTest(unittest.TestCase):
+    def test_workbench_shell_has_professional_four_region_layout(self) -> None:
+        self.assertEqual(
+            WORKBENCH_SHELL_REGIONS,
+            ("top_session_bar", "left_control_rail", "central_observability", "right_diagnostics_rail"),
+        )
+
+    def test_sidebar_steps_match_zero_learning_workflow(self) -> None:
+        steps = workbench_sidebar_steps()
+
+        self.assertEqual(
+            [step["key"] for step in steps],
+            ["connect_device", "select_app", "preflight", "sample"],
+        )
+        self.assertEqual(steps[0]["title"], "1 连接设备")
+        self.assertEqual(steps[1]["title"], "2 选择应用")
+        self.assertIn("开始采集", steps[3]["primary_action"])
+
+    def test_top_status_items_keep_session_context_visible(self) -> None:
+        items = workbench_top_status_items()
+
+        self.assertEqual(
+            [item["key"] for item in items],
+            ["device", "target_app", "capture", "quality", "weak_network"],
+        )
+        self.assertEqual(items[0]["label"], "设备")
+        self.assertEqual(items[-1]["label"], "弱网")
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):

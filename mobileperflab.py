@@ -962,6 +962,53 @@ def format_quality_mode_label(smoothing_enabled: bool, low_end_bias: bool) -> st
     return f"{smoothing_text} · {report_text}"
 
 
+WORKBENCH_SHELL_REGIONS = (
+    "top_session_bar",
+    "left_control_rail",
+    "central_observability",
+    "right_diagnostics_rail",
+)
+
+
+def workbench_sidebar_steps() -> list[dict[str, str]]:
+    return [
+        {
+            "key": "connect_device",
+            "title": "1 连接设备",
+            "detail": "刷新或进入演示模式，选择 Android/iOS 真机。",
+            "primary_action": "刷新设备",
+        },
+        {
+            "key": "select_app",
+            "title": "2 选择应用",
+            "detail": "自动识别当前前台应用，也可从应用列表选择。",
+            "primary_action": "前台应用",
+        },
+        {
+            "key": "preflight",
+            "title": "3 采集自检",
+            "detail": "检查前台、PID、UID、FPS 和网络来源。",
+            "primary_action": "采集自检",
+        },
+        {
+            "key": "sample",
+            "title": "4 开始采集",
+            "detail": "开始记录性能曲线，采集中可打点和导出报告。",
+            "primary_action": "开始采集",
+        },
+    ]
+
+
+def workbench_top_status_items() -> list[dict[str, str]]:
+    return [
+        {"key": "device", "label": "设备"},
+        {"key": "target_app", "label": "目标应用"},
+        {"key": "capture", "label": "采集"},
+        {"key": "quality", "label": "质量"},
+        {"key": "weak_network", "label": "弱网"},
+    ]
+
+
 def format_android_collection_diagnostics(diagnostics: AndroidCollectionDiagnostics) -> str:
     detail = "；".join(f"{name}: {status}（{hint}）" for name, status, hint in diagnostics.rows)
     return f"{diagnostics.summary}。{detail}" if detail else diagnostics.summary
