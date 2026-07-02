@@ -4308,6 +4308,7 @@ class AndroidAdapter(BaseAdapter):
             read_time = time.time()
             previous = self._net_cache.get(key)
             self._net_cache[key] = (read_time, rx_total, tx_total)
+            self._device_net_cache.pop(key, None)
             if not previous:
                 return 0.0, 0.0
             prev_time, prev_rx, prev_tx = previous
@@ -4323,6 +4324,7 @@ class AndroidAdapter(BaseAdapter):
                 return 0.0, 0.0
             previous_device = self._device_net_cache.get(key)
             self._device_net_cache[key] = (read_time, device_rx, device_tx)
+            self._net_cache.pop(key, None)
             if previous_device:
                 prev_time, prev_rx, prev_tx = previous_device
                 delta = max(read_time - prev_time, 0.1)

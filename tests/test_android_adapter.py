@@ -35,6 +35,9 @@ class SlowMetricAndroidAdapter(AndroidAdapter):
         self._record("foreground")
         return "com.example.game"
 
+    def _light_foreground_app(self, device: DeviceInfo) -> str:
+        return ""
+
     def _fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
         self._record("fps")
         return 58.0, 2.0
@@ -685,6 +688,30 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual((rx2, tx2), (0.0, 0.0))
         self.assertEqual(adapter._network_note_cache[("serial-1", "com.example.game")], "")
         self.assertNotIn("cat /proc/net/dev", adapter.calls)
+
+    def test_network_kbps_resets_device_fallback_baseline_after_per_uid_recovers(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys package com.example.game": "userId=10234",
+                "cat /proc/uid_stat/10234/tcp_rcv": "\n---NEXT---\n".join(["", "1024", ""]),
+                "cat /proc/uid_stat/10234/tcp_snd": "\n---NEXT---\n".join(["", "512", ""]),
+                "cat /proc/net/xt_qtaguid/stats": "\n---NEXT---\n".join(["", ""]),
+                "dumpsys netstats detail": "\n---NEXT---\n".join(["", ""]),
+                "cat /proc/net/dev": "\n---NEXT---\n".join(
+                    [
+                        "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+                        "Inter-| Receive | Transmit\n wlan0: 200000 0 0 0 0 0 0 0 260000 0 0 0 0 0 0 0",
+                    ]
+                ),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.0, 12.0]):
+            self.assertEqual(adapter._network_kbps(self.device, "com.example.game", 10.0), (0.0, 0.0))
+            self.assertEqual(adapter._network_kbps(self.device, "com.example.game", 11.0), (0.0, 0.0))
+            self.assertEqual(adapter._network_kbps(self.device, "com.example.game", 12.0), (0.0, 0.0))
+
+        self.assertEqual(adapter._network_note_cache[("serial-1", "com.example.game")], "")
 
     def test_network_kbps_reads_uid_equals_from_dumpsys_package(self) -> None:
         adapter = FakeAndroidAdapter(
