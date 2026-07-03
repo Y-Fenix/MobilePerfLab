@@ -2795,6 +2795,72 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(app.graphs["fps"].points[-1], (2.8, 55.0, "issue"))
         self.assertEqual(app.quality_event_tree.rows[-1], ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
 
+    def test_quality_events_keep_repeated_issue_samples_instead_of_deduping_by_tag(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+                self.rows.append(values)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.quality_event_tree = FakeTree()
+
+        App._append_quality_event(app, PerfSample(timestamp=1.0, elapsed=1.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=2.0, elapsed=2.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=3.0, elapsed=3.0, note="Android FPS 未采集到 Surface"), "issue")
+
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
+                ("2.0s", "采集异常", "Android FPS 未采集到 Surface"),
+                ("3.0s", "采集异常", "Android FPS 未采集到 Surface"),
+            ],
+        )
+
+    def test_quality_events_keep_latest_eighty_rows_when_issue_stream_is_noisy(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+                self.rows.append(values)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.quality_event_tree = FakeTree()
+
+        for index in range(85):
+            App._append_quality_event(
+                app,
+                PerfSample(timestamp=float(index), elapsed=float(index), note="Android FPS 未采集到 Surface"),
+                "issue",
+            )
+
+        self.assertEqual(len(app.quality_event_tree.rows), 80)
+        self.assertEqual(app.quality_event_tree.rows[0][0], "5.0s")
+        self.assertEqual(app.quality_event_tree.rows[-1][0], "84.0s")
+
     def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
         class FakeVar:
             def __init__(self) -> None:

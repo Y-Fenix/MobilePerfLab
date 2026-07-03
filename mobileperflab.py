@@ -10730,8 +10730,6 @@ class App:
         if tag == "ok":
             self.last_quality_event_tag = "ok"
             return
-        if tag == self.last_quality_event_tag:
-            return
         event = quality_event_from_sample(sample, quality_tag=tag)
         self.last_quality_event_tag = tag
         if not event or not hasattr(self, "quality_event_tree"):
