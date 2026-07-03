@@ -10310,6 +10310,10 @@ class App:
         if not app_id and device.platform == "Android":
             app_id = adapter.foreground_app(device)
             self.app_var.set(app_id)
+            if app_id:
+                self._ensure_app_picker_contains(app_id)
+                if hasattr(self, "app_picker_var"):
+                    self.app_picker_var.set(app_id)
         if not app_id:
             messagebox.showinfo(APP_NAME, "请填写目标应用包名或 Bundle ID。")
             return

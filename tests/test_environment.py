@@ -599,6 +599,103 @@ class IOSServiceLaunchTest(unittest.TestCase):
         app.app_task_thread.join(1.0)
         self.assertFalse(app.events.empty())
 
+    def test_start_sampling_syncs_auto_detected_android_foreground_app_to_picker(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakePicker:
+            def __init__(self) -> None:
+                self.values: tuple[str, ...] = ()
+
+            def cget(self, key: str) -> tuple[str, ...]:
+                if key == "values":
+                    return self.values
+                return ()
+
+            def configure(self, **kwargs: object) -> None:
+                self.values = tuple(kwargs.get("values", self.values))
+
+        class FakeRecorder:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, _text: str) -> None:
+                pass
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            def __init__(self, *_args: object) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+        class ForegroundAdapter(AndroidAdapter):
+            def foreground_app(self, _device: DeviceInfo) -> str:
+                return "com.example.foreground"
+
+            def ensure_target_app_foreground(self, _device: DeviceInfo, app_id: str) -> tuple[bool, str]:
+                return False, app_id
+
+            def collection_diagnostics(self, _device: DeviceInfo, _app_id: str) -> AndroidCollectionDiagnostics:
+                return AndroidCollectionDiagnostics("ok", "Android 采集自检通过", [])
+
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.android = ForegroundAdapter()
+        app.adapter_for = lambda _device: app.android
+        app.app_var = FakeVar("")
+        app.app_picker_var = FakeVar("")
+        app.app_picker = FakePicker()
+        app.app_hint_var = FakeVar()
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = queue.Queue()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda _text: None
+        app.app_task_thread = None
+        app.app_task_generation = 0
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertEqual(app.app_var.value, "com.example.foreground")
+        self.assertEqual(app.app_picker_var.value, "com.example.foreground")
+        self.assertIn("com.example.foreground", app.app_picker.values)
+
     def test_start_sampling_brings_selected_android_app_to_foreground_before_sampler_starts(self) -> None:
         import mobileperflab
 
