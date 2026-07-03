@@ -1456,6 +1456,53 @@ def graph_summary_text(points: list[tuple[float, float]], unit: str) -> str:
     return f"当前 {current:.1f}{suffix} · 均值 {average:.1f}{suffix} · 峰值 {peak:.1f}{suffix}"
 
 
+def graph_diagnostic_summary_text(metric: str, points: list[tuple[float, float, str]], health_detail: str = "") -> str:
+    quality_counts = {
+        "issue": sum(1 for _elapsed, _value, quality in points if quality == "issue"),
+        "fallback": sum(1 for _elapsed, _value, quality in points if quality == "fallback"),
+        "recovery": sum(1 for _elapsed, _value, quality in points if quality == "recovery"),
+        "limited": sum(1 for _elapsed, _value, quality in points if quality == "limited"),
+    }
+    detail = str(health_detail or "")
+    parts: list[str] = []
+    if quality_counts["issue"]:
+        parts.append(f"异常 {quality_counts['issue']}")
+    if quality_counts["limited"]:
+        parts.append(f"受限 {quality_counts['limited']}")
+    if quality_counts["fallback"]:
+        parts.append(f"兜底 {quality_counts['fallback']}")
+    if quality_counts["recovery"]:
+        parts.append(f"恢复 {quality_counts['recovery']}")
+
+    if "疑似绕过" in detail or ("等待目标流量" in detail and "App 峰值" in detail):
+        parts.append("弱网疑似绕过")
+        parts.append("对比代理流量")
+    elif "无新增帧" in detail or "无帧增量" in detail:
+        parts.append("FPS 无新增帧")
+    elif "无进程增量" in detail or "CPU 无增量" in detail:
+        parts.append("CPU 无增量")
+    elif "无网络流量" in detail or "没有应用网络流量" in detail:
+        parts.append("网络无流量")
+    elif "不可用" in detail or "未采集" in detail or "采集失败" in detail:
+        parts.append("来源不可用")
+    elif metric in {"rx_kbps", "tx_kbps"} and any(float(value) > 0.0 for _elapsed, value, _quality in points):
+        parts.append("核对弱网命中")
+
+    if any(quality_counts[key] for key in ("issue", "fallback", "recovery", "limited")):
+        parts.append("看稳态线")
+    if not parts:
+        return "数据稳定 · 可参考"
+    return " · ".join(dict.fromkeys(parts))
+
+
+def graph_metric_diagnostic_detail(metric: str, health_detail: str, weak_summary: str = "") -> str:
+    detail = str(health_detail or "")
+    weak = str(weak_summary or "").replace("\n", " · ")
+    if metric in {"rx_kbps", "tx_kbps"} and weak:
+        return " · ".join(part for part in (detail, weak) if part)
+    return detail
+
+
 def metric_card_recent_summary(samples: list["PerfSample"], metric: str, unit: str, window_size: int = 5) -> str:
     recent = samples[-max(1, int(window_size)) :]
     values = [
@@ -8147,15 +8194,18 @@ class GraphPanel(ttk.Frame):
         self.view_seconds = 10.0
         self.smoothing_enabled = True
         self.low_end_display_mode = False
+        self.health_detail = ""
         self.header = ttk.Frame(self, style="PanelBody.TFrame")
         self.header.pack(fill="x")
         ttk.Label(self.header, text=title, style="PanelTitle.TLabel").pack(side="left")
         self.value_var = tk.StringVar(value="--")
         self.quality_badge_var = tk.StringVar(value="")
         self.summary_var = tk.StringVar(value=graph_summary_text([], self.unit))
+        self.diagnostic_var = tk.StringVar(value=graph_diagnostic_summary_text(self.metric, [], ""))
         ttk.Label(self.header, textvariable=self.value_var, style="GraphValue.TLabel").pack(side="right")
         ttk.Label(self.header, textvariable=self.quality_badge_var, style="Muted.TLabel").pack(side="right", padx=(0, 10))
         ttk.Label(self, textvariable=self.summary_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        ttk.Label(self, textvariable=self.diagnostic_var, style="Health.TLabel").pack(anchor="w", pady=(3, 0))
         self.canvas = tk.Canvas(self, height=132, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
@@ -8177,7 +8227,12 @@ class GraphPanel(ttk.Frame):
             qualities=[quality for _elapsed, _value, quality in self.points],
         )
         self.summary_var.set(graph_summary_text(summary_points, self.unit))
+        self.diagnostic_var.set(graph_diagnostic_summary_text(self.metric, self.points, self.health_detail))
         self.redraw()
+
+    def set_diagnostic_detail(self, detail: str) -> None:
+        self.health_detail = str(detail or "")
+        self.diagnostic_var.set(graph_diagnostic_summary_text(self.metric, self.points, self.health_detail))
 
     def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
         if self.smoothing_enabled == smoothing_enabled and self.low_end_display_mode == low_end_display_mode:
@@ -8193,6 +8248,8 @@ class GraphPanel(ttk.Frame):
         self.value_var.set("--")
         self.quality_badge_var.set("")
         self.summary_var.set(graph_summary_text([], self.unit))
+        self.health_detail = ""
+        self.diagnostic_var.set(graph_diagnostic_summary_text(self.metric, [], ""))
         self.redraw()
 
     def set_view(self, view_start: float, view_seconds: float) -> None:
@@ -10209,6 +10266,17 @@ class App:
         health: dict[str, MetricHealth],
     ) -> None:
         status = health.get(metric)
+        graph = getattr(self, "graphs", {}).get(metric) if hasattr(self, "graphs") else None
+        if graph is not None and hasattr(graph, "set_diagnostic_detail"):
+            weak_summary = ""
+            if metric in {"rx_kbps", "tx_kbps"} and hasattr(self, "weak_live_summary_var"):
+                try:
+                    weak_summary = self.weak_live_summary_var.get()
+                except Exception:
+                    weak_summary = ""
+            graph.set_diagnostic_detail(
+                graph_metric_diagnostic_detail(metric, status.detail if status is not None else default_sub, weak_summary)
+            )
         if status is not None and status.state in {"missing", "waiting", "recovering", "no_frame_delta", "no_cpu_delta"}:
             display = "不可用" if status.state == "missing" else status.label
             self.cards[metric].set_value(display, status.detail)

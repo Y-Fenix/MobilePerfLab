@@ -15,6 +15,7 @@ from mobileperflab import (
     format_graph_view_height,
     format_quality_mode_label,
     format_workbench_status_chip,
+    graph_diagnostic_summary_text,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
     graph_latest_display_value_for_context,
@@ -1245,6 +1246,26 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         )
         self.assertEqual(graph_summary_text([], "FPS"), "当前 -- · 均值 -- · 峰值 --")
 
+    def test_graph_diagnostic_summary_text_explains_limited_and_fallback_points(self) -> None:
+        self.assertEqual(
+            graph_diagnostic_summary_text(
+                "fps",
+                [(0.0, 60.0, "ok"), (1.0, 0.0, "limited"), (2.0, 48.0, "fallback")],
+                "FPS 来源可用但当前无新增帧，页面静止或低端机短采样窗口较常见",
+            ),
+            "受限 1 · 兜底 1 · FPS 无新增帧 · 看稳态线",
+        )
+
+    def test_graph_diagnostic_summary_text_flags_network_bypass_risk(self) -> None:
+        self.assertEqual(
+            graph_diagnostic_summary_text(
+                "rx_kbps",
+                [(0.0, 0.0, "ok"), (1.0, 128.0, "ok")],
+                "弱网代理等待目标流量，App 峰值已有网络，疑似绕过系统代理",
+            ),
+            "弱网疑似绕过 · 对比代理流量",
+        )
+
     def test_graph_panel_summary_uses_display_series_for_limited_points(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
@@ -1269,6 +1290,17 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertIn("兜底", panel_body)
         self.assertIn("受限", panel_body)
         self.assertIn("异常", panel_body)
+
+    def test_graph_panel_declares_diagnostic_summary_line(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("class GraphPanel")
+        panel_end = text.index("class TrafficMiniChart", panel_start)
+        panel_body = text[panel_start:panel_end]
+
+        self.assertIn("self.diagnostic_var", panel_body)
+        self.assertIn("graph_diagnostic_summary_text", panel_body)
+        self.assertIn("def set_diagnostic_detail", panel_body)
 
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)
@@ -1549,6 +1581,36 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertEqual(app.cards["tx_kbps"].value, 2.0)
         self.assertEqual(app.cards["tx_kbps"].sub, "设备级网络兜底，非目标 App 独占流量")
         self.assertNotEqual(app.cards["tx_kbps"].sub, "发送速率")
+
+    def test_network_graph_diagnostic_detail_includes_weak_network_bypass_summary(self) -> None:
+        class FakeVar:
+            def get(self) -> str:
+                return "弱网：先修弱网链路\n弱网 ON · 疑似绕过代理 · App 峰值 128.0 KB/s"
+
+        class FakeCard:
+            def set_value(self, _value: object, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.detail = ""
+
+            def set_diagnostic_detail(self, detail: str) -> None:
+                self.detail = detail
+
+        app = object.__new__(App)
+        app.cards = {"rx_kbps": FakeCard()}
+        app.graphs = {"rx_kbps": FakeGraph()}
+        app.weak_live_summary_var = FakeVar()
+        app.recorder = type("FakeRecorder", (), {"samples": []})()
+        health = MetricHealthAnalyzer().analyze(
+            PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=12.0, rx_kbps=128.0)
+        )
+
+        App._set_metric_card(app, "rx_kbps", 128.0, "接收速率", health)
+
+        self.assertIn("疑似绕过代理", app.graphs["rx_kbps"].detail)
+        self.assertIn("App 峰值 128.0 KB/s", app.graphs["rx_kbps"].detail)
 
     def test_reset_metrics_uses_waiting_placeholders_not_zero_values(self) -> None:
         class FakeVar:
