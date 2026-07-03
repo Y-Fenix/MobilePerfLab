@@ -1828,18 +1828,37 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
         workspace_start = text.index("def _build_network_workspace")
-        workspace_end = text.index("def _build_weak_three_step_path", workspace_start)
+        workspace_end = text.index("def _configure_weak_usage_wraplength", workspace_start)
         workspace_body = text[workspace_start:workspace_end]
         bind_start = text.index("def _bind_weak_workspace_mousewheel")
         bind_end = text.index("def _on_weak_workspace_mousewheel", bind_start)
         bind_body = text[bind_start:bind_end]
 
         self.assertIn("self._bind_weak_workspace_mousewheel(self.weak_workspace_canvas)", workspace_body)
-        self.assertIn("self._bind_weak_workspace_mousewheel(guide)", workspace_body)
-        self.assertIn("<Enter>", bind_body)
-        self.assertIn("bind_all", bind_body)
-        self.assertIn("<Leave>", bind_body)
-        self.assertIn("unbind_all", bind_body)
+        self.assertIn("for child in widget.winfo_children()", bind_body)
+        self.assertIn('widget.bind("<MouseWheel>", self._on_weak_workspace_mousewheel, add="+")', bind_body)
+        self.assertIn('widget.bind("<Button-4>", self._on_weak_workspace_mousewheel, add="+")', bind_body)
+        self.assertIn('widget.bind("<Button-5>", self._on_weak_workspace_mousewheel, add="+")', bind_body)
+        traffic_panel_index = workspace_body.index("self._build_proxy_traffic_panel(guide, row=5)")
+        late_bind_index = workspace_body.index("self._bind_weak_workspace_mousewheel(guide)", traffic_panel_index)
+        self.assertGreater(late_bind_index, traffic_panel_index)
+        self.assertNotIn("unbind_all", bind_body)
+
+    def test_weak_status_lights_use_two_columns_to_avoid_right_edge_clipping(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        status_start = text.index("def _build_weak_status_lights")
+        status_end = text.index("def _refresh_weak_status_lights", status_start)
+        status_body = text[status_start:status_end]
+
+        self.assertIn("status_columns = 2", status_body)
+        self.assertIn("for column in range(status_columns)", status_body)
+        self.assertIn("row = index // status_columns", status_body)
+        self.assertIn("col = index % status_columns", status_body)
+        self.assertIn("wraplength=260", status_body)
+        self.assertNotIn("range(3)", status_body)
+        self.assertNotIn("row = index // 3", status_body)
+        self.assertNotIn("col = index % 3", status_body)
 
     def test_weak_network_usage_flow_wraps_and_preview_scrolls(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2189,20 +2208,23 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertIn("def set_diagnostic_detail", panel_body)
         self.assertIn("wraplength=", panel_body)
 
-    def test_dashboard_quality_text_wraps_and_graph_area_uses_available_height(self) -> None:
+    def test_dashboard_removes_performance_fluctuation_panel_and_moves_graph_up(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
         dashboard_start = text.index("def _build_dashboard")
         dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
         dashboard_body = text[dashboard_start:dashboard_end]
 
-        self.assertIn("self.quality_summary_label", dashboard_body)
-        self.assertIn("self.performance_conclusion_label", dashboard_body)
-        self.assertIn("self.quality_label", dashboard_body)
-        self.assertIn("_configure_quality_wraplength", dashboard_body)
-        self.assertIn('graph_view.grid(row=3, column=0, sticky="nsew")', dashboard_body)
-        self.assertIn("main.rowconfigure(3, weight=1)", dashboard_body)
-        self.assertNotIn('graph_view.grid(row=3, column=0, sticky="ew")', dashboard_body)
+        self.assertNotIn("quality = ttk.Frame", dashboard_body)
+        self.assertNotIn("self.quality_summary_label", dashboard_body)
+        self.assertNotIn("self.performance_conclusion_label", dashboard_body)
+        self.assertNotIn("self.quality_label", dashboard_body)
+        self.assertNotIn("_configure_quality_wraplength", dashboard_body)
+        self.assertNotIn("性能波动", dashboard_body)
+        self.assertIn('cards.grid(row=1, column=0, sticky="ew", pady=(12, 12))', dashboard_body)
+        self.assertIn('graph_view.grid(row=2, column=0, sticky="nsew")', dashboard_body)
+        self.assertIn("main.rowconfigure(2, weight=1)", dashboard_body)
+        self.assertNotIn("main.rowconfigure(3, weight=1)", dashboard_body)
 
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)

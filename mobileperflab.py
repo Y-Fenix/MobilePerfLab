@@ -9391,6 +9391,7 @@ class App:
             "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
         )
         self.proxy_preview_text.configure(state="disabled")
+        self._bind_weak_workspace_mousewheel(guide)
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
 
@@ -9400,15 +9401,16 @@ class App:
             message.configure(width=max(int(getattr(event, "width", 760) or 760) - 32, 280))
 
     def _bind_weak_workspace_mousewheel(self, widget: tk.Widget) -> None:
-        widget.bind("<MouseWheel>", self._on_weak_workspace_mousewheel)
-        widget.bind("<Button-4>", self._on_weak_workspace_mousewheel)
-        widget.bind("<Button-5>", self._on_weak_workspace_mousewheel)
-        widget.bind("<Enter>", lambda _event: widget.bind_all("<MouseWheel>", self._on_weak_workspace_mousewheel), add="+")
-        widget.bind("<Enter>", lambda _event: widget.bind_all("<Button-4>", self._on_weak_workspace_mousewheel), add="+")
-        widget.bind("<Enter>", lambda _event: widget.bind_all("<Button-5>", self._on_weak_workspace_mousewheel), add="+")
-        widget.bind("<Leave>", lambda _event: widget.unbind_all("<MouseWheel>"), add="+")
-        widget.bind("<Leave>", lambda _event: widget.unbind_all("<Button-4>"), add="+")
-        widget.bind("<Leave>", lambda _event: widget.unbind_all("<Button-5>"), add="+")
+        bound_widgets = getattr(self, "_weak_workspace_mousewheel_bound_widgets", None)
+        if bound_widgets is None:
+            bound_widgets = set()
+            self._weak_workspace_mousewheel_bound_widgets = bound_widgets
+        widget_id = str(widget)
+        if widget_id not in bound_widgets:
+            widget.bind("<MouseWheel>", self._on_weak_workspace_mousewheel, add="+")
+            widget.bind("<Button-4>", self._on_weak_workspace_mousewheel, add="+")
+            widget.bind("<Button-5>", self._on_weak_workspace_mousewheel, add="+")
+            bound_widgets.add(widget_id)
         for child in widget.winfo_children():
             self._bind_weak_workspace_mousewheel(child)
 
@@ -9454,11 +9456,12 @@ class App:
             ("target_hit", "目标命中"),
         ]
         self.weak_status_light_vars = {}
-        for column in range(3):
+        status_columns = 2
+        for column in range(status_columns):
             grid.columnconfigure(column, weight=1, uniform="weak_lights")
         for index, (key, label) in enumerate(labels):
-            row = index // 3
-            col = index % 3
+            row = index // status_columns
+            col = index % status_columns
             grid.columnconfigure(col, weight=1)
             label_var = tk.StringVar(value=label)
             state_var = tk.StringVar(value="等待")
@@ -9474,7 +9477,7 @@ class App:
             )
             ttk.Label(item, textvariable=label_var, style="Muted.TLabel").pack(anchor="w")
             ttk.Label(item, textvariable=state_var, style="Quality.TLabel").pack(anchor="w", pady=(4, 0))
-            ttk.Label(item, textvariable=detail_var, style="Muted.TLabel", wraplength=180).pack(anchor="w", pady=(3, 0))
+            ttk.Label(item, textvariable=detail_var, style="Muted.TLabel", wraplength=260).pack(anchor="w", pady=(3, 0))
         self._refresh_weak_status_lights()
 
     def _refresh_weak_status_lights(
@@ -9574,34 +9577,14 @@ class App:
         main = ttk.Frame(master, style="Root.TFrame")
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(3, weight=1)
+        main.rowconfigure(2, weight=1)
         target = ttk.Frame(main, style="Panel.TFrame", padding=(14, 12))
         target.grid(row=0, column=0, sticky="ew")
         ttk.Label(target, textvariable=self.device_var, style="PanelTitle.TLabel").pack(side="left")
         ttk.Label(target, textvariable=self.session_var, style="Muted.TLabel").pack(side="right")
 
-        quality = ttk.Frame(main, style="Panel.TFrame", padding=(12, 9))
-        quality.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        quality.columnconfigure(0, weight=1)
-        quality_text = ttk.Frame(quality, style="PanelBody.TFrame")
-        quality_text.pack(side="left", fill="x", expand=True)
-        self.quality_summary_label = ttk.Label(quality_text, textvariable=self.quality_summary_var, style="Quality.TLabel", wraplength=760)
-        self.quality_summary_label.pack(anchor="w", fill="x")
-        self.performance_conclusion_label = ttk.Label(
-            quality_text,
-            textvariable=self.performance_conclusion_var,
-            style="Muted.TLabel",
-            wraplength=760,
-        )
-        self.performance_conclusion_label.pack(anchor="w", fill="x", pady=(2, 0))
-        self.quality_label = ttk.Label(quality_text, textvariable=self.quality_var, style="Muted.TLabel", wraplength=760)
-        self.quality_label.pack(anchor="w", fill="x", pady=(2, 0))
-        quality.bind("<Configure>", self._configure_quality_wraplength)
-        ttk.Label(quality, textvariable=self.weak_live_summary_var, style="Muted.TLabel").pack(side="right", padx=(16, 0))
-        ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
-
         cards = ttk.Frame(main, style="Root.TFrame")
-        cards.grid(row=2, column=0, sticky="ew", pady=(12, 12))
+        cards.grid(row=1, column=0, sticky="ew", pady=(12, 12))
         for col in range(4):
             cards.columnconfigure(col, weight=1)
         card_definitions = {
@@ -9637,7 +9620,7 @@ class App:
         self.graph_visible_rows = graph_visible_rows_for_height(screen_height)
         graph_view_height = format_graph_view_height(self.graph_visible_rows, self.graph_panel_row_height, self.graph_row_gap, 22)
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=3, column=0, sticky="nsew")
+        graph_view.grid(row=2, column=0, sticky="nsew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
@@ -9684,13 +9667,6 @@ class App:
         self.graph_canvas.configure(scrollregion=(0, 0, 1, graph_rows * self.graph_row_scroll_pixels))
         self._set_graph_scrollbar_state()
         self._bind_graph_mousewheel(graph_view)
-
-    def _configure_quality_wraplength(self, event: tk.Event) -> None:
-        wrap = max(int(getattr(event, "width", 840) or 840) - 260, 360)
-        for label_name in ("quality_summary_label", "performance_conclusion_label", "quality_label"):
-            label = getattr(self, label_name, None)
-            if label is not None:
-                label.configure(wraplength=wrap)
 
     def _build_metric_health_strip(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
