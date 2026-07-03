@@ -9684,10 +9684,11 @@ class App:
             self.recorder.log(str(error))
         self._render_devices()
         self.capability_var.set(self._capability_text())
-        if not self.devices:
-            self.status_var.set("未检测到真机，可使用演示模式预览。")
-        else:
-            self.status_var.set(f"检测到 {len(self.devices)} 台设备")
+        if not getattr(self, "sampler", None):
+            if not self.devices:
+                self.status_var.set("未检测到真机，可使用演示模式预览。")
+            else:
+                self.status_var.set(f"检测到 {len(self.devices)} 台设备")
         self._refresh_session_chips()
 
     def use_demo_devices(self) -> None:

@@ -1168,6 +1168,36 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.capability_var.value, "capabilities")
         self.assertEqual(app.render_calls, 1)
 
+    def test_device_refresh_result_does_not_override_sampling_status(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        device = DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready")
+        app = object.__new__(App)
+        app.devices = []
+        app.status_var = FakeVar("采集中")
+        app.capability_var = FakeVar()
+        app.device_refresh_generation = 1
+        app.render_calls = 0
+        app.sampler = object()
+        app._render_devices = lambda: setattr(app, "render_calls", app.render_calls + 1)
+        app._capability_text = lambda: "capabilities"
+        app._refresh_session_chips = lambda: None
+
+        App._handle_device_refresh_result(app, {"generation": 1, "devices": [device], "errors": []})
+
+        self.assertEqual(app.devices, [device])
+        self.assertEqual(app.status_var.value, "采集中")
+        self.assertEqual(app.capability_var.value, "capabilities")
+        self.assertEqual(app.render_calls, 1)
+
     def test_selecting_device_clears_previous_target_app(self) -> None:
         class FakeVar:
             def __init__(self, value: str = "") -> None:
