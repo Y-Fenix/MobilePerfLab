@@ -7,6 +7,7 @@ from mobileperflab import (
     AndroidAdapter,
     AndroidCollectionDiagnostics,
     App,
+    DEFAULT_INTERVAL_SECONDS,
     WORKBENCH_SHELL_REGIONS,
     collection_diagnostic_status_rows,
     DeviceInfo,
@@ -16,6 +17,7 @@ from mobileperflab import (
     format_quality_mode_label,
     format_workbench_status_chip,
     graph_diagnostic_summary_text,
+    graph_quality_marker_points,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
     graph_latest_display_value_for_context,
@@ -1734,7 +1736,8 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
             ["connect_device", "select_app", "preflight", "sample"],
         )
         self.assertEqual(steps[0]["title"], "1 连接设备")
-        self.assertEqual(steps[1]["title"], "2 选择应用")
+        self.assertEqual(steps[1]["title"], "2 自动识别前台应用")
+        self.assertIn("默认跟随当前前台应用", steps[1]["detail"])
         self.assertIn("开始采集", steps[3]["primary_action"])
 
     def test_top_status_items_keep_session_context_visible(self) -> None:
@@ -1769,16 +1772,15 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("for key in workbench_primary_metric_order()", dashboard_body)
         self.assertNotIn("for index, card in enumerate(self.cards.values())", dashboard_body)
 
-    def test_metric_health_strip_follows_workbench_priority_before_optional_battery(self) -> None:
+    def test_dashboard_removes_low_value_metric_health_strip_from_primary_workspace(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
-        health_start = text.index("def _build_metric_health_strip")
-        health_end = text.index("def _build_collection_link_strip", health_start)
-        health_body = text[health_start:health_end]
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
+        dashboard_body = text[dashboard_start:dashboard_end]
 
-        self.assertIn("health_labels", health_body)
-        self.assertIn("for col, metric in enumerate((*workbench_primary_metric_order(), \"battery_percent\"))", health_body)
-        self.assertNotIn('("jank_percent", "Jank"),\\n            ("cpu_percent", "CPU")', health_body)
+        self.assertNotIn("self._build_metric_health_strip", dashboard_body)
+        self.assertNotIn("采集健康", dashboard_body)
 
     def test_weak_network_workspace_surfaces_three_step_path_and_status_lights(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -1792,8 +1794,14 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("启动并应用", workspace_body)
         self.assertIn("触发请求看命中", workspace_body)
         self.assertIn("self._build_weak_status_lights", workspace_body)
+        self.assertIn("self.weak_workspace_canvas", workspace_body)
+        self.assertIn("self.weak_workspace_scrollbar", workspace_body)
+        self.assertIn("yscrollcommand", workspace_body)
+        self.assertIn("create_window", workspace_body)
+        self.assertIn("self._bind_weak_workspace_mousewheel", workspace_body)
 
         self.assertIn("def _build_weak_status_lights", text)
+        self.assertIn("def _on_weak_workspace_mousewheel", text)
         self.assertIn("weak_network_status_lights", text)
         for label in ("代理监听", "设备代理", "端口连通", "代理流量", "目标命中"):
             self.assertIn(label, text)
@@ -1844,7 +1852,7 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("StepTitle.TLabel", text)
         self.assertIn("StepDetail.TLabel", text)
         self.assertIn("1 连接设备", text)
-        self.assertIn("2 选择应用", text)
+        self.assertIn("2 自动识别前台应用", text)
         self.assertIn("3 采集自检", text)
         self.assertIn("4 开始采集", text)
 
@@ -1875,7 +1883,9 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self.app_list = tk.Listbox", control_body)
         self.assertIn("self.app_picker = ttk.Combobox", control_body)
         self.assertIn("command=self.refresh_apps", control_body)
-        self.assertIn("app_panel.rowconfigure(4, weight=1, minsize=120)", control_body)
+        self.assertLess(control_body.index("目标应用"), control_body.index('text="设备"'))
+        self.assertIn("app_panel.rowconfigure(4, weight=0, minsize=84)", control_body)
+        self.assertIn("height=4", control_body)
         self.assertIn('self.app_list.grid(row=4, column=0, sticky="nsew"', control_body)
 
     def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
@@ -1954,6 +1964,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
 
 
 class GraphScrollBehaviorTest(unittest.TestCase):
+    def test_graph_quality_marker_points_thins_dense_issue_runs_without_losing_edges(self) -> None:
+        points = [(float(index), 60.0 - index, "issue") for index in range(60)]
+
+        markers = graph_quality_marker_points(points, max_markers=12)
+
+        self.assertLessEqual(len(markers), 12)
+        self.assertGreater(len(markers), 2)
+        self.assertEqual(markers[0], points[0])
+        self.assertEqual(markers[-1], points[-1])
+
+    def test_graph_quality_marker_points_keeps_edges_for_tiny_marker_budget(self) -> None:
+        points = [(float(index), 60.0 - index, "issue") for index in range(8)]
+
+        self.assertEqual(graph_quality_marker_points(points, max_markers=2), [points[0], points[-1]])
+
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:
         self.assertEqual(
             graph_quality_badge_text(
@@ -2207,8 +2232,17 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertNotIn('self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")', text)
 
     def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
+        self.assertEqual(DEFAULT_INTERVAL_SECONDS, 1.5)
         self.assertIn("1.5", SAMPLING_INTERVAL_OPTIONS)
         self.assertIn("2.0", SAMPLING_INTERVAL_OPTIONS)
+
+    def test_app_default_sampling_interval_uses_stable_low_end_target(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn('self.interval_var = tk.StringVar(value=f"{DEFAULT_INTERVAL_SECONDS:.1f}")', text)
+        self.assertIn("recommended_sampling_interval_button_text(DEFAULT_INTERVAL_SECONDS)", text)
+        self.assertNotIn('self.interval_var = tk.StringVar(value="1.0")', text)
 
     def test_app_applies_recommended_sampling_interval(self) -> None:
         class FakeVar:
@@ -2395,7 +2429,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.metric_health_vars = {}
         app.collection_link_vars = {}
         app.stabilizer = MetricStabilizer()
-        app.live_quality = LiveQualityTracker()
+        app.live_quality = LiveQualityTracker(expected_interval=1.0)
         app.quality_summary_var = FakeVar()
         app.performance_conclusion_var = FakeVar()
         app.quality_var = FakeVar()
@@ -2453,7 +2487,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.metric_health_vars = {}
         app.collection_link_vars = {}
         app.health_analyzer = FakeMetricHealth()
-        app.live_quality = LiveQualityTracker()
+        app.live_quality = LiveQualityTracker(expected_interval=1.0)
         app.quality_summary_var = FakeVar()
         app.performance_conclusion_var = FakeVar()
         app.quality_var = FakeVar()

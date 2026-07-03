@@ -531,7 +531,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("慢采样 1", text)
 
     def test_summarizes_slow_sampling_from_elapsed_intervals_without_note(self) -> None:
-        tracker = LiveQualityTracker()
+        tracker = LiveQualityTracker(expected_interval=1.0)
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
         tracker.update(PerfSample(timestamp=2.7, elapsed=2.7, fps=55.0))
         tracker.update(PerfSample(timestamp=4.5, elapsed=4.5, fps=54.0))
@@ -543,7 +543,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("展示：低端机保守", text)
 
     def test_low_end_display_mode_recovers_when_recent_window_is_stable(self) -> None:
-        tracker = LiveQualityTracker()
+        tracker = LiveQualityTracker(expected_interval=1.0)
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
         tracker.update(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
         tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=54.0))
@@ -620,7 +620,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("受限 2", health["detail"])
 
     def test_status_text_includes_recent_window_health(self) -> None:
-        tracker = LiveQualityTracker()
+        tracker = LiveQualityTracker(expected_interval=1.0)
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
         tracker.update(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
         tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=54.0))
@@ -866,7 +866,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(recommended_sampling_interval_button_text(2.0), "推荐 2.0s")
 
     def test_status_text_includes_live_sampling_action(self) -> None:
-        tracker = LiveQualityTracker()
+        tracker = LiveQualityTracker(expected_interval=1.0)
         tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
         tracker.update(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
         tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, note="Android FPS 当前无帧增量"))

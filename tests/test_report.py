@@ -100,7 +100,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn('"qualityTag": "issue"', html_text)
 
     def test_quality_summary_uses_cadence_slow_intervals_even_without_notes(self) -> None:
-        recorder = SessionRecorder()
+        recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         for elapsed in [1.0, 2.7, 4.5, 5.5, 7.3]:
             recorder.append(PerfSample(timestamp=elapsed, elapsed=elapsed, fps=55.0, cpu_percent=20.0, memory_mb=512.0))
@@ -115,7 +115,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("慢采样", gate["detail"])
 
     def test_quality_summary_includes_real_device_validation_checklist(self) -> None:
-        recorder = SessionRecorder()
+        recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         recorder.append(
             PerfSample(
@@ -782,7 +782,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("低端机保守展示", html_text)
 
     def test_export_bundle_marks_cadence_inferred_slow_samples_on_graph(self) -> None:
-        recorder = SessionRecorder()
+        recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
         recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=24.0, cpu_percent=92.0, memory_mb=521.0))
@@ -802,7 +802,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn('"qualityTag": "issue"', html_text)
 
     def test_export_bundle_uses_quality_tags_to_isolate_bad_display_samples(self) -> None:
-        recorder = SessionRecorder()
+        recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
         recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=0.0, cpu_percent=92.0, memory_mb=521.0))
@@ -843,7 +843,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("采样间隔调到 2.0s", quality["recent_window"]["action"])
 
     def test_quality_summary_includes_recent_window_health(self) -> None:
-        recorder = SessionRecorder()
+        recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
         recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0, cpu_percent=20.0, memory_mb=521.0))

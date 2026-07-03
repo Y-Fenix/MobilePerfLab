@@ -38,7 +38,7 @@ import tkinter as tk
 APP_NAME = "MobilePerfLab"
 APP_VERSION = "0.1.0"
 SAMPLE_LIMIT = 7200
-DEFAULT_INTERVAL_SECONDS = 1.0
+DEFAULT_INTERVAL_SECONDS = 1.5
 SAMPLING_INTERVAL_OPTIONS = ("0.5", "1.0", "1.5", "2.0")
 CHART_VIEW_SECONDS = 30 * 60
 PROXY_BUFFER_SIZE = 16 * 1024
@@ -1264,8 +1264,8 @@ def workbench_sidebar_steps() -> list[dict[str, str]]:
         },
         {
             "key": "select_app",
-            "title": "2 选择应用",
-            "detail": "自动识别当前前台应用，也可从应用列表选择。",
+            "title": "2 自动识别前台应用",
+            "detail": "默认跟随当前前台应用；需要固定目标时再从应用列表选择。",
             "primary_action": "前台应用",
         },
         {
@@ -1495,6 +1495,21 @@ def graph_quality_badge_text_for_context(
     if smoothing_enabled and (low_end_display_mode or has_visible_issue):
         return " · ".join(part for part in (base, "稳态") if part)
     return base
+
+
+def graph_quality_marker_points(
+    points: list[tuple[float, float, str]],
+    max_markers: int = 16,
+) -> list[tuple[float, float, str]]:
+    non_ok = [point for point in points if point[2] != "ok"]
+    if len(non_ok) <= max_markers:
+        return non_ok
+    marker_budget = max(2, int(max_markers))
+    if marker_budget == 2:
+        return [non_ok[0], non_ok[-1]]
+    step = max(1, math.ceil((len(non_ok) - 2) / max(marker_budget - 2, 1)))
+    middle = non_ok[1:-1:step][: marker_budget - 2]
+    return [non_ok[0], *middle, non_ok[-1]]
 
 
 def graph_summary_text(points: list[tuple[float, float]], unit: str) -> str:
@@ -8577,7 +8592,7 @@ class GraphPanel(ttk.Frame):
         shadow = points.copy()
         canvas.create_line(*shadow, fill="#DCEBFF", width=5, smooth=True)
         canvas.create_line(*points, fill=self.color, width=2.2, smooth=True)
-        for x, y, quality in quality_points:
+        for x, y, quality in graph_quality_marker_points(quality_points):
             if quality == "fallback":
                 canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2)
             elif quality == "recovery":
@@ -8706,8 +8721,8 @@ class App:
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
         self.app_picker_var = tk.StringVar()
-        self.interval_var = tk.StringVar(value="1.0")
-        self.recommended_interval_var = tk.StringVar(value=recommended_sampling_interval_button_text(1.0))
+        self.interval_var = tk.StringVar(value=f"{DEFAULT_INTERVAL_SECONDS:.1f}")
+        self.recommended_interval_var = tk.StringVar(value=recommended_sampling_interval_button_text(DEFAULT_INTERVAL_SECONDS))
         self.status_var = tk.StringVar(value="就绪")
         self.session_var = tk.StringVar(value="未开始")
         self.device_var = tk.StringVar(value="未选择设备")
@@ -8859,7 +8874,8 @@ class App:
     def _build_control_rail(self, master: tk.Widget) -> None:
         sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        sidebar.rowconfigure(5, weight=1)
+        sidebar.rowconfigure(2, weight=0)
+        sidebar.rowconfigure(6, weight=1)
         steps_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
         steps_panel.grid(row=0, column=0, sticky="ew")
         steps_panel.columnconfigure(0, weight=1)
@@ -8870,34 +8886,10 @@ class App:
             ttk.Label(row, text=step["title"], style="StepTitle.TLabel").pack(anchor="w")
             ttk.Label(row, text=step["detail"], style="StepDetail.TLabel", wraplength=270).pack(anchor="w", pady=(2, 0))
             step_row += 1
-        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(14, 0))
-        filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        filter_row.grid(row=2, column=0, sticky="ew", pady=(10, 8))
-        for label in ("All", "Android", "iOS", "Demo"):
-            ttk.Radiobutton(
-                filter_row,
-                text=label,
-                variable=self.platform_filter,
-                value=label,
-                command=self._render_devices,
-            ).pack(side="left", padx=(0, 8))
-        button_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        button_row.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        ttk.Button(button_row, text="刷新设备", style="Tool.TButton", command=self.refresh_devices).pack(side="left")
-        ttk.Button(button_row, text="演示模式", style="Tool.TButton", command=self.use_demo_devices).pack(side="left", padx=(8, 0))
-        self.device_tree = ttk.Treeview(sidebar, columns=("platform", "status"), show="tree headings", height=8)
-        self.device_tree.heading("#0", text="名称")
-        self.device_tree.heading("platform", text="平台")
-        self.device_tree.heading("status", text="状态")
-        self.device_tree.column("#0", width=164, stretch=True)
-        self.device_tree.column("platform", width=72, anchor="center")
-        self.device_tree.column("status", width=70, anchor="center")
-        self.device_tree.grid(row=4, column=0, sticky="ew")
-        self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
         app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
+        app_panel.grid(row=1, column=0, sticky="ew", pady=(14, 0))
         app_panel.columnconfigure(0, weight=1)
-        app_panel.rowconfigure(4, weight=1, minsize=120)
+        app_panel.rowconfigure(4, weight=0, minsize=84)
         ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         self.app_picker = ttk.Combobox(app_panel, textvariable=self.app_picker_var, values=(), state="readonly")
@@ -8910,7 +8902,7 @@ class App:
         ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
         self.app_list = tk.Listbox(
             app_panel,
-            height=8,
+            height=4,
             borderwidth=1,
             highlightthickness=0,
             activestyle="none",
@@ -8923,6 +8915,30 @@ class App:
         self.app_list.grid(row=4, column=0, sticky="nsew", pady=(10, 8))
         self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
         ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=5, column=0, sticky="ew")
+        ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=2, column=0, sticky="w", pady=(14, 0))
+        filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        filter_row.grid(row=3, column=0, sticky="ew", pady=(10, 8))
+        for label in ("All", "Android", "iOS", "Demo"):
+            ttk.Radiobutton(
+                filter_row,
+                text=label,
+                variable=self.platform_filter,
+                value=label,
+                command=self._render_devices,
+            ).pack(side="left", padx=(0, 8))
+        button_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        button_row.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(button_row, text="刷新设备", style="Tool.TButton", command=self.refresh_devices).pack(side="left")
+        ttk.Button(button_row, text="演示模式", style="Tool.TButton", command=self.use_demo_devices).pack(side="left", padx=(8, 0))
+        self.device_tree = ttk.Treeview(sidebar, columns=("platform", "status"), show="tree headings", height=5)
+        self.device_tree.heading("#0", text="名称")
+        self.device_tree.heading("platform", text="平台")
+        self.device_tree.heading("status", text="状态")
+        self.device_tree.column("#0", width=164, stretch=True)
+        self.device_tree.column("platform", width=72, anchor="center")
+        self.device_tree.column("status", width=70, anchor="center")
+        self.device_tree.grid(row=5, column=0, sticky="ew")
+        self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
         settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
         settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
         settings.columnconfigure(1, weight=1)
@@ -9212,14 +9228,50 @@ class App:
             ttk.Label(controls, text=hint, style="Muted.TLabel").grid(row=index, column=2, sticky="w", padx=(8, 0), pady=(7, 0))
         actions = ttk.Frame(controls, style="Panel.TFrame")
         actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 0))
-        ttk.Button(actions, text="启动代理", style="Primary.TButton", command=self.start_weak_proxy).pack(side="left")
-        ttk.Button(actions, text="停止代理", style="Tool.TButton", command=self.stop_weak_proxy).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="应用到 Android", style="Tool.TButton", command=self.apply_android_proxy).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="清除 Android 代理", style="Tool.TButton", command=self.clear_android_proxy).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="刷新状态", style="Tool.TButton", command=self.refresh_android_proxy_status).pack(side="left", padx=(8, 0))
+        for column in range(3):
+            actions.columnconfigure(column, weight=1, uniform="weak_actions")
+        weak_actions = [
+            ("启动代理", "Primary.TButton", self.start_weak_proxy),
+            ("停止代理", "Tool.TButton", self.stop_weak_proxy),
+            ("应用到 Android", "Tool.TButton", self.apply_android_proxy),
+            ("清除 Android 代理", "Tool.TButton", self.clear_android_proxy),
+            ("刷新状态", "Tool.TButton", self.refresh_android_proxy_status),
+        ]
+        for index, (text, style, command) in enumerate(weak_actions):
+            ttk.Button(actions, text=text, style=style, command=command).grid(
+                row=index // 3,
+                column=index % 3,
+                sticky="ew",
+                padx=(0 if index % 3 == 0 else 8, 0),
+                pady=(0 if index < 3 else 8, 0),
+            )
 
-        guide = ttk.Frame(content, style="Panel.TFrame", padding=(16, 14))
-        guide.grid(row=0, column=1, sticky="nsew")
+        guide_shell = ttk.Frame(content, style="Panel.TFrame", padding=(0, 0))
+        guide_shell.grid(row=0, column=1, sticky="nsew")
+        guide_shell.columnconfigure(0, weight=1)
+        guide_shell.rowconfigure(0, weight=1)
+        self.weak_workspace_canvas = tk.Canvas(
+            guide_shell,
+            background="#FFFFFF",
+            borderwidth=0,
+            highlightthickness=0,
+            yscrollincrement=120,
+        )
+        self.weak_workspace_scrollbar = ttk.Scrollbar(guide_shell, orient="vertical", command=self.weak_workspace_canvas.yview)
+        self.weak_workspace_canvas.configure(yscrollcommand=self.weak_workspace_scrollbar.set)
+        self.weak_workspace_canvas.grid(row=0, column=0, sticky="nsew")
+        self.weak_workspace_scrollbar.grid(row=0, column=1, sticky="ns")
+        guide = ttk.Frame(self.weak_workspace_canvas, style="Panel.TFrame", padding=(16, 14))
+        self.weak_workspace_window_id = self.weak_workspace_canvas.create_window((0, 0), window=guide, anchor="nw")
+        self.weak_workspace_canvas.bind(
+            "<Configure>",
+            lambda event: self.weak_workspace_canvas.itemconfigure(self.weak_workspace_window_id, width=event.width),
+        )
+        guide.bind(
+            "<Configure>",
+            lambda _event: self.weak_workspace_canvas.configure(scrollregion=self.weak_workspace_canvas.bbox("all")),
+        )
+        self._bind_weak_workspace_mousewheel(guide_shell)
         guide.columnconfigure(0, weight=1)
         self._build_weak_three_step_path(guide, row=0)
         self._build_weak_status_lights(guide, row=1)
@@ -9266,6 +9318,27 @@ class App:
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
 
+    def _bind_weak_workspace_mousewheel(self, widget: tk.Widget) -> None:
+        widget.bind("<MouseWheel>", self._on_weak_workspace_mousewheel)
+        widget.bind("<Button-4>", self._on_weak_workspace_mousewheel)
+        widget.bind("<Button-5>", self._on_weak_workspace_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_weak_workspace_mousewheel(child)
+
+    def _on_weak_workspace_mousewheel(self, event: tk.Event) -> str:
+        if not hasattr(self, "weak_workspace_canvas"):
+            return "break"
+        if getattr(event, "num", None) == 4:
+            units = -1
+        elif getattr(event, "num", None) == 5:
+            units = 1
+        else:
+            delta = int(getattr(event, "delta", 0) or 0)
+            units = -1 if delta > 0 else 1 if delta < 0 else 0
+        if units:
+            self.weak_workspace_canvas.yview_scroll(units, "units")
+        return "break"
+
     def _build_weak_three_step_path(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="PanelBody.TFrame")
         panel.grid(row=row, column=0, sticky="ew")
@@ -9294,17 +9367,27 @@ class App:
             ("target_hit", "目标命中"),
         ]
         self.weak_status_light_vars = {}
-        for col, (key, label) in enumerate(labels):
+        for column in range(3):
+            grid.columnconfigure(column, weight=1, uniform="weak_lights")
+        for index, (key, label) in enumerate(labels):
+            row = index // 3
+            col = index % 3
             grid.columnconfigure(col, weight=1)
             label_var = tk.StringVar(value=label)
             state_var = tk.StringVar(value="等待")
             detail_var = tk.StringVar(value="-")
             self.weak_status_light_vars[key] = {"label": label_var, "state": state_var, "detail": detail_var}
             item = ttk.Frame(grid, style="Panel.TFrame", padding=(10, 8))
-            item.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 8, 0))
+            item.grid(
+                row=row,
+                column=col,
+                sticky="nsew",
+                padx=(0 if col == 0 else 8, 0),
+                pady=(0 if row == 0 else 8, 0),
+            )
             ttk.Label(item, textvariable=label_var, style="Muted.TLabel").pack(anchor="w")
             ttk.Label(item, textvariable=state_var, style="Quality.TLabel").pack(anchor="w", pady=(4, 0))
-            ttk.Label(item, textvariable=detail_var, style="Muted.TLabel", wraplength=130).pack(anchor="w", pady=(3, 0))
+            ttk.Label(item, textvariable=detail_var, style="Muted.TLabel", wraplength=180).pack(anchor="w", pady=(3, 0))
         self._refresh_weak_status_lights()
 
     def _refresh_weak_status_lights(
@@ -9445,8 +9528,6 @@ class App:
                 pady=(0 if row == 0 else 8, 0),
             )
 
-        self._build_metric_health_strip(main, row=3)
-
         self.graph_panel_row_height = 176
         self.graph_row_gap = 10
         self.graph_row_scroll_pixels = self.graph_panel_row_height + self.graph_row_gap
@@ -9454,7 +9535,7 @@ class App:
         self.graph_visible_rows = graph_visible_rows_for_height(screen_height)
         graph_view_height = format_graph_view_height(self.graph_visible_rows, self.graph_panel_row_height, self.graph_row_gap, 22)
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=4, column=0, sticky="ew")
+        graph_view.grid(row=3, column=0, sticky="ew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
