@@ -833,16 +833,45 @@ class FullscreenStartupTest(unittest.TestCase):
             def insert(self, _index: object, value: str) -> None:
                 self.items.append(value)
 
+        class FakePicker:
+            def __init__(self) -> None:
+                self.values: tuple[str, ...] = ()
+
+            def configure(self, **kwargs: object) -> None:
+                self.values = tuple(kwargs.get("values", ()))
+
         app = object.__new__(App)
         app.app_hint_var = FakeVar()
         app.app_task_generation = 1
         app.app_list = FakeList()
+        app.app_picker = FakePicker()
         app._refresh_session_chips = lambda: None
 
         App._handle_app_task_result(app, {"generation": 1, "kind": "list_apps", "apps": ["com.a", "com.b"], "error": ""})
 
         self.assertEqual(app.app_list.items, ["com.a", "com.b"])
+        self.assertEqual(app.app_picker.values, ("com.a", "com.b"))
         self.assertEqual(app.app_hint_var.value, "已读取 2 个应用。")
+
+    def test_app_picker_selection_updates_target_app_var(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(App)
+        app.app_picker_var = FakeVar("com.example.game")
+        app.app_var = FakeVar()
+        app._refresh_session_chips = lambda: None
+
+        App._on_app_picker_selected(app)
+
+        self.assertEqual(app.app_var.value, "com.example.game")
 
     def test_foreground_result_event_updates_app_var(self) -> None:
         class FakeVar:
@@ -1138,8 +1167,10 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("目标应用", control_body)
         self.assertIn("command=self.refresh_apps", control_body)
         self.assertIn("self.app_list = tk.Listbox", control_body)
-        self.assertIn("app_panel.rowconfigure(3, weight=1, minsize=120)", control_body)
-        self.assertIn('self.app_list.grid(row=3, column=0, sticky="nsew"', control_body)
+        self.assertIn("self.app_picker = ttk.Combobox", control_body)
+        self.assertIn("command=self.refresh_apps", control_body)
+        self.assertIn("app_panel.rowconfigure(4, weight=1, minsize=120)", control_body)
+        self.assertIn('self.app_list.grid(row=4, column=0, sticky="nsew"', control_body)
 
     def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"

@@ -8588,6 +8588,7 @@ class App:
 
         self.platform_filter = tk.StringVar(value="All")
         self.app_var = tk.StringVar()
+        self.app_picker_var = tk.StringVar()
         self.interval_var = tk.StringVar(value="1.0")
         self.recommended_interval_var = tk.StringVar(value=recommended_sampling_interval_button_text(1.0))
         self.status_var = tk.StringVar(value="就绪")
@@ -8779,11 +8780,14 @@ class App:
         app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
         app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
         app_panel.columnconfigure(0, weight=1)
-        app_panel.rowconfigure(3, weight=1, minsize=120)
+        app_panel.rowconfigure(4, weight=1, minsize=120)
         ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
+        self.app_picker = ttk.Combobox(app_panel, textvariable=self.app_picker_var, values=(), state="readonly")
+        self.app_picker.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.app_picker.bind("<<ComboboxSelected>>", self._on_app_picker_selected)
         app_actions = ttk.Frame(app_panel, style="Sidebar.TFrame")
-        app_actions.grid(row=2, column=0, sticky="ew")
+        app_actions.grid(row=3, column=0, sticky="ew")
         ttk.Button(app_actions, text="前台应用", style="Tool.TButton", command=self.detect_foreground_app).pack(side="left")
         ttk.Button(app_actions, text="应用列表", style="Tool.TButton", command=self.refresh_apps).pack(side="left", padx=(8, 0))
         ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
@@ -8799,9 +8803,9 @@ class App:
             selectbackground="#DCEBFF",
             selectforeground="#0A4E92",
         )
-        self.app_list.grid(row=3, column=0, sticky="nsew", pady=(10, 8))
+        self.app_list.grid(row=4, column=0, sticky="nsew", pady=(10, 8))
         self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
-        ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, sticky="ew")
+        ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=5, column=0, sticky="ew")
         settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
         settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
         settings.columnconfigure(1, weight=1)
@@ -9996,6 +10000,10 @@ class App:
         self.app_hint_var.set("可直接输入包名/Bundle ID，或点击读取前台应用。")
         self.status_var.set(f"已选择 {device.display_name}")
         self.app_list.delete(0, tk.END)
+        if hasattr(self, "app_picker"):
+            self.app_picker.configure(values=())
+        if hasattr(self, "app_picker_var"):
+            self.app_picker_var.set("")
         if device.platform == "iOS":
             if device.status != "ready":
                 self.app_hint_var.set("该 iOS 设备当前离线或不可连接，请解锁设备、信任电脑并确认 USB/网络连接。")
@@ -10011,6 +10019,13 @@ class App:
             raw = self.app_list.get(selection[0])
             self.app_var.set(raw.split()[0] if raw.split() else raw)
             self._refresh_session_chips()
+
+    def _on_app_picker_selected(self, _event: tk.Event | None = None) -> None:
+        app_id = self.app_picker_var.get().strip()
+        if not app_id:
+            return
+        self.app_var.set(app_id.split()[0] if app_id.split() else app_id)
+        self._refresh_session_chips()
 
     def refresh_apps(self) -> None:
         device = self.selected_device
@@ -10082,6 +10097,8 @@ class App:
             self.app_list.delete(0, tk.END)
             for app_id in apps[:500]:
                 self.app_list.insert(tk.END, str(app_id))
+            if hasattr(self, "app_picker"):
+                self.app_picker.configure(values=tuple(str(app_id) for app_id in apps[:500]))
             self.app_hint_var.set(f"已读取 {len(apps)} 个应用。" if apps else "未读取到应用，请手动输入。")
             self._refresh_session_chips()
             return
@@ -10089,6 +10106,8 @@ class App:
             app_id = str(data.get("app_id") or "")
             if app_id:
                 self.app_var.set(app_id)
+                if hasattr(self, "app_picker_var"):
+                    self.app_picker_var.set(app_id)
                 self.app_hint_var.set(f"前台应用：{app_id}")
             else:
                 self.app_hint_var.set("未识别到前台应用，请手动输入包名或 Bundle ID。")
