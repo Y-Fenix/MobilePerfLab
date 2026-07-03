@@ -1261,6 +1261,43 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.app_var.value, "com.example.game")
         self.assertEqual(app.app_hint_var.value, "前台应用：com.example.game")
 
+    def test_foreground_result_adds_detected_app_to_picker_values(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakePicker:
+            def __init__(self) -> None:
+                self.values: tuple[str, ...] = ("com.example.old",)
+
+            def cget(self, key: str) -> tuple[str, ...]:
+                if key == "values":
+                    return self.values
+                return ()
+
+            def configure(self, **kwargs: object) -> None:
+                self.values = tuple(kwargs.get("values", self.values))
+
+        app = object.__new__(App)
+        app.app_var = FakeVar()
+        app.app_picker_var = FakeVar()
+        app.app_picker = FakePicker()
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(
+            app,
+            {"generation": 1, "kind": "foreground", "app_id": "com.example.foreground", "error": ""},
+        )
+
+        self.assertEqual(app.app_var.value, "com.example.foreground")
+        self.assertEqual(app.app_picker_var.value, "com.example.foreground")
+        self.assertIn("com.example.foreground", app.app_picker.values)
+
     def test_stale_app_task_result_does_not_override_current_app(self) -> None:
         class FakeVar:
             def __init__(self, value: str = "") -> None:

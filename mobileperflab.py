@@ -10149,6 +10149,13 @@ class App:
         self.app_var.set(app_id.split()[0] if app_id.split() else app_id)
         self._refresh_session_chips()
 
+    def _ensure_app_picker_contains(self, app_id: str) -> None:
+        if not app_id or not hasattr(self, "app_picker"):
+            return
+        current_values = tuple(str(value) for value in self.app_picker.cget("values"))
+        if app_id not in current_values:
+            self.app_picker.configure(values=(*current_values, app_id))
+
     def refresh_apps(self) -> None:
         device = self.selected_device
         adapter = self.adapter_for(device)
@@ -10228,6 +10235,7 @@ class App:
             app_id = str(data.get("app_id") or "")
             if app_id:
                 self.app_var.set(app_id)
+                self._ensure_app_picker_contains(app_id)
                 if hasattr(self, "app_picker_var"):
                     self.app_picker_var.set(app_id)
                 self.app_hint_var.set(f"前台应用：{app_id}")
