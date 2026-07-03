@@ -59,6 +59,37 @@ class SlowMetricAndroidAdapter(AndroidAdapter):
         return 512.0
 
 
+class SlowDiagnosticAndroidAdapter(AndroidAdapter):
+    def __init__(self, sleep_seconds: float = 0.04) -> None:
+        super().__init__()
+        self.sleep_seconds = sleep_seconds
+        self.calls: list[str] = []
+
+    def _record(self, name: str) -> None:
+        self.calls.append(name)
+        time.sleep(self.sleep_seconds)
+
+    def foreground_app(self, device: DeviceInfo) -> str:
+        self._record("foreground")
+        return "com.example.game"
+
+    def _diagnose_process_pids(self, device: DeviceInfo, app_id: str) -> tuple[list[int], str]:
+        self._record("pid")
+        return [101], "pidof"
+
+    def _diagnose_app_uid(self, device: DeviceInfo, app_id: str, pids: list[int] | None = None) -> tuple[int | None, str]:
+        self._record("uid")
+        return 10234, "dumpsys package"
+
+    def _diagnose_fps_source(self, device: DeviceInfo, app_id: str, now: float) -> str:
+        self._record("fps")
+        return "gfxinfo counters"
+
+    def _diagnose_network_source(self, device: DeviceInfo, app_id: str, uid: int | None) -> str:
+        self._record("network")
+        return "per-UID"
+
+
 class FailingMetricAndroidAdapter(SlowMetricAndroidAdapter):
     def _cpu_percent(self, device: DeviceInfo, app_id: str) -> float:
         self._record("cpu")
@@ -1211,6 +1242,17 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.uid_source, "dumpsys package")
         self.assertEqual(diagnostics.fps_source, "gfxinfo counters")
         self.assertEqual(diagnostics.network_source, "per-UID")
+
+    def test_android_collection_diagnostics_runs_independent_probes_concurrently(self) -> None:
+        adapter = SlowDiagnosticAndroidAdapter(sleep_seconds=0.04)
+
+        start = time.monotonic()
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(diagnostics.overall_state, "ok")
+        self.assertEqual(set(adapter.calls), {"foreground", "pid", "uid", "fps", "network"})
+        self.assertLess(elapsed, 0.17)
 
     def test_android_collection_diagnostics_treats_zero_uid_stat_as_per_uid_available(self) -> None:
         adapter = FakeAndroidAdapter(

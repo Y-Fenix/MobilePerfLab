@@ -3949,12 +3949,16 @@ class AndroidAdapter(BaseAdapter):
 
     def collection_diagnostics(self, device: DeviceInfo, app_id: str, now: float | None = None) -> AndroidCollectionDiagnostics:
         now = time.time() if now is None else now
-        foreground_app = self.foreground_app(device)
-        foreground_state = self._diagnose_foreground_state(app_id, foreground_app)
-        pids, pid_source = self._diagnose_process_pids(device, app_id)
-        uid, uid_source = self._diagnose_app_uid(device, app_id, pids)
-        fps_source = self._diagnose_fps_source(device, app_id, now)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            foreground_future = executor.submit(self.foreground_app, device)
+            pids_future = executor.submit(self._diagnose_process_pids, device, app_id)
+            fps_future = executor.submit(self._diagnose_fps_source, device, app_id, now)
+            foreground_app = foreground_future.result()
+            pids, pid_source = pids_future.result()
+            uid, uid_source = self._diagnose_app_uid(device, app_id, pids)
+            fps_source = fps_future.result()
         network_source = self._diagnose_network_source(device, app_id, uid)
+        foreground_state = self._diagnose_foreground_state(app_id, foreground_app)
         rows = [
             self._diagnostic_row(
                 "前台",
