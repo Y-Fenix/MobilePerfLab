@@ -3932,9 +3932,9 @@ class AndroidAdapter(BaseAdapter):
 
     def foreground_app(self, device: DeviceInfo) -> str:
         for command, timeout in (
-            ("dumpsys window", 6.0),
             ("dumpsys activity activities", 7.0),
             ("dumpsys activity top", 5.0),
+            ("dumpsys window", 6.0),
             ("cmd activity get-foreground-activities", 5.0),
         ):
             output = self._shell(device.serial, command, timeout=timeout)
@@ -4028,6 +4028,10 @@ class AndroidAdapter(BaseAdapter):
         )
         for line in output.splitlines():
             if not any(token in line for token in preferred_tokens):
+                continue
+            if ("Intent {" in line or "Requested (" in line) and not any(
+                token in line for token in ("mCurrentFocus", "mFocusedApp", "topResumedActivity", "mResumedActivity", "ResumedActivity")
+            ):
                 continue
             app_id = cls._package_from_activity_line(line)
             if app_id:
@@ -4365,7 +4369,7 @@ class AndroidAdapter(BaseAdapter):
             output = self._shell(device.serial, "ps -A", timeout=4.0)
             pids = self._parse_ps_table_pids(output, app_id)
             if not pids:
-                pids = self._process_pids_from_proc_cmdline(device, output, app_id)
+                pids = self._process_pids_from_proc_cmdline(device, output, app_id, limit=4)
         if pids:
             self._pid_list_cache[key] = pids
             self._pid_cache[key] = pids[0]
@@ -4447,10 +4451,19 @@ class AndroidAdapter(BaseAdapter):
             pids.append(pid)
         return pids
 
-    def _process_pids_from_proc_cmdline(self, device: DeviceInfo, ps_output: str, app_id: str) -> list[int]:
+    def _process_pids_from_proc_cmdline(
+        self,
+        device: DeviceInfo,
+        ps_output: str,
+        app_id: str,
+        limit: int | None = None,
+    ) -> list[int]:
         pids: list[int] = []
         seen: set[int] = set()
-        for pid in self._ps_table_pid_candidates(ps_output):
+        candidates = self._ps_table_pid_candidates(ps_output)
+        if limit is not None:
+            candidates = candidates[: max(0, int(limit))]
+        for pid in candidates:
             if pid in seen:
                 continue
             cmdline = self._shell(device.serial, f"cat /proc/{pid}/cmdline", timeout=2.0)
@@ -5307,12 +5320,14 @@ class AndroidAdapter(BaseAdapter):
         rx: float,
         tx: float,
     ) -> str:
-        if sample_count < 3 or not app_id:
+        if not app_id:
             return ""
         notes: list[str] = []
         pid = self._pid_cache.get((device.serial, app_id))
         if pid is None and (cpu <= 0 or memory <= 0):
-            notes.append("Android 未匹配到目标 PID，请确认 App 正在前台运行。")
+            notes.append("Android 目标进程未找到，请重新读取前台应用或从应用列表选择正在运行的 App。")
+        if sample_count < 3:
+            return "；".join(notes[:1])
         if fps <= 0:
             surface = self._surface_cache.get((device.serial, app_id), "")
             if not surface:
@@ -8764,6 +8779,7 @@ class App:
         app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
         app_panel.grid(row=5, column=0, sticky="nsew", pady=(16, 0))
         app_panel.columnconfigure(0, weight=1)
+        app_panel.rowconfigure(3, weight=1, minsize=120)
         ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         app_actions = ttk.Frame(app_panel, style="Sidebar.TFrame")

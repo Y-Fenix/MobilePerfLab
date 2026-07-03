@@ -96,6 +96,36 @@ class FailingMetricAndroidAdapter(SlowMetricAndroidAdapter):
         raise RuntimeError("proc denied")
 
 
+class MissingPidAndroidAdapter(FakeAndroidAdapter):
+    def __init__(self) -> None:
+        ps_rows = ["USER PID PPID VSZ RSS WCHAN ADDR S NAME"]
+        ps_rows.extend(f"u0_a{index} {1000 + index} 1 0 0 0 0 S com.other.app{index}" for index in range(30))
+        super().__init__(
+            {
+                "cmd activity get-foreground-activities": "mFocusedApp=ActivityRecord{42 u0 com.example.missing/.MainActivity}",
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.missing/com.example.missing.MainActivity}",
+                "pidof com.example.missing": "",
+                "pgrep -f com.example.missing": "",
+                "ps -A -o PID=,NAME=": "",
+                "ps -A": "\n".join(ps_rows),
+                "dumpsys cpuinfo com.example.missing": "",
+                "top -b -n 1 -o PID,CPU,ARGS": "",
+                "top -b -n 1": "",
+                "top -n 1": "",
+                "dumpsys meminfo com.example.missing": "",
+                "dumpsys battery": "level: 88\ntemperature: 360\nvoltage: 3900",
+                "cat /sys/class/power_supply/battery/current_now": "0",
+                "cat /sys/class/power_supply/battery/voltage_now": "3900000",
+                "dumpsys package com.example.missing": "userId=12345",
+                "cat /proc/uid_stat/12345/tcp_rcv": "0",
+                "cat /proc/uid_stat/12345/tcp_snd": "0",
+                "dumpsys gfxinfo com.example.missing": "",
+                "dumpsys gfxinfo com.example.missing framestats": "",
+                "dumpsys SurfaceFlinger --list": "",
+            }
+        )
+
+
 class ForegroundSequenceAndroidAdapter(SlowMetricAndroidAdapter):
     def __init__(self, foreground_sequence: list[str]) -> None:
         super().__init__(sleep_seconds=0.0)
@@ -145,6 +175,26 @@ class AndroidAdapterTest(unittest.TestCase):
 
         self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
         self.assertIn("dumpsys activity activities", adapter.calls)
+
+    def test_foreground_app_prefers_resumed_activity_over_stale_window_history(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys activity activities": (
+                    "topResumedActivity=ActivityRecord{143 u0 "
+                    "com.example.game/com.example.game.MainActivity t343}"
+                ),
+                "dumpsys window": "\n".join(
+                    [
+                        "ID_SETTING_UI_SIDE_KEY, keyCode: 26, ACTION_START_ACTIVITY, dispatching: -1, "
+                        "Intent { cmp=com.sec.android.app.camera/.Camera }",
+                        "mCurrentFocus=Window{fe4be98 u0 com.example.game/com.example.game.MainActivity}",
+                    ]
+                ),
+            }
+        )
+
+        self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
+        self.assertEqual(adapter.calls[0], "dumpsys activity activities")
 
     def test_foreground_app_reads_bare_package_from_focused_app_line(self) -> None:
         adapter = FakeAndroidAdapter(
@@ -1106,6 +1156,17 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(sample.temperature_c, 36.0)
         self.assertEqual(sample.cpu_percent, 0.0)
         self.assertIn("Android CPU 采集失败", sample.note)
+
+    def test_collect_sample_does_not_scan_all_proc_cmdlines_when_target_pid_is_missing(self) -> None:
+        adapter = MissingPidAndroidAdapter()
+
+        sample = adapter.collect_sample(self.device, "com.example.missing", time.time())
+
+        self.assertEqual(sample.battery_percent, 88.0)
+        self.assertEqual(sample.temperature_c, 36.0)
+        self.assertIn("Android 目标进程未找到", sample.note)
+        proc_cmdline_calls = [command for command in adapter.calls if "/proc/" in command and "cmdline" in command]
+        self.assertLessEqual(len(proc_cmdline_calls), 4)
 
     def test_collect_sample_resets_delta_caches_when_target_returns_to_foreground(self) -> None:
         adapter = ForegroundSequenceAndroidAdapter(["com.example.game"])

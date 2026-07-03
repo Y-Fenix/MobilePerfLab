@@ -1128,6 +1128,19 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn("self._build_sidebar(master)", control_body)
         self.assertIn("self._build_control_rail(master)", sidebar_body)
 
+    def test_control_rail_keeps_target_app_picker_visible_with_stable_list_height(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        control_start = text.index("def _build_control_rail")
+        control_end = text.index("def _build_observability_workspace", control_start)
+        control_body = text[control_start:control_end]
+
+        self.assertIn("目标应用", control_body)
+        self.assertIn("command=self.refresh_apps", control_body)
+        self.assertIn("self.app_list = tk.Listbox", control_body)
+        self.assertIn("app_panel.rowconfigure(3, weight=1, minsize=120)", control_body)
+        self.assertIn('self.app_list.grid(row=3, column=0, sticky="nsew"', control_body)
+
     def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
