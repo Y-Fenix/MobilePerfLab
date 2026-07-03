@@ -176,6 +176,24 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
         self.assertIn("dumpsys activity activities", adapter.calls)
 
+    def test_foreground_app_does_not_use_stale_activity_when_screen_is_locked(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "\n".join(
+                    [
+                        "mCurrentFocus=Window{f86200 u0 NotificationShade}",
+                        "mAwake=false mScreenOn: false",
+                        "mDreamingLockscreen=true",
+                        "isKeyguardShowing=true",
+                    ]
+                ),
+                "dumpsys activity activities": "topResumedActivity=ActivityRecord{42 u0 com.example.game/.MainActivity t7}",
+            }
+        )
+
+        self.assertEqual(adapter.foreground_app(self.device), "")
+        self.assertIn("dumpsys window", adapter.calls)
+
     def test_foreground_app_prefers_resumed_activity_over_stale_window_history(self) -> None:
         adapter = FakeAndroidAdapter(
             {

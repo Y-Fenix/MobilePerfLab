@@ -3934,14 +3934,26 @@ class AndroidAdapter(BaseAdapter):
         for command, timeout in (
             ("dumpsys activity activities", 7.0),
             ("dumpsys activity top", 5.0),
-            ("dumpsys window", 6.0),
-            ("cmd activity get-foreground-activities", 5.0),
         ):
             output = self._shell(device.serial, command, timeout=timeout)
             app_id = self._parse_foreground_app(output)
             if app_id:
-                return app_id
+                return "" if self._foreground_detection_is_blocked_by_window(device) else app_id
+        window_output = self._shell(device.serial, "dumpsys window", timeout=6.0)
+        if window_output and self._window_dump_blocks_foreground_detection(window_output):
+            return ""
+        app_id = self._parse_foreground_app(window_output)
+        if app_id:
+            return app_id
+        output = self._shell(device.serial, "cmd activity get-foreground-activities", timeout=5.0)
+        app_id = self._parse_foreground_app(output)
+        if app_id:
+            return "" if self._foreground_detection_is_blocked_by_window(device) else app_id
         return ""
+
+    def _foreground_detection_is_blocked_by_window(self, device: DeviceInfo) -> bool:
+        output = self._shell(device.serial, "dumpsys window", timeout=6.0)
+        return bool(output and self._window_dump_blocks_foreground_detection(output))
 
     def _light_foreground_app(self, device: DeviceInfo) -> str:
         output = self._shell(device.serial, "cmd activity get-foreground-activities", timeout=2.0)
@@ -4292,6 +4304,17 @@ class AndroidAdapter(BaseAdapter):
         if any(re.search(pattern, output) for pattern in unlocked_patterns):
             return False
         return False
+
+    @classmethod
+    def _window_dump_blocks_foreground_detection(cls, output: str) -> bool:
+        if not cls._window_dump_screen_on(output) or cls._window_dump_keyguard_locked(output):
+            return True
+        blocked_focus_patterns = (
+            r"\bmCurrentFocus=Window\{[^}]*\bNotificationShade\b",
+            r"\bmCurrentFocus=Window\{[^}]*\bKeyguard\b",
+            r"\bmFocusedApp=null\b",
+        )
+        return any(re.search(pattern, output) for pattern in blocked_focus_patterns)
 
     def stop_session(self, device: DeviceInfo, app_id: str) -> None:
         self._shutdown_metric_executor()
