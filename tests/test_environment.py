@@ -7,6 +7,7 @@ from mobileperflab import (
     AndroidAdapter,
     AndroidCollectionDiagnostics,
     App,
+    CHART_VIEW_SECONDS,
     DEFAULT_INTERVAL_SECONDS,
     WORKBENCH_SHELL_REGIONS,
     collection_diagnostic_status_rows,
@@ -1806,6 +1807,52 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         for label in ("代理监听", "设备代理", "端口连通", "代理流量", "目标命中"):
             self.assertIn(label, text)
 
+    def test_weak_network_actions_use_two_two_one_full_width_rows(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        workspace_start = text.index("def _build_network_workspace")
+        workspace_end = text.index("def _build_weak_three_step_path", workspace_start)
+        workspace_body = text[workspace_start:workspace_end]
+
+        self.assertIn('("启动代理", "Primary.TButton", self.start_weak_proxy, 0, 0)', workspace_body)
+        self.assertIn('("停止代理", "Tool.TButton", self.stop_weak_proxy, 0, 1)', workspace_body)
+        self.assertIn('("应用到 Android", "Tool.TButton", self.apply_android_proxy, 1, 0)', workspace_body)
+        self.assertIn('("清除 Android 代理", "Tool.TButton", self.clear_android_proxy, 1, 1)', workspace_body)
+        self.assertIn('("刷新状态", "Tool.TButton", self.refresh_android_proxy_status, 2, 0, 2)', workspace_body)
+        self.assertIn("actions.columnconfigure(0, weight=1, uniform=\"weak_actions\")", workspace_body)
+        self.assertIn("actions.columnconfigure(1, weight=1, uniform=\"weak_actions\")", workspace_body)
+        self.assertNotIn("row=index // 3", workspace_body)
+        self.assertNotIn("column=index % 3", workspace_body)
+
+    def test_weak_network_mousewheel_is_bound_across_canvas_and_dynamic_children(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        workspace_start = text.index("def _build_network_workspace")
+        workspace_end = text.index("def _build_weak_three_step_path", workspace_start)
+        workspace_body = text[workspace_start:workspace_end]
+        bind_start = text.index("def _bind_weak_workspace_mousewheel")
+        bind_end = text.index("def _on_weak_workspace_mousewheel", bind_start)
+        bind_body = text[bind_start:bind_end]
+
+        self.assertIn("self._bind_weak_workspace_mousewheel(self.weak_workspace_canvas)", workspace_body)
+        self.assertIn("self._bind_weak_workspace_mousewheel(guide)", workspace_body)
+        self.assertIn("<Enter>", bind_body)
+        self.assertIn("bind_all", bind_body)
+        self.assertIn("<Leave>", bind_body)
+        self.assertIn("unbind_all", bind_body)
+
+    def test_weak_network_usage_flow_wraps_and_preview_scrolls(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        workspace_start = text.index("def _build_network_workspace")
+        workspace_end = text.index("def _bind_weak_workspace_mousewheel", workspace_start)
+        workspace_body = text[workspace_start:workspace_end]
+
+        self.assertIn("self.weak_usage_message", workspace_body)
+        self.assertIn("_configure_weak_usage_wraplength", workspace_body)
+        self.assertIn("self.proxy_preview_scrollbar", workspace_body)
+        self.assertIn("yscrollcommand=self.proxy_preview_scrollbar.set", workspace_body)
+
     def test_weak_proxy_traffic_panel_uses_three_columns_for_readable_metric_cards(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
@@ -1824,6 +1871,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn("// 4", panel_body)
         self.assertNotIn("range(4)", panel_body)
         self.assertIn("height=126", chart_body)
+
+    def test_weak_proxy_traffic_chart_keeps_zero_baseline_while_proxy_is_running(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        chart_start = text.index("class TrafficMiniChart")
+        chart_end = text.index("class App", chart_start)
+        chart_body = text[chart_start:chart_end]
+        refresh_start = text.index("def _refresh_proxy_traffic")
+        refresh_end = text.index("def _selected_android_device", refresh_start)
+        refresh_body = text[refresh_start:refresh_end]
+
+        self.assertIn("def set_running", chart_body)
+        self.assertIn("self._running", chart_body)
+        self.assertIn("if len(points) < 2 and not self._running", chart_body)
+        self.assertIn("self.weak_traffic_chart.set_running(self.weak_proxy.is_running())", refresh_body)
 
     def test_weak_proxy_traffic_readiness_card_does_not_overwrite_right_status_detail(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -1997,6 +2059,9 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn("rail.rowconfigure(5, weight=1)", diagnostics_body)
         self.assertIn("height=6", log_body)
         self.assertNotIn("height=7", log_body)
+        self.assertIn("self.log_scrollbar", diagnostics_body)
+        self.assertIn("yscrollcommand=self.log_scrollbar.set", diagnostics_body)
+        self.assertIn("command=self.log_text.yview", diagnostics_body)
 
     def test_workbench_styles_use_professional_neutral_palette(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2122,6 +2187,22 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertIn("self.diagnostic_var", panel_body)
         self.assertIn("graph_diagnostic_summary_text", panel_body)
         self.assertIn("def set_diagnostic_detail", panel_body)
+        self.assertIn("wraplength=", panel_body)
+
+    def test_dashboard_quality_text_wraps_and_graph_area_uses_available_height(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
+        dashboard_body = text[dashboard_start:dashboard_end]
+
+        self.assertIn("self.quality_summary_label", dashboard_body)
+        self.assertIn("self.performance_conclusion_label", dashboard_body)
+        self.assertIn("self.quality_label", dashboard_body)
+        self.assertIn("_configure_quality_wraplength", dashboard_body)
+        self.assertIn('graph_view.grid(row=3, column=0, sticky="nsew")', dashboard_body)
+        self.assertIn("main.rowconfigure(3, weight=1)", dashboard_body)
+        self.assertNotIn('graph_view.grid(row=3, column=0, sticky="ew")', dashboard_body)
 
     def test_mousewheel_scrolls_one_row_per_notch(self) -> None:
         self.assertEqual(graph_scroll_row_step(1), 1)
@@ -2137,6 +2218,19 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
     def test_graph_view_height_shows_exactly_two_rows_plus_scrollbar(self) -> None:
         self.assertEqual(format_graph_view_height(2, 176, 10, 22), 384)
+
+    def test_live_graph_timeline_uses_five_minutes_per_screen(self) -> None:
+        self.assertEqual(CHART_VIEW_SECONDS, 5 * 60)
+
+    def test_live_graph_timeline_starts_with_five_minute_window(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        timeline_start = text.index("def _graph_timeline_seconds")
+        timeline_end = text.index("def _graph_view_duration", timeline_start)
+        timeline_body = text[timeline_start:timeline_end]
+
+        self.assertIn("max(self.graph_last_elapsed, float(CHART_VIEW_SECONDS))", timeline_body)
+        self.assertNotIn("max(self.graph_last_elapsed, 10.0)", timeline_body)
 
     def test_metric_graph_layout_contains_all_required_graphs(self) -> None:
         layout = metric_graph_layout()
@@ -2889,6 +2983,81 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertGreater(app.stabilizer.outputs[-1].fps, 0.0)
         self.assertEqual(app.graphs["fps"].points[-1], (2.0, 0.0, "limited"))
         self.assertEqual(app.recorder.samples[-1].fps, 0.0)
+
+    def test_handle_sample_caps_realtime_cpu_display_without_mutating_raw_sample(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return False
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda _sample: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=158.5))
+
+        self.assertEqual(app.recorder.samples[-1].cpu_percent, 158.5)
+        self.assertEqual(app.cards["cpu_percent"].value, 100.0)
+        self.assertEqual(app.graphs["cpu_percent"].points[-1], (1.0, 100.0, "ok"))
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

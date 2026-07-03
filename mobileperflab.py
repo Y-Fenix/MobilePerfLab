@@ -40,7 +40,7 @@ APP_VERSION = "0.1.0"
 SAMPLE_LIMIT = 7200
 DEFAULT_INTERVAL_SECONDS = 1.5
 SAMPLING_INTERVAL_OPTIONS = ("0.5", "1.0", "1.5", "2.0")
-CHART_VIEW_SECONDS = 30 * 60
+CHART_VIEW_SECONDS = 5 * 60
 PROXY_BUFFER_SIZE = 16 * 1024
 ANDROID_FOREGROUND_CACHE_SECONDS = 2.0
 WEAK_NETWORK_PROFILES: dict[str, tuple[int, int, float, float, float]] = {
@@ -2088,6 +2088,15 @@ def performance_conclusion_text(status: dict[str, str], expected_interval: float
     if isinstance(status, dict) and status.get("state") == "caution" and status.get("label") == "先确认网络来源":
         parts.append("确认 per-UID 网络来源")
     return " · ".join(parts)
+
+
+def realtime_metric_display_value(metric: str, value: float) -> float:
+    numeric = float(value or 0.0)
+    if not math.isfinite(numeric):
+        return 0.0
+    if metric == "cpu_percent":
+        return max(0.0, min(numeric, 100.0))
+    return max(0.0, numeric)
 
 
 def constrain_performance_conclusion_by_usability(
@@ -8469,12 +8478,20 @@ class GraphPanel(ttk.Frame):
         self.diagnostic_var = tk.StringVar(value=graph_diagnostic_summary_text(self.metric, [], ""))
         ttk.Label(self.header, textvariable=self.value_var, style="GraphValue.TLabel").pack(side="right")
         ttk.Label(self.header, textvariable=self.quality_badge_var, style="Muted.TLabel").pack(side="right", padx=(0, 10))
-        ttk.Label(self, textvariable=self.summary_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
-        ttk.Label(self, textvariable=self.diagnostic_var, style="Health.TLabel").pack(anchor="w", pady=(3, 0))
+        self.summary_label = ttk.Label(self, textvariable=self.summary_var, style="Muted.TLabel", wraplength=460)
+        self.summary_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.diagnostic_label = ttk.Label(self, textvariable=self.diagnostic_var, style="Health.TLabel", wraplength=460)
+        self.diagnostic_label.pack(anchor="w", fill="x", pady=(3, 0))
         self.canvas = tk.Canvas(self, height=132, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(8, 0))
-        self.canvas.bind("<Configure>", lambda _event: self.redraw())
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         ttk.Label(self, text="正常 · 兜底 · 受限 · 异常", style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        wrap = max(int(getattr(event, "width", 460) or 460) - 20, 220)
+        self.summary_label.configure(wraplength=wrap)
+        self.diagnostic_label.configure(wraplength=wrap)
+        self.redraw()
 
     def append(self, elapsed: float, value: float, quality: str = "ok") -> None:
         self.points.append((max(0.0, float(elapsed)), float(value), quality))
@@ -8663,8 +8680,13 @@ class TrafficMiniChart(ttk.Frame):
         ttk.Label(header, text="下行 / 上行", style="Muted.TLabel").pack(side="right")
         self.canvas = tk.Canvas(self, height=126, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="x", expand=False, pady=(8, 0))
-        self.canvas.bind("<Configure>", lambda _event: self.redraw([]))
+        self.canvas.bind("<Configure>", lambda _event: self.redraw())
         self._points: list[tuple[float, float, float]] = []
+        self._running = False
+
+    def set_running(self, running: bool) -> None:
+        self._running = bool(running)
+        self.redraw(self._points)
 
     def set_points(self, points: list[tuple[float, float, float]]) -> None:
         self._points = points[-120:]
@@ -8685,10 +8707,12 @@ class TrafficMiniChart(ttk.Frame):
         for index in range(4):
             y = pad_top + index * plot_h / 3
             canvas.create_line(pad_left, y, width - pad_right, y, fill=grid_color)
-        if len(points) < 2:
+        if len(points) < 2 and not self._running:
             canvas.create_text(width / 2, height / 2, text="等待代理流量", fill="#A0A8B4", font=("Helvetica", 12))
             self._draw_legend(canvas, width)
             return
+        if len(points) < 2:
+            points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
         start = points[0][0]
         end = max(points[-1][0], start + 1.0)
         max_value = max(max(down, up) for _elapsed, down, up in points)
@@ -9105,6 +9129,7 @@ class App:
         log_panel.columnconfigure(0, weight=1)
         log_panel.rowconfigure(1, weight=1)
         ttk.Label(log_panel, text="日志", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        self.log_scrollbar = ttk.Scrollbar(log_panel, orient="vertical")
         self.log_text = tk.Text(
             log_panel,
             height=6,
@@ -9114,8 +9139,11 @@ class App:
             bg="#FFFFFF",
             fg="#243044",
             font=("Menlo", 10),
+            yscrollcommand=self.log_scrollbar.set,
         )
+        self.log_scrollbar.configure(command=self.log_text.yview)
         self.log_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.log_scrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 0), padx=(6, 0))
         self.log_text.configure(state="disabled")
 
     def _build_header(self, master: tk.Widget) -> None:
@@ -9263,22 +9291,24 @@ class App:
             ttk.Label(controls, text=hint, style="Muted.TLabel").grid(row=index, column=2, sticky="w", padx=(8, 0), pady=(7, 0))
         actions = ttk.Frame(controls, style="Panel.TFrame")
         actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(18, 0))
-        for column in range(3):
-            actions.columnconfigure(column, weight=1, uniform="weak_actions")
+        actions.columnconfigure(0, weight=1, uniform="weak_actions")
+        actions.columnconfigure(1, weight=1, uniform="weak_actions")
         weak_actions = [
-            ("启动代理", "Primary.TButton", self.start_weak_proxy),
-            ("停止代理", "Tool.TButton", self.stop_weak_proxy),
-            ("应用到 Android", "Tool.TButton", self.apply_android_proxy),
-            ("清除 Android 代理", "Tool.TButton", self.clear_android_proxy),
-            ("刷新状态", "Tool.TButton", self.refresh_android_proxy_status),
+            ("启动代理", "Primary.TButton", self.start_weak_proxy, 0, 0),
+            ("停止代理", "Tool.TButton", self.stop_weak_proxy, 0, 1),
+            ("应用到 Android", "Tool.TButton", self.apply_android_proxy, 1, 0),
+            ("清除 Android 代理", "Tool.TButton", self.clear_android_proxy, 1, 1),
+            ("刷新状态", "Tool.TButton", self.refresh_android_proxy_status, 2, 0, 2),
         ]
-        for index, (text, style, command) in enumerate(weak_actions):
+        for item in weak_actions:
+            text, style, command, action_row, action_column, *span = item
             ttk.Button(actions, text=text, style=style, command=command).grid(
-                row=index // 3,
-                column=index % 3,
+                row=action_row,
+                column=action_column,
+                columnspan=span[0] if span else 1,
                 sticky="ew",
-                padx=(0 if index % 3 == 0 else 8, 0),
-                pady=(0 if index < 3 else 8, 0),
+                padx=(0 if action_column == 0 else 8, 0),
+                pady=(0 if action_row == 0 else 8, 0),
             )
 
         guide_shell = ttk.Frame(content, style="Panel.TFrame", padding=(0, 0))
@@ -9307,6 +9337,8 @@ class App:
             lambda _event: self.weak_workspace_canvas.configure(scrollregion=self.weak_workspace_canvas.bbox("all")),
         )
         self._bind_weak_workspace_mousewheel(guide_shell)
+        self._bind_weak_workspace_mousewheel(self.weak_workspace_canvas)
+        self._bind_weak_workspace_mousewheel(guide)
         guide.columnconfigure(0, weight=1)
         self._build_weak_three_step_path(guide, row=0)
         self._build_weak_status_lights(guide, row=1)
@@ -9324,7 +9356,7 @@ class App:
             "测试结束点击“清除 Android 代理”。当前为系统 HTTP/HTTPS 代理模式，不需要 Root；"
             "对 UDP、QUIC、私有代理栈或主动绕过系统代理的 App，后续需要 VPN/tun 模式。"
         )
-        tk.Message(
+        self.weak_usage_message = tk.Message(
             guide,
             text=text,
             width=760,
@@ -9333,9 +9365,15 @@ class App:
             font=("Helvetica", 11),
             borderwidth=0,
             justify="left",
-        ).grid(row=7, column=0, sticky="new", pady=(10, 0))
+        )
+        self.weak_usage_message.grid(row=7, column=0, sticky="new", pady=(10, 0))
+        guide.bind("<Configure>", self._configure_weak_usage_wraplength, add="+")
+        preview_shell = ttk.Frame(guide, style="PanelBody.TFrame")
+        preview_shell.grid(row=8, column=0, sticky="ew", pady=(14, 0))
+        preview_shell.columnconfigure(0, weight=1)
+        self.proxy_preview_scrollbar = ttk.Scrollbar(preview_shell, orient="vertical")
         self.proxy_preview_text = tk.Text(
-            guide,
+            preview_shell,
             height=6,
             wrap="word",
             borderwidth=1,
@@ -9343,8 +9381,11 @@ class App:
             bg="#F8FAFC",
             fg="#243044",
             font=("Menlo", 11),
+            yscrollcommand=self.proxy_preview_scrollbar.set,
         )
-        self.proxy_preview_text.grid(row=8, column=0, sticky="ew", pady=(14, 0))
+        self.proxy_preview_scrollbar.configure(command=self.proxy_preview_text.yview)
+        self.proxy_preview_text.grid(row=0, column=0, sticky="ew")
+        self.proxy_preview_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
         self.proxy_preview_text.insert(
             "1.0",
             "代理地址将在启动后显示。\nAndroid 写入命令示例：settings put global http_proxy <host>:<port>\n清理命令：settings put global http_proxy :0",
@@ -9353,10 +9394,21 @@ class App:
         self._refresh_weak_diagnostics()
         self._refresh_proxy_traffic()
 
+    def _configure_weak_usage_wraplength(self, event: tk.Event) -> None:
+        message = getattr(self, "weak_usage_message", None)
+        if message is not None:
+            message.configure(width=max(int(getattr(event, "width", 760) or 760) - 32, 280))
+
     def _bind_weak_workspace_mousewheel(self, widget: tk.Widget) -> None:
         widget.bind("<MouseWheel>", self._on_weak_workspace_mousewheel)
         widget.bind("<Button-4>", self._on_weak_workspace_mousewheel)
         widget.bind("<Button-5>", self._on_weak_workspace_mousewheel)
+        widget.bind("<Enter>", lambda _event: widget.bind_all("<MouseWheel>", self._on_weak_workspace_mousewheel), add="+")
+        widget.bind("<Enter>", lambda _event: widget.bind_all("<Button-4>", self._on_weak_workspace_mousewheel), add="+")
+        widget.bind("<Enter>", lambda _event: widget.bind_all("<Button-5>", self._on_weak_workspace_mousewheel), add="+")
+        widget.bind("<Leave>", lambda _event: widget.unbind_all("<MouseWheel>"), add="+")
+        widget.bind("<Leave>", lambda _event: widget.unbind_all("<Button-4>"), add="+")
+        widget.bind("<Leave>", lambda _event: widget.unbind_all("<Button-5>"), add="+")
         for child in widget.winfo_children():
             self._bind_weak_workspace_mousewheel(child)
 
@@ -9522,7 +9574,7 @@ class App:
         main = ttk.Frame(master, style="Root.TFrame")
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(6, weight=1)
+        main.rowconfigure(3, weight=1)
         target = ttk.Frame(main, style="Panel.TFrame", padding=(14, 12))
         target.grid(row=0, column=0, sticky="ew")
         ttk.Label(target, textvariable=self.device_var, style="PanelTitle.TLabel").pack(side="left")
@@ -9533,9 +9585,18 @@ class App:
         quality.columnconfigure(0, weight=1)
         quality_text = ttk.Frame(quality, style="PanelBody.TFrame")
         quality_text.pack(side="left", fill="x", expand=True)
-        ttk.Label(quality_text, textvariable=self.quality_summary_var, style="Quality.TLabel").pack(anchor="w")
-        ttk.Label(quality_text, textvariable=self.performance_conclusion_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
-        ttk.Label(quality_text, textvariable=self.quality_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+        self.quality_summary_label = ttk.Label(quality_text, textvariable=self.quality_summary_var, style="Quality.TLabel", wraplength=760)
+        self.quality_summary_label.pack(anchor="w", fill="x")
+        self.performance_conclusion_label = ttk.Label(
+            quality_text,
+            textvariable=self.performance_conclusion_var,
+            style="Muted.TLabel",
+            wraplength=760,
+        )
+        self.performance_conclusion_label.pack(anchor="w", fill="x", pady=(2, 0))
+        self.quality_label = ttk.Label(quality_text, textvariable=self.quality_var, style="Muted.TLabel", wraplength=760)
+        self.quality_label.pack(anchor="w", fill="x", pady=(2, 0))
+        quality.bind("<Configure>", self._configure_quality_wraplength)
         ttk.Label(quality, textvariable=self.weak_live_summary_var, style="Muted.TLabel").pack(side="right", padx=(16, 0))
         ttk.Label(quality, textvariable=self.quality_mode_var, style="Muted.TLabel").pack(side="right", padx=(12, 0))
 
@@ -9576,7 +9637,7 @@ class App:
         self.graph_visible_rows = graph_visible_rows_for_height(screen_height)
         graph_view_height = format_graph_view_height(self.graph_visible_rows, self.graph_panel_row_height, self.graph_row_gap, 22)
         graph_view = ttk.Frame(main, style="Root.TFrame", height=graph_view_height)
-        graph_view.grid(row=3, column=0, sticky="ew")
+        graph_view.grid(row=3, column=0, sticky="nsew")
         graph_view.grid_propagate(False)
         graph_view.columnconfigure(0, weight=1)
         graph_view.rowconfigure(0, weight=1)
@@ -9623,6 +9684,13 @@ class App:
         self.graph_canvas.configure(scrollregion=(0, 0, 1, graph_rows * self.graph_row_scroll_pixels))
         self._set_graph_scrollbar_state()
         self._bind_graph_mousewheel(graph_view)
+
+    def _configure_quality_wraplength(self, event: tk.Event) -> None:
+        wrap = max(int(getattr(event, "width", 840) or 840) - 260, 360)
+        for label_name in ("quality_summary_label", "performance_conclusion_label", "quality_label"):
+            label = getattr(self, label_name, None)
+            if label is not None:
+                label.configure(wraplength=wrap)
 
     def _build_metric_health_strip(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
@@ -9685,7 +9753,7 @@ class App:
             self._set_graph_scrollbar_state()
 
     def _graph_timeline_seconds(self) -> float:
-        return max(self.graph_last_elapsed, 10.0)
+        return max(self.graph_last_elapsed, float(CHART_VIEW_SECONDS))
 
     def _graph_view_duration(self) -> float:
         return min(self._graph_timeline_seconds(), float(CHART_VIEW_SECONDS))
@@ -10036,6 +10104,7 @@ class App:
                 f"{action_text}\n{target_hit_summary.get('label', '等待目标命中证据')} · {detail_text}"
             )
         if hasattr(self, "weak_traffic_chart"):
+            self.weak_traffic_chart.set_running(self.weak_proxy.is_running())
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
         self._refresh_weak_status_lights(traffic_state=traffic_state, snapshot=snapshot)
         self._refresh_session_chips()
@@ -10618,25 +10687,39 @@ class App:
             if self.smoothing_var.get()
             else sample
         )
+        realtime_sample = PerfSample(
+            timestamp=display_sample.timestamp,
+            elapsed=display_sample.elapsed,
+            fps=realtime_metric_display_value("fps", display_sample.fps),
+            cpu_percent=realtime_metric_display_value("cpu_percent", display_sample.cpu_percent),
+            memory_mb=realtime_metric_display_value("memory_mb", display_sample.memory_mb),
+            battery_percent=realtime_metric_display_value("battery_percent", display_sample.battery_percent),
+            temperature_c=realtime_metric_display_value("temperature_c", display_sample.temperature_c),
+            power_w=realtime_metric_display_value("power_w", display_sample.power_w),
+            rx_kbps=realtime_metric_display_value("rx_kbps", display_sample.rx_kbps),
+            tx_kbps=realtime_metric_display_value("tx_kbps", display_sample.tx_kbps),
+            jank_percent=realtime_metric_display_value("jank_percent", display_sample.jank_percent),
+            note=display_sample.note,
+        )
         self._refresh_quality_mode()
         for graph in self.graphs.values():
             graph.set_display_context(self.smoothing_var.get(), conservative_display)
-        self._set_metric_card("fps", display_sample.fps, "越高越流畅", metric_health)
-        self._set_metric_card("jank_percent", display_sample.jank_percent, "越低越稳", metric_health)
-        self._set_metric_card("cpu_percent", display_sample.cpu_percent, "进程占用", metric_health)
-        self._set_metric_card("memory_mb", display_sample.memory_mb, "PSS/Total", metric_health)
-        self._set_metric_card("temperature_c", display_sample.temperature_c, "电池温度", metric_health)
-        self._set_metric_card("power_w", display_sample.power_w, "估算功耗", metric_health)
-        self._set_metric_card("rx_kbps", display_sample.rx_kbps, "接收速率", metric_health)
-        self._set_metric_card("tx_kbps", display_sample.tx_kbps, "发送速率", metric_health)
-        self.graphs["fps"].append(sample.elapsed, sample.fps, quality_tag)
-        self.graphs["jank_percent"].append(sample.elapsed, sample.jank_percent, quality_tag)
-        self.graphs["cpu_percent"].append(sample.elapsed, sample.cpu_percent, quality_tag)
-        self.graphs["memory_mb"].append(sample.elapsed, sample.memory_mb, quality_tag)
-        self.graphs["temperature_c"].append(sample.elapsed, sample.temperature_c, quality_tag)
-        self.graphs["power_w"].append(sample.elapsed, sample.power_w, quality_tag)
-        self.graphs["rx_kbps"].append(sample.elapsed, sample.rx_kbps, quality_tag)
-        self.graphs["tx_kbps"].append(sample.elapsed, sample.tx_kbps, quality_tag)
+        self._set_metric_card("fps", realtime_sample.fps, "越高越流畅", metric_health)
+        self._set_metric_card("jank_percent", realtime_sample.jank_percent, "越低越稳", metric_health)
+        self._set_metric_card("cpu_percent", realtime_sample.cpu_percent, "进程占用", metric_health)
+        self._set_metric_card("memory_mb", realtime_sample.memory_mb, "PSS/Total", metric_health)
+        self._set_metric_card("temperature_c", realtime_sample.temperature_c, "电池温度", metric_health)
+        self._set_metric_card("power_w", realtime_sample.power_w, "估算功耗", metric_health)
+        self._set_metric_card("rx_kbps", realtime_sample.rx_kbps, "接收速率", metric_health)
+        self._set_metric_card("tx_kbps", realtime_sample.tx_kbps, "发送速率", metric_health)
+        self.graphs["fps"].append(sample.elapsed, realtime_metric_display_value("fps", sample.fps), quality_tag)
+        self.graphs["jank_percent"].append(sample.elapsed, realtime_metric_display_value("jank_percent", sample.jank_percent), quality_tag)
+        self.graphs["cpu_percent"].append(sample.elapsed, realtime_metric_display_value("cpu_percent", sample.cpu_percent), quality_tag)
+        self.graphs["memory_mb"].append(sample.elapsed, realtime_metric_display_value("memory_mb", sample.memory_mb), quality_tag)
+        self.graphs["temperature_c"].append(sample.elapsed, realtime_metric_display_value("temperature_c", sample.temperature_c), quality_tag)
+        self.graphs["power_w"].append(sample.elapsed, realtime_metric_display_value("power_w", sample.power_w), quality_tag)
+        self.graphs["rx_kbps"].append(sample.elapsed, realtime_metric_display_value("rx_kbps", sample.rx_kbps), quality_tag)
+        self.graphs["tx_kbps"].append(sample.elapsed, realtime_metric_display_value("tx_kbps", sample.tx_kbps), quality_tag)
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
         self._refresh_proxy_traffic()
