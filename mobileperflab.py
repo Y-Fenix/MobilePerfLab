@@ -9230,6 +9230,7 @@ class App:
         metrics = [
             ("readiness", "测试就绪", "先启动弱网代理"),
             ("hit_status", "流量命中", "未启动"),
+            ("target_hit", "目标命中可信度", "等待目标命中证据"),
             ("down_rate", "实时下行", "0.0 KB/s"),
             ("up_rate", "实时上行", "0.0 KB/s"),
             ("down_total", "累计下行", "0 B"),
@@ -9733,6 +9734,18 @@ class App:
             self.last_app_rx_kbps,
             self.last_app_tx_kbps,
         )
+        bypass_evidence = build_weak_network_bypass_evidence(
+            traffic_state,
+            self.last_app_rx_kbps,
+            self.last_app_tx_kbps,
+            snapshot.down_kbps,
+            snapshot.up_kbps,
+        )
+        target_hit_summary = weak_network_target_hit_summary(bypass_evidence, effectiveness)
+        values["target_hit"] = (
+            f"{target_hit_summary.get('label', '等待目标命中证据')} · "
+            f"{target_hit_summary.get('evidence', '')}"
+        ).strip()
         if hasattr(self, "weak_readiness_var"):
             self.weak_readiness_var.set(readiness_text)
         weak_traffic_vars = getattr(self, "weak_traffic_vars", {})
@@ -9751,7 +9764,7 @@ class App:
                 self.last_weak_diagnostics,
             )
             self.weak_live_summary_var.set(
-                f"{action_text}\n{detail_text}"
+                f"{action_text}\n{target_hit_summary.get('label', '等待目标命中证据')} · {detail_text}"
             )
         if hasattr(self, "weak_traffic_chart"):
             self.weak_traffic_chart.set_points(self.weak_proxy.traffic_history())
