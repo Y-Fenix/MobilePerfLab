@@ -9074,7 +9074,7 @@ class App:
         if not hasattr(self, "session_chip_vars"):
             return
         self.session_chip_vars["device"].set(format_workbench_status_chip("设备", self.device_var.get()))
-        self.session_chip_vars["target_app"].set(format_workbench_status_chip("目标应用", self.app_var.get()))
+        self.session_chip_vars["target_app"].set(format_workbench_status_chip("目标应用", self._current_target_app_id()))
         self.session_chip_vars["capture"].set(format_workbench_status_chip("采集", self.status_var.get()))
         self.session_chip_vars["quality"].set(format_workbench_status_chip("质量", self.quality_summary_var.get()))
         self.session_chip_vars["weak_network"].set(format_workbench_status_chip("弱网", self.weak_live_summary_var.get()))
@@ -10149,6 +10149,17 @@ class App:
         self.app_var.set(app_id.split()[0] if app_id.split() else app_id)
         self._refresh_session_chips()
 
+    def _current_target_app_id(self) -> str:
+        for variable_name in ("app_var", "app_picker_var"):
+            variable = getattr(self, variable_name, None)
+            if variable is None or not hasattr(variable, "get"):
+                continue
+            raw_value = str(variable.get() or "").strip()
+            if raw_value:
+                parts = raw_value.split()
+                return parts[0] if parts else raw_value
+        return ""
+
     def _ensure_app_picker_contains(self, app_id: str) -> None:
         if not app_id or not hasattr(self, "app_picker"):
             return
@@ -10276,7 +10287,9 @@ class App:
         if not device or not adapter:
             messagebox.showinfo(APP_NAME, "请先选择设备。")
             return
-        app_id = self.app_var.get().strip().split()[0] if self.app_var.get().strip() else ""
+        app_id = self._current_target_app_id()
+        if app_id:
+            self.app_var.set(app_id)
         if not app_id and device.platform == "Android":
             try:
                 app_id = adapter.foreground_app(device)
@@ -10306,7 +10319,9 @@ class App:
         if device.status not in ("ready", "device"):
             messagebox.showwarning(APP_NAME, f"设备状态不可用：{device.status}")
             return
-        app_id = self.app_var.get().strip().split()[0] if self.app_var.get().strip() else ""
+        app_id = self._current_target_app_id()
+        if app_id:
+            self.app_var.set(app_id)
         if not app_id and device.platform == "Android":
             app_id = adapter.foreground_app(device)
             self.app_var.set(app_id)
