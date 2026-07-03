@@ -2064,6 +2064,20 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertNotIn("command=self.add_marker", dashboard_body)
         self.assertNotIn("command=self.capture_screenshot", dashboard_body)
 
+    def test_quality_event_table_has_horizontal_scrollbar_for_long_details(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        diagnostics_start = text.index("def _build_diagnostics_rail")
+        diagnostics_end = text.index("def _build_header", diagnostics_start)
+        diagnostics_body = text[diagnostics_start:diagnostics_end]
+
+        self.assertIn("self.quality_event_xscrollbar", diagnostics_body)
+        self.assertIn("xscrollcommand=self.quality_event_xscrollbar.set", diagnostics_body)
+        self.assertIn("command=self.quality_event_tree.xview", diagnostics_body)
+        self.assertIn('self.quality_event_xscrollbar.grid(row=2, column=0, sticky="ew")', diagnostics_body)
+        self.assertIn('self.quality_event_tree.column("detail", width=520, minwidth=520, stretch=False)', diagnostics_body)
+        self.assertNotIn('self.quality_event_tree.column("detail", width=180, stretch=True)', diagnostics_body)
+
     def test_diagnostics_rail_keeps_logs_fixed_below_quality_events(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
