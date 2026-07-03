@@ -2082,6 +2082,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn('self.quality_event_tree.column("detail", width=520, minwidth=520, stretch=False)', diagnostics_body)
         self.assertNotIn('self.quality_event_tree.column("detail", width=180, stretch=True)', diagnostics_body)
 
+    def test_quality_event_table_colors_rows_by_quality_type(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        diagnostics_start = text.index("def _build_diagnostics_rail")
+        diagnostics_end = text.index("def _build_header", diagnostics_start)
+        diagnostics_body = text[diagnostics_start:diagnostics_end]
+        append_start = text.index("def _append_quality_event")
+        append_end = text.index("def _set_metric_card", append_start)
+        append_body = text[append_start:append_end]
+
+        self.assertIn('tag_configure("quality_issue", foreground=quality_marker_color("issue"))', diagnostics_body)
+        self.assertIn('tag_configure("quality_fallback", foreground=quality_marker_color("fallback"))', diagnostics_body)
+        self.assertIn('tag_configure("quality_recovery", foreground=quality_marker_color("recovery"))', diagnostics_body)
+        self.assertIn('tags=(quality_event_tree_tag(tag),)', append_body)
+
     def test_diagnostics_rail_keeps_logs_fixed_below_quality_events(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
@@ -2213,6 +2228,22 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertIn("兜底", panel_body)
         self.assertIn("受限", panel_body)
         self.assertIn("异常", panel_body)
+
+    def test_graph_panel_uses_shared_quality_colors_for_arrow_markers(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("class GraphPanel")
+        panel_end = text.index("class TrafficMiniChart", panel_start)
+        panel_body = text[panel_start:panel_end]
+
+        self.assertIn("QUALITY_MARKER_COLORS", text)
+        self.assertIn("quality_marker_color(quality)", panel_body)
+        self.assertIn("quality_interval_fill(quality)", panel_body)
+        self.assertIn("canvas.create_polygon", panel_body)
+        self.assertNotIn('fill="#EF4444"', panel_body)
+        self.assertNotIn('fill="#A855F7"', panel_body)
+        self.assertNotIn('fill="#38BDF8"', panel_body)
+        self.assertNotIn('outline="#F59E0B"', panel_body)
 
     def test_graph_panel_declares_diagnostic_summary_line(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2742,15 +2773,18 @@ class QualityModeLabelTest(unittest.TestCase):
         class FakeTree:
             def __init__(self) -> None:
                 self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
 
-            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
                 self.rows.append(values)
+                self.tags.append(tags)
 
             def get_children(self) -> list[int]:
                 return list(range(len(self.rows)))
 
             def delete(self, item: int) -> None:
                 del self.rows[item]
+                del self.tags[item]
 
             def yview_moveto(self, _fraction: float) -> None:
                 pass
@@ -2794,20 +2828,24 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertEqual(app.graphs["fps"].points[-1], (2.8, 55.0, "issue"))
         self.assertEqual(app.quality_event_tree.rows[-1], ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
+        self.assertEqual(app.quality_event_tree.tags[-1], ("quality_issue",))
 
-    def test_quality_events_keep_repeated_issue_samples_instead_of_deduping_by_tag(self) -> None:
+    def test_quality_events_dedupe_repeated_issue_samples_by_event_content(self) -> None:
         class FakeTree:
             def __init__(self) -> None:
                 self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
 
-            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
                 self.rows.append(values)
+                self.tags.append(tags)
 
             def get_children(self) -> list[int]:
                 return list(range(len(self.rows)))
 
             def delete(self, item: int) -> None:
                 del self.rows[item]
+                del self.tags[item]
 
             def yview_moveto(self, _fraction: float) -> None:
                 pass
@@ -2824,17 +2862,16 @@ class QualityModeLabelTest(unittest.TestCase):
             app.quality_event_tree.rows,
             [
                 ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
-                ("2.0s", "采集异常", "Android FPS 未采集到 Surface"),
-                ("3.0s", "采集异常", "Android FPS 未采集到 Surface"),
             ],
         )
+        self.assertEqual(app.quality_event_tree.tags, [("quality_issue",)])
 
-    def test_quality_events_keep_latest_eighty_rows_when_issue_stream_is_noisy(self) -> None:
+    def test_quality_events_keep_different_issue_details_when_stream_is_noisy(self) -> None:
         class FakeTree:
             def __init__(self) -> None:
                 self.rows: list[tuple[str, str, str]] = []
 
-            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
                 self.rows.append(values)
 
             def get_children(self) -> list[int]:
@@ -2850,16 +2887,17 @@ class QualityModeLabelTest(unittest.TestCase):
         app.last_quality_event_tag = "ok"
         app.quality_event_tree = FakeTree()
 
-        for index in range(85):
-            App._append_quality_event(
-                app,
-                PerfSample(timestamp=float(index), elapsed=float(index), note="Android FPS 未采集到 Surface"),
-                "issue",
-            )
+        App._append_quality_event(app, PerfSample(timestamp=1.0, elapsed=1.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=2.0, elapsed=2.0, note="Android CPU 当前无进程增量"), "limited")
+        App._append_quality_event(app, PerfSample(timestamp=3.0, elapsed=3.0, note="Android 网络使用设备级网络兜底，非目标 App 独占流量。"), "fallback")
 
-        self.assertEqual(len(app.quality_event_tree.rows), 80)
-        self.assertEqual(app.quality_event_tree.rows[0][0], "5.0s")
-        self.assertEqual(app.quality_event_tree.rows[-1][0], "84.0s")
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
+                ("3.0s", "设备级兜底", "非目标 App 独占流量"),
+            ],
+        )
 
     def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
         class FakeVar:

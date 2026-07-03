@@ -2791,6 +2791,40 @@ def quality_interval_label(quality: str, note: str = "") -> str:
     return "正常"
 
 
+QUALITY_MARKER_COLORS = {
+    "issue": "#DC2626",
+    "fallback": "#D97706",
+    "recovery": "#9333EA",
+    "limited": "#0284C7",
+}
+
+QUALITY_INTERVAL_FILLS = {
+    "issue": "#FEE2E2",
+    "fallback": "#FEF3C7",
+    "recovery": "#F3E8FF",
+    "limited": "#E0F2FE",
+}
+
+QUALITY_EVENT_TREE_TAGS = {
+    "issue": "quality_issue",
+    "fallback": "quality_fallback",
+    "recovery": "quality_recovery",
+    "limited": "quality_limited",
+}
+
+
+def quality_marker_color(quality: str) -> str:
+    return QUALITY_MARKER_COLORS.get(quality, "#64748B")
+
+
+def quality_interval_fill(quality: str) -> str:
+    return QUALITY_INTERVAL_FILLS.get(quality, "#FEF3C7")
+
+
+def quality_event_tree_tag(quality: str) -> str:
+    return QUALITY_EVENT_TREE_TAGS.get(quality, "quality_issue")
+
+
 def format_report_seconds(value: float) -> str:
     return f"{float(value):.1f}s"
 
@@ -8648,27 +8682,13 @@ class GraphPanel(ttk.Frame):
             x2 = pad_left + ((min(end, view_end) - view_start) / view_seconds) * plot_w
             if x2 <= x1:
                 x2 = min(width - pad_right, x1 + 3)
-            if quality == "issue":
-                fill = "#FEE2E2"
-            elif quality == "limited":
-                fill = "#E0F2FE"
-            elif quality == "recovery":
-                fill = "#F3E8FF"
-            else:
-                fill = "#FEF3C7"
-            canvas.create_rectangle(x1, pad_top, x2, pad_top + plot_h, fill=fill, outline="")
+            canvas.create_rectangle(x1, pad_top, x2, pad_top + plot_h, fill=quality_interval_fill(quality), outline="")
         shadow = points.copy()
         canvas.create_line(*shadow, fill="#DCEBFF", width=5, smooth=True)
         canvas.create_line(*points, fill=self.color, width=2.2, smooth=True)
         for x, y, quality in graph_quality_marker_points(quality_points):
-            if quality == "fallback":
-                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2)
-            elif quality == "recovery":
-                canvas.create_polygon(x, y - 6, x + 6, y, x, y + 6, x - 6, y, fill="#A855F7", outline="#FFFFFF")
-            elif quality == "limited":
-                canvas.create_rectangle(x - 4.8, y - 4.8, x + 4.8, y + 4.8, fill="#38BDF8", outline="#FFFFFF", width=1)
-            elif quality == "issue":
-                canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill="#EF4444", outline="#FFFFFF")
+            marker_color = quality_marker_color(quality)
+            canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill=marker_color, outline="#FFFFFF")
         last_x, last_y = last_visible or (points[-2], points[-1])
         canvas.create_oval(last_x - 4, last_y - 4, last_x + 4, last_y + 4, fill=self.color, outline="#FFFFFF", width=2)
 
@@ -9132,6 +9152,10 @@ class App:
         self.quality_event_tree.column("time", width=62, anchor="center", stretch=False)
         self.quality_event_tree.column("kind", width=88, anchor="center", stretch=False)
         self.quality_event_tree.column("detail", width=520, minwidth=520, stretch=False)
+        self.quality_event_tree.tag_configure("quality_issue", foreground=quality_marker_color("issue"))
+        self.quality_event_tree.tag_configure("quality_fallback", foreground=quality_marker_color("fallback"))
+        self.quality_event_tree.tag_configure("quality_recovery", foreground=quality_marker_color("recovery"))
+        self.quality_event_tree.tag_configure("quality_limited", foreground=quality_marker_color("limited"))
         self.quality_event_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         self.quality_event_yscrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 0))
         self.quality_event_xscrollbar.grid(row=2, column=0, sticky="ew")
@@ -10731,10 +10755,13 @@ class App:
             self.last_quality_event_tag = "ok"
             return
         event = quality_event_from_sample(sample, quality_tag=tag)
-        self.last_quality_event_tag = tag
+        event_key = f"{tag}:{event[1]}:{event[2]}" if event else tag
+        if event_key == self.last_quality_event_tag:
+            return
+        self.last_quality_event_tag = event_key
         if not event or not hasattr(self, "quality_event_tree"):
             return
-        self.quality_event_tree.insert("", "end", values=event)
+        self.quality_event_tree.insert("", "end", values=event, tags=(quality_event_tree_tag(tag),))
         children = self.quality_event_tree.get_children()
         for item in children[:-80]:
             self.quality_event_tree.delete(item)
