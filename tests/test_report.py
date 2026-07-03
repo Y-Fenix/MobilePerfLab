@@ -1167,6 +1167,38 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("弱网绕过证据", html_text)
         self.assertIn("App 峰值 144.0 KB/s", html_text)
 
+    def test_weak_network_payload_exposes_target_hit_summary_for_ui(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=52.0, rx_kbps=128.0, tx_kbps=16.0))
+
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "waiting",
+            "traffic_state_label": "等待目标流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 等待目标流量",
+            "snapshot": {"down_kbps": 0.0, "up_kbps": 0.0, "total_connections": 0},
+            "history": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        hit_summary = payload["weak_network"]["target_hit_summary"]
+
+        self.assertEqual(hit_summary["state"], "bypass")
+        self.assertEqual(hit_summary["label"], "目标未命中弱网")
+        self.assertEqual(hit_summary["app_peak_kbps"], 144.0)
+        self.assertEqual(hit_summary["proxy_peak_kbps"], 0.0)
+        self.assertIn("App 144.0 KB/s", hit_summary["evidence"])
+        self.assertIn("代理 0.0 KB/s", hit_summary["evidence"])
+        self.assertIn("检查 QUIC/UDP", hit_summary["action"])
+        self.assertIn("目标命中可信度", html_text)
+        self.assertIn("目标未命中弱网", html_text)
+
     def test_report_does_not_mark_weak_network_ready_when_app_and_proxy_traffic_mismatch(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")

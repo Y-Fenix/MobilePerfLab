@@ -1077,6 +1077,54 @@ def build_weak_network_bypass_evidence(
     }
 
 
+def weak_network_target_hit_summary(bypass_evidence: dict[str, object], effectiveness: dict[str, object]) -> dict[str, object]:
+    evidence_state = str(bypass_evidence.get("state", "waiting") or "waiting")
+    effect_state = str(effectiveness.get("state", "") or "")
+    app_peak = round(float(bypass_evidence.get("app_peak_kbps", 0.0) or 0.0), 3)
+    proxy_peak = round(float(bypass_evidence.get("proxy_peak_kbps", 0.0) or 0.0), 3)
+    ratio = str(bypass_evidence.get("ratio", "-") or "-")
+    evidence = f"App {app_peak:.1f} KB/s · 代理 {proxy_peak:.1f} KB/s · 峰值比 {ratio}"
+    if evidence_state == "bypass" or effect_state == "bypass":
+        return {
+            "state": "bypass",
+            "label": "目标未命中弱网",
+            "app_peak_kbps": app_peak,
+            "proxy_peak_kbps": proxy_peak,
+            "ratio": ratio,
+            "evidence": evidence,
+            "action": "检查 QUIC/UDP、自建网络栈、代理白名单、证书或系统代理配置。",
+        }
+    if evidence_state == "mismatch" or effect_state == "target_unconfirmed":
+        return {
+            "state": "target_unconfirmed",
+            "label": "目标流量待确认",
+            "app_peak_kbps": app_peak,
+            "proxy_peak_kbps": proxy_peak,
+            "ratio": ratio,
+            "evidence": evidence,
+            "action": "触发明确下载/上传或 HTTP/HTTPS 请求，确认 App 上下行和代理流量同步变化。",
+        }
+    if effect_state in {"effective", "dropped"} and proxy_peak > 0.0:
+        return {
+            "state": "confirmed",
+            "label": "目标命中可信",
+            "app_peak_kbps": app_peak,
+            "proxy_peak_kbps": proxy_peak,
+            "ratio": ratio,
+            "evidence": evidence,
+            "action": "继续执行业务场景，并观察目标 App 和代理流量同步变化。",
+        }
+    return {
+        "state": "waiting",
+        "label": "等待目标命中证据",
+        "app_peak_kbps": app_peak,
+        "proxy_peak_kbps": proxy_peak,
+        "ratio": ratio,
+        "evidence": evidence,
+        "action": "在目标 App 内触发明确 HTTP/HTTPS 请求，再观察代理真实流量。",
+    }
+
+
 def enrich_weak_network_with_app_traffic(
     weak_network: dict[str, object],
     samples: list[PerfSample],
@@ -1130,6 +1178,10 @@ def enrich_weak_network_with_app_traffic(
             detail=f"{mismatch_detail} 代理虽有流量，但不能证明目标 App 主流量已完整经过弱网。",
             action="在目标 App 内触发明确下载/上传或 HTTP/HTTPS 请求，确认 App 上下行和弱网代理流量同步变化。",
         )
+    payload["target_hit_summary"] = weak_network_target_hit_summary(
+        bypass_evidence,
+        payload["effectiveness"] if isinstance(payload.get("effectiveness"), dict) else {},
+    )
     payload["readiness_display"] = weak_readiness_display_text(payload["effectiveness"].get("test_readiness", {}))
     payload["hit_status"] = weak_hit_status_text(
         bool(payload.get("running", False)),
@@ -7309,6 +7361,9 @@ class SessionRecorder:
             weak_diagnostics = weak_network.get("diagnostics", {})
             if not isinstance(weak_diagnostics, dict):
                 weak_diagnostics = {}
+            target_hit_summary = weak_network.get("target_hit_summary", {})
+            if not isinstance(target_hit_summary, dict):
+                target_hit_summary = {}
             weak_diagnostic_rows = weak_diagnostics.get("rows", [])
             if not isinstance(weak_diagnostic_rows, list):
                 weak_diagnostic_rows = []
@@ -7335,6 +7390,13 @@ class SessionRecorder:
                 if bypass_evidence
                 else ""
             )
+            target_hit_rows = "".join(
+                [
+                    f"<tr><th>目标命中可信度</th><td>{html.escape(str(target_hit_summary.get('label', '等待目标命中证据')))}</td></tr>",
+                    f"<tr><th>目标命中证据</th><td>{html.escape(str(target_hit_summary.get('evidence', '')))}</td></tr>",
+                    f"<tr><th>目标命中动作</th><td>{html.escape(str(target_hit_summary.get('action', '')))}</td></tr>",
+                ]
+            )
             weak_network_section = "".join(
                 [
                     "<h2>弱网真实流量</h2>",
@@ -7342,6 +7404,7 @@ class SessionRecorder:
                     f"<tr><th>状态</th><td>{html.escape(str(weak_network.get('summary', '')))}</td></tr>",
                     f"<tr><th>弱网测试结论</th><td>{html.escape(weak_readiness_display)}</td></tr>",
                     f"<tr><th>弱网命中结论</th><td>{html.escape(str(weak_effectiveness.get('label', '未知')))}</td></tr>",
+                    target_hit_rows,
                     f"<tr><th>流量命中</th><td>{html.escape(str(weak_network.get('hit_status', '未知')))}</td></tr>",
                     f"<tr><th>命中评分</th><td>{html.escape(str(weak_effectiveness.get('score', '-')))} / 100</td></tr>",
                     f"<tr><th>结论说明</th><td>{html.escape(str(weak_effectiveness.get('detail', '')))}</td></tr>",
