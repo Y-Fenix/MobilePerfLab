@@ -567,6 +567,50 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(refresh_period, 16666666)
         self.assertEqual(frame_times, [1000000000, 1016666666])
 
+    def test_surface_candidates_ignore_window_intent_and_refresh_history_lines(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys SurfaceFlinger --list": "",
+                "dumpsys window": "\n".join(
+                    [
+                        "ID_SETTING_UI_SIDE_KEY, keyCode: 26, ACTION_START_ACTIVITY, dispatching: -1, "
+                        "Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] "
+                        "cmp=com.sec.android.app.camera/.Camera }",
+                        "#4 06-25 16:04:55.929  Requested ( modeId=2 "
+                        "w=Window{522820d u0 com.sec.android.app.camera/com.sec.android.app.camera.Camera})",
+                        "#8 06-25 16:04:56.274  Requested ( refreshRate=60.0 "
+                        "w=Window{522820d u0 com.sec.android.app.camera/com.sec.android.app.camera.Camera})",
+                    ]
+                ),
+            }
+        )
+
+        candidates = adapter._surface_name_candidates(self.device, "com.sec.android.app.camera")
+
+        self.assertEqual(candidates, [])
+
+    def test_android_collection_diagnostics_requires_surface_latency_frames_before_claiming_surfaceflinger_fps(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.sec.android.app.camera/com.sec.android.app.camera.Camera}",
+                "pidof com.sec.android.app.camera": "",
+                "pgrep -f com.sec.android.app.camera": "",
+                "ps -A -o PID=,NAME=": "",
+                "ps -A": "",
+                "dumpsys package com.sec.android.app.camera": "userId=10123",
+                "dumpsys gfxinfo com.sec.android.app.camera": "",
+                "dumpsys gfxinfo com.sec.android.app.camera framestats": "",
+                "dumpsys SurfaceFlinger --list": "",
+                "cat /proc/uid_stat/10123/tcp_rcv": "0",
+                "cat /proc/uid_stat/10123/tcp_snd": "0",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.sec.android.app.camera", now=10.0)
+
+        self.assertEqual(diagnostics.fps_source, "missing")
+        self.assertIn(("FPS", "不可用", "未发现 gfxinfo/framestats/SurfaceFlinger 帧数据"), diagnostics.rows)
+
     def test_network_kbps_falls_back_to_device_totals_with_note_when_uid_is_missing(self) -> None:
         adapter = FakeAndroidAdapter(
             {

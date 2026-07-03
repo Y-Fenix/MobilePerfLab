@@ -4148,9 +4148,10 @@ class AndroidAdapter(BaseAdapter):
         output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)} framestats", timeout=5.0)
         if self._parse_gfxinfo_framestats(output):
             return "gfxinfo framestats"
-        surfaces = self._surface_latency_candidates(device, app_id)
-        if surfaces:
-            return f"SurfaceFlinger: {surfaces[0]}"
+        refresh_period_ns, frame_times = self._surface_latency_frames(device, app_id)
+        if refresh_period_ns > 0 and frame_times:
+            surface = self._surface_cache.get((device.serial, app_id), "")
+            return f"SurfaceFlinger: {surface}" if surface else "SurfaceFlinger"
         return "missing"
 
     def _diagnose_network_source(self, device: DeviceInfo, app_id: str, uid: int | None) -> str:
@@ -5027,14 +5028,14 @@ class AndroidAdapter(BaseAdapter):
 
     def _surface_name_candidates(self, device: DeviceInfo, app_id: str) -> list[str]:
         outputs = [
-            self._shell(device.serial, "dumpsys SurfaceFlinger --list", timeout=5.0),
-            self._shell(device.serial, "dumpsys window", timeout=6.0),
+            (self._shell(device.serial, "dumpsys SurfaceFlinger --list", timeout=5.0), True),
+            (self._shell(device.serial, "dumpsys window", timeout=6.0), False),
         ]
         candidates: list[str] = []
         seen: set[str] = set()
-        for output in outputs:
+        for output, allow_plain_line in outputs:
             for raw_line in output.splitlines():
-                for name in self._surface_names_from_line(raw_line):
+                for name in self._surface_names_from_line(raw_line, allow_plain_line=allow_plain_line):
                     if app_id not in name or name in seen:
                         continue
                     seen.add(name)
@@ -5042,7 +5043,7 @@ class AndroidAdapter(BaseAdapter):
         return candidates
 
     @classmethod
-    def _surface_names_from_line(cls, raw_line: str) -> list[str]:
+    def _surface_names_from_line(cls, raw_line: str, allow_plain_line: bool = True) -> list[str]:
         line = raw_line.strip()
         if not line:
             return []
@@ -5058,7 +5059,8 @@ class AndroidAdapter(BaseAdapter):
             names.append(layer_match.group(1).strip())
         for surface_match in re.finditer(r"Surface\(name=([^)]+)\)", line):
             names.append(surface_match.group(1).strip())
-        names.append(line)
+        if allow_plain_line:
+            names.append(line)
         cleaned: list[str] = []
         seen: set[str] = set()
         for name in names:
