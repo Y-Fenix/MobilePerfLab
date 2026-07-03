@@ -2072,9 +2072,13 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         diagnostics_body = text[diagnostics_start:diagnostics_end]
 
         self.assertIn("self.quality_event_xscrollbar", diagnostics_body)
+        self.assertIn("self.quality_event_yscrollbar", diagnostics_body)
         self.assertIn("xscrollcommand=self.quality_event_xscrollbar.set", diagnostics_body)
+        self.assertIn("yscrollcommand=self.quality_event_yscrollbar.set", diagnostics_body)
         self.assertIn("command=self.quality_event_tree.xview", diagnostics_body)
+        self.assertIn("command=self.quality_event_tree.yview", diagnostics_body)
         self.assertIn('self.quality_event_xscrollbar.grid(row=2, column=0, sticky="ew")', diagnostics_body)
+        self.assertIn('self.quality_event_yscrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 0))', diagnostics_body)
         self.assertIn('self.quality_event_tree.column("detail", width=520, minwidth=520, stretch=False)', diagnostics_body)
         self.assertNotIn('self.quality_event_tree.column("detail", width=180, stretch=True)', diagnostics_body)
 

@@ -9119,8 +9119,13 @@ class App:
             height=7,
         )
         self.quality_event_xscrollbar = ttk.Scrollbar(event_panel, orient="horizontal")
-        self.quality_event_tree.configure(xscrollcommand=self.quality_event_xscrollbar.set)
+        self.quality_event_yscrollbar = ttk.Scrollbar(event_panel, orient="vertical")
+        self.quality_event_tree.configure(
+            xscrollcommand=self.quality_event_xscrollbar.set,
+            yscrollcommand=self.quality_event_yscrollbar.set,
+        )
         self.quality_event_xscrollbar.configure(command=self.quality_event_tree.xview)
+        self.quality_event_yscrollbar.configure(command=self.quality_event_tree.yview)
         self.quality_event_tree.heading("time", text="时间")
         self.quality_event_tree.heading("kind", text="类型")
         self.quality_event_tree.heading("detail", text="说明")
@@ -9128,6 +9133,7 @@ class App:
         self.quality_event_tree.column("kind", width=88, anchor="center", stretch=False)
         self.quality_event_tree.column("detail", width=520, minwidth=520, stretch=False)
         self.quality_event_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.quality_event_yscrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 0))
         self.quality_event_xscrollbar.grid(row=2, column=0, sticky="ew")
 
         log_panel = ttk.Frame(rail, style="PanelBody.TFrame")
