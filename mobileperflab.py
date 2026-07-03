@@ -4199,6 +4199,100 @@ class AndroidAdapter(BaseAdapter):
         if surface:
             self._shell(device.serial, f"dumpsys SurfaceFlinger --latency-clear {shlex.quote(surface)}", timeout=3.0)
 
+    def ensure_target_app_foreground(self, device: DeviceInfo, app_id: str, timeout: float = 5.0) -> tuple[bool, str]:
+        if not app_id:
+            return False, ""
+        foreground = self.foreground_app(device)
+        if foreground == app_id:
+            return False, foreground
+        self._shell(
+            device.serial,
+            f"monkey -p {shlex.quote(app_id)} -c android.intent.category.LAUNCHER 1",
+            timeout=5.0,
+        )
+        deadline = time.time() + max(timeout, 0.0)
+        latest_foreground = foreground
+        while time.time() <= deadline:
+            latest_foreground = self.foreground_app(device)
+            if latest_foreground == app_id:
+                return True, latest_foreground
+            time.sleep(0.25)
+        return True, latest_foreground
+
+    def ensure_device_ready_for_sampling(self, device: DeviceInfo, timeout: float = 3.0) -> tuple[bool, str]:
+        state = self._device_interactive_state(device)
+        if state["ready"]:
+            return True, ""
+        self._shell(device.serial, "input keyevent KEYCODE_WAKEUP", timeout=2.0)
+        self._shell(device.serial, "wm dismiss-keyguard", timeout=2.0)
+        self._shell(device.serial, "input keyevent 82", timeout=2.0)
+        deadline = time.time() + max(timeout, 0.0)
+        latest_state = state
+        while time.time() <= deadline:
+            latest_state = self._device_interactive_state(device)
+            if latest_state["ready"]:
+                return True, ""
+            time.sleep(0.25)
+        reason = "设备仍处于锁屏或息屏状态，请解锁设备并保持屏幕常亮后再开始采集。"
+        if latest_state["locked"]:
+            reason = "设备仍处于锁屏状态，请解锁设备后再开始采集。"
+        elif not latest_state["screen_on"]:
+            reason = "设备仍处于息屏状态，请点亮并解锁设备后再开始采集。"
+        return False, reason
+
+    def _device_interactive_state(self, device: DeviceInfo) -> dict[str, bool]:
+        output = self._shell(device.serial, "dumpsys window", timeout=4.0)
+        if not output.strip():
+            return {"ready": True, "screen_on": True, "locked": False}
+        screen_on = self._window_dump_screen_on(output)
+        locked = self._window_dump_keyguard_locked(output)
+        return {"ready": screen_on and not locked, "screen_on": screen_on, "locked": locked}
+
+    @staticmethod
+    def _window_dump_screen_on(output: str) -> bool:
+        off_patterns = (
+            r"\bscreenState=SCREEN_STATE_OFF\b",
+            r"\bDisplay State=OFF\b",
+            r"\bDisplay\{[^}]*\bstate=OFF\b",
+            r"\bmScreenState=OFF\b",
+            r"\bmAwake=false\b",
+            r"\bmScreenOn[:=]\s*false\b",
+        )
+        if any(re.search(pattern, output) for pattern in off_patterns):
+            return False
+        on_patterns = (
+            r"\bscreenState=SCREEN_STATE_ON\b",
+            r"\bDisplay State=ON\b",
+            r"\bDisplay\{[^}]*\bstate=ON\b",
+            r"\bmScreenState=ON\b",
+            r"\bmAwake=true\b",
+            r"\bmScreenOn[:=]\s*true\b",
+        )
+        return any(re.search(pattern, output) for pattern in on_patterns) or bool(output)
+
+    @staticmethod
+    def _window_dump_keyguard_locked(output: str) -> bool:
+        locked_patterns = (
+            r"\bshowing=true\b",
+            r"\bisKeyguardShowing=true\b",
+            r"\bmIsShowing=true\b",
+            r"\bmScreenLocked:\s*true\b",
+            r"\bmScreenLocked=true\b",
+            r"\bisKeyguardShowing=true\b",
+        )
+        unlocked_patterns = (
+            r"\bshowing=false\b",
+            r"\bisKeyguardShowing=false\b",
+            r"\bmIsShowing=false\b",
+            r"\bmScreenLocked:\s*false\b",
+            r"\bmScreenLocked=false\b",
+        )
+        if any(re.search(pattern, output) for pattern in locked_patterns):
+            return True
+        if any(re.search(pattern, output) for pattern in unlocked_patterns):
+            return False
+        return False
+
     def stop_session(self, device: DeviceInfo, app_id: str) -> None:
         self._shutdown_metric_executor()
         key = (device.serial, app_id)
@@ -10179,6 +10273,23 @@ class App:
         if not app_id:
             messagebox.showinfo(APP_NAME, "请填写目标应用包名或 Bundle ID。")
             return
+        if device.platform == "Android" and isinstance(adapter, AndroidAdapter):
+            ready, readiness_reason = adapter.ensure_device_ready_for_sampling(device)
+            if not ready:
+                self.status_var.set("设备未解锁")
+                self.app_hint_var.set(readiness_reason)
+                self.append_log(readiness_reason)
+                self._refresh_session_chips()
+                return
+            launched, foreground = adapter.ensure_target_app_foreground(device, app_id)
+            if launched:
+                self.append_log(f"已尝试拉起目标应用：{app_id}")
+            if foreground and foreground != app_id:
+                self.status_var.set("目标应用未在前台")
+                self.app_hint_var.set(f"目标应用未进入前台，当前前台为 {foreground}。请确认包名或从应用列表选择正在运行的 App。")
+                self.append_log(f"目标应用未进入前台：目标 {app_id}，当前前台为 {foreground}。")
+                self._refresh_session_chips()
+                return
         if device.platform == "iOS":
             self._ensure_ios_service_for_sampling()
         try:

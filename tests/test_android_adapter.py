@@ -249,6 +249,60 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.foreground_app, "com.example.game")
         self.assertIn(("前台", "匹配", "当前前台 com.example.game"), diagnostics.rows)
 
+    def test_ensure_target_app_foreground_launches_selected_app_when_home_is_foreground(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys activity activities": "\n---NEXT---\n".join(
+                    [
+                        "topResumedActivity=ActivityRecord{111 u0 com.sec.android.app.launcher/.Launcher t1}",
+                        "topResumedActivity=ActivityRecord{222 u0 com.example.game/.MainActivity t2}",
+                    ]
+                ),
+            }
+        )
+
+        launched, foreground = adapter.ensure_target_app_foreground(self.device, "com.example.game")
+
+        self.assertTrue(launched)
+        self.assertEqual(foreground, "com.example.game")
+        self.assertIn("monkey -p com.example.game -c android.intent.category.LAUNCHER 1", adapter.calls)
+
+    def test_ensure_device_ready_for_sampling_wakes_and_dismisses_keyguard(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "\n---NEXT---\n".join(
+                    [
+                        "screenState=SCREEN_STATE_OFF\nKeyguardServiceDelegate\n  showing=true\n  isKeyguardShowing=true",
+                        "mAwake=true\nmScreenOn: true\nKeyguardServiceDelegate\n  showing=false\n  isKeyguardShowing=false",
+                    ]
+                )
+            }
+        )
+
+        ready, reason = adapter.ensure_device_ready_for_sampling(self.device, timeout=0.2)
+
+        self.assertTrue(ready)
+        self.assertEqual(reason, "")
+        self.assertIn("input keyevent KEYCODE_WAKEUP", adapter.calls)
+        self.assertIn("wm dismiss-keyguard", adapter.calls)
+
+    def test_ensure_device_ready_for_sampling_reports_locked_screen_when_keyguard_remains(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "screenState=SCREEN_STATE_OFF\nKeyguardServiceDelegate\n  showing=true\n  isKeyguardShowing=true",
+            }
+        )
+
+        ready, reason = adapter.ensure_device_ready_for_sampling(self.device, timeout=0.0)
+
+        self.assertFalse(ready)
+        self.assertIn("锁屏", reason)
+
+    def test_window_dump_screen_on_ignores_unrelated_state_off_tokens(self) -> None:
+        output = "mAwake=true\nmScreenOn: true\nsome_state=OFF\nKeyguardServiceDelegate\n  showing=false"
+
+        self.assertTrue(AndroidAdapter._window_dump_screen_on(output))
+
     def test_cpu_percent_sums_all_pids_returned_by_pidof(self) -> None:
         adapter = FakeAndroidAdapter(
             {

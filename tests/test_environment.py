@@ -599,6 +599,259 @@ class IOSServiceLaunchTest(unittest.TestCase):
         app.app_task_thread.join(1.0)
         self.assertFalse(app.events.empty())
 
+    def test_start_sampling_brings_selected_android_app_to_foreground_before_sampler_starts(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.logs: list[str] = []
+
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, text: str) -> None:
+                self.logs.append(text)
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            instances: list["FakeSampler"] = []
+
+            def __init__(self, *_args: object) -> None:
+                self.started = False
+                FakeSampler.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+        class LaunchingAdapter(AndroidAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.ensure_calls: list[tuple[DeviceInfo, str]] = []
+
+            def ensure_target_app_foreground(self, device: DeviceInfo, app_id: str) -> tuple[bool, str]:
+                self.ensure_calls.append((device, app_id))
+                return True, app_id
+
+            def collection_diagnostics(self, _device: DeviceInfo, _app_id: str) -> AndroidCollectionDiagnostics:
+                return AndroidCollectionDiagnostics("ok", "Android 采集自检通过", [])
+
+        adapter = LaunchingAdapter()
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.android = adapter
+        app.adapter_for = lambda _device: app.android
+        app.app_var = FakeVar("com.example.game")
+        app.app_hint_var = FakeVar()
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = queue.Queue()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app.logs: list[str] = []
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+        app.app_task_thread = None
+        app.app_task_generation = 0
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertEqual(adapter.ensure_calls, [(app.selected_device, "com.example.game")])
+        self.assertTrue(FakeSampler.instances[-1].started)
+        self.assertTrue(any("已尝试拉起目标应用" in line for line in app.logs))
+
+    def test_start_sampling_stops_when_selected_android_app_cannot_enter_foreground(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, _text: str) -> None:
+                pass
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            instances: list["FakeSampler"] = []
+
+            def __init__(self, *_args: object) -> None:
+                FakeSampler.instances.append(self)
+
+            def start(self) -> None:
+                pass
+
+        class BlockedLaunchAdapter(AndroidAdapter):
+            def ensure_target_app_foreground(self, _device: DeviceInfo, _app_id: str) -> tuple[bool, str]:
+                return True, "com.example.home"
+
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.android = BlockedLaunchAdapter()
+        app.adapter_for = lambda _device: app.android
+        app.app_var = FakeVar("com.example.game")
+        app.app_hint_var = FakeVar()
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = queue.Queue()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app.logs: list[str] = []
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+        app.app_task_thread = None
+        app.app_task_generation = 0
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertEqual(FakeSampler.instances, [])
+        self.assertEqual(app.status_var.value, "目标应用未在前台")
+        self.assertIn("当前前台为 com.example.home", app.app_hint_var.value)
+
+    def test_start_sampling_stops_when_android_screen_is_locked(self) -> None:
+        import mobileperflab
+
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeRecorder:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+            def reset(self, _device: DeviceInfo, _app_id: str) -> None:
+                pass
+
+            def log(self, _text: str) -> None:
+                pass
+
+        class FakeLiveQuality:
+            def set_expected_interval(self, _interval: float) -> None:
+                pass
+
+        class FakeButton:
+            def configure(self, **_kwargs: object) -> None:
+                pass
+
+        class FakeSampler:
+            instances: list["FakeSampler"] = []
+
+            def __init__(self, *_args: object) -> None:
+                FakeSampler.instances.append(self)
+
+            def start(self) -> None:
+                pass
+
+        class LockedAdapter(AndroidAdapter):
+            def ensure_device_ready_for_sampling(self, _device: DeviceInfo) -> tuple[bool, str]:
+                return False, "设备仍处于锁屏或息屏状态"
+
+        app = object.__new__(App)
+        app.sampler = None
+        app.selected_device = DeviceInfo("Android", "android-1", "Pixel", "14", "Pixel", "ready")
+        app.android = LockedAdapter()
+        app.adapter_for = lambda _device: app.android
+        app.app_var = FakeVar("com.example.game")
+        app.app_hint_var = FakeVar()
+        app.interval_var = FakeVar("1.0")
+        app.smoothing_var = FakeVar("1")
+        app.recorder = FakeRecorder()
+        app.live_quality = FakeLiveQuality()
+        app.events = queue.Queue()
+        app.last_notes = set()
+        app.start_button = FakeButton()
+        app.stop_button = FakeButton()
+        app.status_var = FakeVar()
+        app.session_var = FakeVar()
+        app.logs: list[str] = []
+        app._reset_metrics = lambda: None
+        app.stabilizer = type("FakeStabilizer", (), {"reset": lambda self: None})()
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+        app.app_task_thread = None
+        app.app_task_generation = 0
+
+        original_sampler = mobileperflab.SamplerThread
+        mobileperflab.SamplerThread = FakeSampler
+        try:
+            App.start_sampling(app)
+        finally:
+            mobileperflab.SamplerThread = original_sampler
+
+        self.assertEqual(FakeSampler.instances, [])
+        self.assertEqual(app.status_var.value, "设备未解锁")
+        self.assertIn("锁屏", app.app_hint_var.value)
+
 
 class FullscreenStartupTest(unittest.TestCase):
     def test_fullscreen_prefers_zoomed_state(self) -> None:
