@@ -2795,8 +2795,8 @@ def format_report_seconds(value: float) -> str:
     return f"{float(value):.1f}s"
 
 
-def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None:
-    tag = sample_quality_tag(sample)
+def quality_event_from_sample(sample: PerfSample, quality_tag: str | None = None) -> tuple[str, str, str] | None:
+    tag = quality_tag or sample_quality_tag(sample)
     if tag in {"ok", "limited"}:
         return None
     note = sample.note or ""
@@ -2805,6 +2805,8 @@ def quality_event_from_sample(sample: PerfSample) -> tuple[str, str, str] | None
     if tag == "fallback":
         detail = "非目标 App 独占流量" if "非目标 App 独占流量" in note else "网络使用设备级兜底"
         return format_report_seconds(sample.elapsed), "设备级兜底", detail
+    if tag == "issue" and not note:
+        return format_report_seconds(sample.elapsed), "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"
     detail = primary_quality_issue_note(note)
     return format_report_seconds(sample.elapsed), "采集异常", detail[:80]
 
@@ -10700,7 +10702,7 @@ class App:
         self._refresh_graph_time_axis()
         self._refresh_proxy_traffic()
         self.session_var.set(f"{self._format_elapsed(sample.elapsed)} · {len(self.recorder.samples)} samples")
-        self._append_quality_event(sample)
+        self._append_quality_event(sample, quality_tag)
         self._refresh_session_chips()
 
     def _refresh_quality_mode(self) -> None:
@@ -10713,14 +10715,14 @@ class App:
         for item in self.quality_event_tree.get_children():
             self.quality_event_tree.delete(item)
 
-    def _append_quality_event(self, sample: PerfSample) -> None:
-        tag = sample_quality_tag(sample)
+    def _append_quality_event(self, sample: PerfSample, quality_tag: str | None = None) -> None:
+        tag = quality_tag or sample_quality_tag(sample)
         if tag == "ok":
             self.last_quality_event_tag = "ok"
             return
         if tag == self.last_quality_event_tag:
             return
-        event = quality_event_from_sample(sample)
+        event = quality_event_from_sample(sample, quality_tag=tag)
         self.last_quality_event_tag = tag
         if not event or not hasattr(self, "quality_event_tree"):
             return

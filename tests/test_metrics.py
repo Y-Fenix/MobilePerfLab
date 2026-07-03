@@ -1129,6 +1129,11 @@ class QualityEventTest(unittest.TestCase):
 
         self.assertEqual(event, ("7.5s", "前台恢复窗口", "目标应用刚回到前台"))
 
+    def test_builds_realtime_event_for_cadence_inferred_issue(self) -> None:
+        event = quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=2.8, fps=55.0), quality_tag="issue")
+
+        self.assertEqual(event, ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
+
     def test_ignores_ok_sample(self) -> None:
         self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))
 

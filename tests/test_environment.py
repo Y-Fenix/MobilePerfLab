@@ -2671,7 +2671,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
@@ -2684,6 +2684,98 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("性能结论：先修采集链路", app.performance_conclusion_var.value)
         self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
         self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
+
+    def test_handle_sample_records_same_quality_event_tag_shown_on_graphs(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeMetricHealth:
+            def analyze(self, _sample: PerfSample) -> dict[str, object]:
+                return {}
+
+        class FakeCard:
+            def set_value(self, _value: object, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str]) -> None:
+                self.rows.append(values)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = FakeMetricHealth()
+        app.live_quality = LiveQualityTracker(expected_interval=1.0)
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.last_quality_event_tag = "ok"
+        app.quality_event_tree = FakeTree()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._refresh_proxy_traffic = lambda: None
+        app._refresh_session_chips = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        App._handle_sample(app, PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
+
+        self.assertEqual(app.graphs["fps"].points[-1], (2.8, 55.0, "issue"))
+        self.assertEqual(app.quality_event_tree.rows[-1], ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
 
     def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
         class FakeVar:
@@ -2739,7 +2831,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
@@ -2817,7 +2909,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(
@@ -2897,7 +2989,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(
@@ -2993,7 +3085,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
@@ -3072,7 +3164,7 @@ class QualityModeLabelTest(unittest.TestCase):
         app.graphs = {key: FakeGraph() for key in app.cards}
         app._refresh_graph_time_axis = lambda: None
         app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
-        app._append_quality_event = lambda _sample: None
+        app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=158.5))
