@@ -10134,7 +10134,10 @@ class App:
         selection = self.app_list.curselection()
         if selection:
             raw = self.app_list.get(selection[0])
-            self.app_var.set(raw.split()[0] if raw.split() else raw)
+            app_id = raw.split()[0] if raw.split() else raw
+            self.app_var.set(app_id)
+            if hasattr(self, "app_picker_var"):
+                self.app_picker_var.set(app_id)
             self._refresh_session_chips()
 
     def _on_app_picker_selected(self, _event: tk.Event | None = None) -> None:

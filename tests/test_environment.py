@@ -1126,6 +1126,35 @@ class FullscreenStartupTest(unittest.TestCase):
 
         self.assertEqual(app.app_var.value, "com.example.game")
 
+    def test_app_list_selection_keeps_picker_and_target_app_in_sync(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeList:
+            def curselection(self) -> tuple[int, ...]:
+                return (0,)
+
+            def get(self, _index: int) -> str:
+                return "com.example.game"
+
+        app = object.__new__(App)
+        app.app_list = FakeList()
+        app.app_var = FakeVar()
+        app.app_picker_var = FakeVar()
+        app._refresh_session_chips = lambda: None
+
+        App._on_app_selected(app)
+
+        self.assertEqual(app.app_var.value, "com.example.game")
+        self.assertEqual(app.app_picker_var.value, "com.example.game")
+
     def test_foreground_result_event_updates_app_var(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
