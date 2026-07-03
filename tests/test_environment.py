@@ -1153,6 +1153,46 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.app_picker.values, ("com.a", "com.b"))
         self.assertEqual(app.app_hint_var.value, "已读取 2 个应用。")
 
+    def test_app_list_result_keeps_all_apps_available_for_selection(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.items: list[str] = []
+
+            def delete(self, _start: object, _end: object = None) -> None:
+                self.items.clear()
+
+            def insert(self, _index: object, value: str) -> None:
+                self.items.append(value)
+
+        class FakePicker:
+            def __init__(self) -> None:
+                self.values: tuple[str, ...] = ()
+
+            def configure(self, **kwargs: object) -> None:
+                self.values = tuple(kwargs.get("values", ()))
+
+        apps = [f"com.example.app{index:03d}" for index in range(600)]
+        app = object.__new__(App)
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app.app_list = FakeList()
+        app.app_picker = FakePicker()
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(app, {"generation": 1, "kind": "list_apps", "apps": apps, "error": ""})
+
+        self.assertEqual(len(app.app_list.items), 600)
+        self.assertEqual(len(app.app_picker.values), 600)
+        self.assertEqual(app.app_list.items[-1], "com.example.app599")
+        self.assertEqual(app.app_picker.values[-1], "com.example.app599")
+
     def test_app_picker_selection_updates_target_app_var(self) -> None:
         class FakeVar:
             def __init__(self, value: str = "") -> None:

@@ -10217,10 +10217,10 @@ class App:
             apps = data.get("apps", [])
             apps = apps if isinstance(apps, list) else []
             self.app_list.delete(0, tk.END)
-            for app_id in apps[:500]:
+            for app_id in apps:
                 self.app_list.insert(tk.END, str(app_id))
             if hasattr(self, "app_picker"):
-                self.app_picker.configure(values=tuple(str(app_id) for app_id in apps[:500]))
+                self.app_picker.configure(values=tuple(str(app_id) for app_id in apps))
             self.app_hint_var.set(f"已读取 {len(apps)} 个应用。" if apps else "未读取到应用，请手动输入。")
             self._refresh_session_chips()
             return
