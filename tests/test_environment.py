@@ -1806,6 +1806,35 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         for label in ("代理监听", "设备代理", "端口连通", "代理流量", "目标命中"):
             self.assertIn(label, text)
 
+    def test_weak_proxy_traffic_panel_uses_three_columns_for_readable_metric_cards(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("def _build_proxy_traffic_panel")
+        panel_end = text.index("def _build_dashboard", panel_start)
+        panel_body = text[panel_start:panel_end]
+        chart_start = text.index("class TrafficMiniChart")
+        chart_end = text.index("class App", chart_start)
+        chart_body = text[chart_start:chart_end]
+
+        self.assertIn("traffic_columns = 3", panel_body)
+        self.assertIn("columnspan=traffic_columns", panel_body)
+        self.assertIn("(index - 1) // traffic_columns", panel_body)
+        self.assertIn("(index - 1) % traffic_columns", panel_body)
+        self.assertIn("for column in range(traffic_columns)", panel_body)
+        self.assertNotIn("// 4", panel_body)
+        self.assertNotIn("range(4)", panel_body)
+        self.assertIn("height=126", chart_body)
+
+    def test_weak_proxy_traffic_readiness_card_does_not_overwrite_right_status_detail(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("def _build_proxy_traffic_panel")
+        panel_end = text.index("def _build_dashboard", panel_start)
+        panel_body = text[panel_start:panel_end]
+
+        self.assertIn("value_var = tk.StringVar(value=default)", panel_body)
+        self.assertNotIn('value_var = self.weak_readiness_var if key == "readiness"', panel_body)
+
     def test_workbench_status_chip_keeps_short_labels_for_empty_state(self) -> None:
         self.assertEqual(format_workbench_status_chip("设备", ""), "设备：未选择")
         self.assertEqual(format_workbench_status_chip("弱网", "弱网 OFF · 未启动"), "弱网：OFF")
@@ -1827,6 +1856,8 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self._build_control_rail(shell)", text)
         self.assertIn("self._build_observability_workspace(shell)", text)
         self.assertIn("self._build_diagnostics_rail(shell)", text)
+        self.assertIn("shell.columnconfigure(0, minsize=300, weight=0)", text)
+        self.assertIn("shell.columnconfigure(2, minsize=420, weight=0)", text)
         self.assertNotIn("self._build_header(root_frame)", text)
         self.assertNotIn("self._build_sidebar(body)", text)
 
@@ -1841,20 +1872,18 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn('format_workbench_status_chip("质量"', text)
         self.assertIn('format_workbench_status_chip("弱网"', text)
 
-    def test_control_rail_renders_step_titles_without_long_help_text(self) -> None:
+    def test_control_rail_removes_tutorial_step_cards_from_primary_controls(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
         control_start = text.index("def _build_control_rail")
         control_end = text.index("def _build_observability_workspace", control_start)
         control_body = text[control_start:control_end]
 
-        self.assertIn("for step in workbench_sidebar_steps()", control_body)
-        self.assertIn("StepTitle.TLabel", text)
-        self.assertIn("StepDetail.TLabel", text)
-        self.assertIn("1 连接设备", text)
-        self.assertIn("2 自动识别前台应用", text)
-        self.assertIn("3 采集自检", text)
-        self.assertIn("4 开始采集", text)
+        self.assertNotIn("steps_panel", control_body)
+        self.assertNotIn("for step in workbench_sidebar_steps()", control_body)
+        self.assertNotIn("StepTitle.TLabel", control_body)
+        self.assertNotIn('text=step["detail"]', control_body)
+        self.assertNotIn("StepDetail.TLabel", control_body)
 
     def test_control_rail_owns_sidebar_body_and_sidebar_is_compatibility_wrapper(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -1867,7 +1896,7 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         sidebar_body = text[sidebar_start:sidebar_end]
 
         self.assertIn('ttk.Frame(master, style="Sidebar.TFrame"', control_body)
-        self.assertIn("for step in workbench_sidebar_steps()", control_body)
+        self.assertNotIn("for step in workbench_sidebar_steps()", control_body)
         self.assertNotIn("self._build_sidebar(master)", control_body)
         self.assertIn("self._build_control_rail(master)", sidebar_body)
 
@@ -1883,10 +1912,25 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self.app_list = tk.Listbox", control_body)
         self.assertIn("self.app_picker = ttk.Combobox", control_body)
         self.assertIn("command=self.refresh_apps", control_body)
-        self.assertLess(control_body.index("目标应用"), control_body.index('text="设备"'))
-        self.assertIn("app_panel.rowconfigure(4, weight=0, minsize=84)", control_body)
-        self.assertIn("height=4", control_body)
+        self.assertLess(control_body.index("目标应用"), control_body.index("settings.grid(row=1"))
+        self.assertLess(control_body.index("settings.grid(row=1"), control_body.index('text="设备"'))
+        self.assertIn("app_panel.rowconfigure(4, weight=0, minsize=70)", control_body)
+        self.assertIn("height=3", control_body)
         self.assertIn('self.app_list.grid(row=4, column=0, sticky="nsew"', control_body)
+
+    def test_control_rail_keeps_sampling_controls_compact_and_visible(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        control_start = text.index("def _build_control_rail")
+        control_end = text.index("def _build_observability_workspace", control_start)
+        control_body = text[control_start:control_end]
+
+        self.assertIn("sidebar.rowconfigure(5, weight=1)", control_body)
+        self.assertIn("settings.grid(row=1", control_body)
+        self.assertLess(control_body.index("settings.grid(row=1"), control_body.index('text="设备"'))
+        self.assertIn("ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=8", control_body)
+        self.assertIn("recommended_interval_var", control_body)
+        self.assertIn("iOS采集服务", control_body)
 
     def test_diagnostics_rail_owns_quality_events_weak_status_and_logs(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -1903,6 +1947,8 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self.weak_live_summary_var", diagnostics_body)
         self.assertIn("self.quality_event_tree", diagnostics_body)
         self.assertIn("self.log_text", diagnostics_body)
+        self.assertIn("wraplength=420", diagnostics_body)
+        self.assertNotIn("wraplength=320", diagnostics_body)
         self.assertNotIn("将在这里汇总", diagnostics_body)
 
         dashboard_start = text.index("def _build_dashboard")

@@ -756,6 +756,55 @@ def weak_readiness_display_text(readiness: dict[str, object] | object) -> str:
     return f"{label} · {action}" if action else label
 
 
+def weak_readiness_card_text(readiness: dict[str, object] | object) -> str:
+    if not isinstance(readiness, dict):
+        return "未知"
+    state = str(readiness.get("state", "") or "")
+    label = str(readiness.get("label", "") or "")
+    if state == "blocked" and "启动" in str(readiness.get("action", "")):
+        return "先启动代理"
+    if state == "blocked" and "端口" in str(readiness.get("detail", "")):
+        return "端口不可达"
+    if state == "blocked":
+        return label or "待修复"
+    if state == "ready":
+        return label or "可测试"
+    if state == "attention":
+        return label or "需确认"
+    return label or "等待"
+
+
+def weak_hit_status_card_text(
+    running: bool,
+    traffic_state: str,
+    app_rx_kbps: float = 0.0,
+    app_tx_kbps: float = 0.0,
+) -> str:
+    if not running or traffic_state == "off":
+        return "未启动"
+    if traffic_state == "hit":
+        app_has_traffic = max(float(app_rx_kbps or 0.0), 0.0) > 0.0 or max(float(app_tx_kbps or 0.0), 0.0) > 0.0
+        return "目标已命中" if app_has_traffic else "代理有流量"
+    if traffic_state == "dropped":
+        return "已丢弃"
+    if traffic_state == "waiting" and (max(float(app_rx_kbps or 0.0), 0.0) > 0.0 or max(float(app_tx_kbps or 0.0), 0.0) > 0.0):
+        return "疑似绕过"
+    return "等待流量"
+
+
+def weak_target_hit_card_text(target_hit_summary: dict[str, object] | object) -> str:
+    if not isinstance(target_hit_summary, dict):
+        return "等待证据"
+    state = str(target_hit_summary.get("state", "waiting") or "waiting")
+    if state == "bypass":
+        return "未命中弱网"
+    if state == "target_unconfirmed":
+        return "待确认"
+    if state == "confirmed":
+        return "命中可信"
+    return "等待证据"
+
+
 def live_weak_network_action_text(effectiveness: dict[str, object] | object) -> str:
     if not isinstance(effectiveness, dict):
         return "弱网：未知"
@@ -8612,7 +8661,7 @@ class TrafficMiniChart(ttk.Frame):
         header.pack(fill="x")
         ttk.Label(header, text="实时流量曲线", style="PanelTitle.TLabel").pack(side="left")
         ttk.Label(header, text="下行 / 上行", style="Muted.TLabel").pack(side="right")
-        self.canvas = tk.Canvas(self, height=156, background="#FFFFFF", highlightthickness=0)
+        self.canvas = tk.Canvas(self, height=126, background="#FFFFFF", highlightthickness=0)
         self.canvas.pack(fill="x", expand=False, pady=(8, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw([]))
         self._points: list[tuple[float, float, float]] = []
@@ -8838,9 +8887,9 @@ class App:
         self._build_session_bar(root_frame)
         shell = ttk.Frame(root_frame, style="Root.TFrame", padding=(12, 12, 12, 12))
         shell.pack(fill="both", expand=True)
-        shell.columnconfigure(0, minsize=320, weight=0)
+        shell.columnconfigure(0, minsize=300, weight=0)
         shell.columnconfigure(1, weight=1)
-        shell.columnconfigure(2, minsize=360, weight=0)
+        shell.columnconfigure(2, minsize=420, weight=0)
         shell.rowconfigure(0, weight=1)
         self._build_control_rail(shell)
         self._build_observability_workspace(shell)
@@ -8874,22 +8923,11 @@ class App:
     def _build_control_rail(self, master: tk.Widget) -> None:
         sidebar = ttk.Frame(master, style="Sidebar.TFrame", padding=(14, 14))
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        sidebar.rowconfigure(2, weight=0)
-        sidebar.rowconfigure(6, weight=1)
-        steps_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        steps_panel.grid(row=0, column=0, sticky="ew")
-        steps_panel.columnconfigure(0, weight=1)
-        step_row = 0
-        for step in workbench_sidebar_steps():
-            row = ttk.Frame(steps_panel, style="Step.TFrame", padding=(10, 8))
-            row.grid(row=step_row, column=0, sticky="ew", pady=(0 if step_row == 0 else 6, 0))
-            ttk.Label(row, text=step["title"], style="StepTitle.TLabel").pack(anchor="w")
-            ttk.Label(row, text=step["detail"], style="StepDetail.TLabel", wraplength=270).pack(anchor="w", pady=(2, 0))
-            step_row += 1
+        sidebar.rowconfigure(5, weight=1)
         app_panel = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        app_panel.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        app_panel.grid(row=0, column=0, sticky="ew")
         app_panel.columnconfigure(0, weight=1)
-        app_panel.rowconfigure(4, weight=0, minsize=84)
+        app_panel.rowconfigure(4, weight=0, minsize=70)
         ttk.Label(app_panel, text="目标应用", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(app_panel, textvariable=self.app_var).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         self.app_picker = ttk.Combobox(app_panel, textvariable=self.app_picker_var, values=(), state="readonly")
@@ -8902,7 +8940,7 @@ class App:
         ttk.Button(app_actions, text="采集自检", style="Tool.TButton", command=self.run_collection_diagnostics).pack(side="left", padx=(8, 0))
         self.app_list = tk.Listbox(
             app_panel,
-            height=4,
+            height=3,
             borderwidth=1,
             highlightthickness=0,
             activestyle="none",
@@ -8915,6 +8953,37 @@ class App:
         self.app_list.grid(row=4, column=0, sticky="nsew", pady=(10, 8))
         self.app_list.bind("<<ListboxSelect>>", self._on_app_selected)
         ttk.Label(app_panel, textvariable=self.app_hint_var, style="Muted.TLabel", wraplength=280).grid(row=5, column=0, sticky="ew")
+        settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        settings.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        settings.columnconfigure(1, weight=1)
+        ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=8, state="readonly")
+        interval.grid(row=0, column=1, sticky="e")
+        interval.bind("<<ComboboxSelected>>", lambda _event: self.refresh_recommended_sampling_interval_label())
+        ttk.Button(
+            settings,
+            textvariable=self.recommended_interval_var,
+            style="Tool.TButton",
+            command=self.apply_recommended_sampling_interval,
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
+            row=2,
+            column=1,
+            sticky="e",
+            pady=(8, 0),
+        )
         ttk.Label(sidebar, text="设备", style="SidebarTitle.TLabel").grid(row=2, column=0, sticky="w", pady=(14, 0))
         filter_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
         filter_row.grid(row=3, column=0, sticky="ew", pady=(10, 8))
@@ -8937,42 +9006,8 @@ class App:
         self.device_tree.column("#0", width=164, stretch=True)
         self.device_tree.column("platform", width=72, anchor="center")
         self.device_tree.column("status", width=70, anchor="center")
-        self.device_tree.grid(row=5, column=0, sticky="ew")
+        self.device_tree.grid(row=5, column=0, sticky="nsew")
         self.device_tree.bind("<<TreeviewSelect>>", self._on_device_selected)
-        settings = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        settings.grid(row=6, column=0, sticky="ew", pady=(16, 0))
-        settings.columnconfigure(1, weight=1)
-        ttk.Label(settings, text="采样间隔", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        interval = ttk.Combobox(settings, textvariable=self.interval_var, values=SAMPLING_INTERVAL_OPTIONS, width=6, state="readonly")
-        interval.grid(row=0, column=1, sticky="e")
-        interval.bind("<<ComboboxSelected>>", lambda _event: self.refresh_recommended_sampling_interval_label())
-        ttk.Button(
-            settings,
-            textvariable=self.recommended_interval_var,
-            style="Tool.TButton",
-            command=self.apply_recommended_sampling_interval,
-        ).grid(
-            row=1,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
-        ttk.Checkbutton(settings, text="稳定曲线", variable=self.smoothing_var).grid(
-            row=2,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(10, 0),
-        )
-        ttk.Button(settings, text="iOS采集服务", style="Tool.TButton", command=self.start_ios_service).grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(12, 0),
-        )
-        ttk.Label(settings, textvariable=self.capability_var, style="Muted.TLabel", wraplength=280).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
     def _build_observability_workspace(self, master: tk.Widget) -> None:
         workspace = ttk.Frame(master, style="Root.TFrame")
@@ -9001,7 +9036,7 @@ class App:
         for row, label in enumerate(("前台", "PID", "UID", "FPS", "网络")):
             variable = tk.StringVar(value=f"{label}: 等待")
             self.collection_link_vars[label] = variable
-            ttk.Label(link_grid, textvariable=variable, style="Health.TLabel", wraplength=320).grid(
+            ttk.Label(link_grid, textvariable=variable, style="Health.TLabel", wraplength=420).grid(
                 row=row,
                 column=0,
                 sticky="ew",
@@ -9013,13 +9048,13 @@ class App:
         weak_panel.grid(row=2, column=0, sticky="ew", pady=(14, 0))
         weak_panel.columnconfigure(0, weight=1)
         ttk.Label(weak_panel, text="弱网状态", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(weak_panel, textvariable=self.weak_readiness_var, style="GraphValue.TLabel", wraplength=320).grid(
+        ttk.Label(weak_panel, textvariable=self.weak_readiness_var, style="GraphValue.TLabel", wraplength=420).grid(
             row=1,
             column=0,
             sticky="ew",
             pady=(6, 0),
         )
-        ttk.Label(weak_panel, textvariable=self.weak_live_summary_var, style="Muted.TLabel", wraplength=320).grid(
+        ttk.Label(weak_panel, textvariable=self.weak_live_summary_var, style="Muted.TLabel", wraplength=420).grid(
             row=2,
             column=0,
             sticky="ew",
@@ -9444,19 +9479,21 @@ class App:
     def _build_proxy_traffic_panel(self, master: tk.Widget, row: int) -> None:
         panel = ttk.Frame(master, style="Panel.TFrame", padding=(12, 10))
         panel.grid(row=row, column=0, sticky="ew", pady=(18, 0))
-        panel.columnconfigure(0, weight=1)
-        ttk.Label(panel, text="代理真实流量", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        traffic_columns = 3
+        for column in range(traffic_columns):
+            panel.columnconfigure(column, weight=1, uniform="weak_traffic")
+        ttk.Label(panel, text="代理真实流量", style="PanelTitle.TLabel").grid(row=0, column=0, columnspan=traffic_columns, sticky="w")
         ttk.Label(
             panel,
             text="统计所有经过本机弱网代理的 HTTP/HTTPS 流量，用于验证弱网是否真实生效。",
             style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=traffic_columns, sticky="w", pady=(4, 0))
         self.weak_traffic_chart = TrafficMiniChart(panel)
-        self.weak_traffic_chart.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.weak_traffic_chart.grid(row=2, column=0, columnspan=traffic_columns, sticky="ew", pady=(10, 0))
         metrics = [
             ("readiness", "测试就绪", "先启动弱网代理"),
             ("hit_status", "流量命中", "未启动"),
-            ("target_hit", "目标命中可信度", "等待目标命中证据"),
+            ("target_hit", "目标命中", "等待证据"),
             ("down_rate", "实时下行", "0.0 KB/s"),
             ("up_rate", "实时上行", "0.0 KB/s"),
             ("down_total", "累计下行", "0 B"),
@@ -9466,14 +9503,18 @@ class App:
             ("activity", "最近活动", "无"),
         ]
         for index, (key, label, default) in enumerate(metrics, start=1):
-            value_var = self.weak_readiness_var if key == "readiness" else tk.StringVar(value=default)
+            value_var = tk.StringVar(value=default)
             self.weak_traffic_vars[key] = value_var
             item = ttk.Frame(panel, style="Panel.TFrame", padding=(10, 8))
-            item.grid(row=3 + (index - 1) // 4, column=(index - 1) % 4, sticky="ew", padx=(0 if (index - 1) % 4 == 0 else 8, 0), pady=(10, 0))
+            item.grid(
+                row=3 + (index - 1) // traffic_columns,
+                column=(index - 1) % traffic_columns,
+                sticky="ew",
+                padx=(0 if (index - 1) % traffic_columns == 0 else 8, 0),
+                pady=(10, 0),
+            )
             ttk.Label(item, text=label, style="Muted.TLabel").pack(anchor="w")
             ttk.Label(item, textvariable=value_var, style="GraphValue.TLabel").pack(anchor="w", pady=(3, 0))
-        for column in range(4):
-            panel.columnconfigure(column, weight=1)
 
     def _build_dashboard(self, master: tk.Widget) -> None:
         master.columnconfigure(0, weight=1)
@@ -9952,8 +9993,7 @@ class App:
         )
         readiness = effectiveness.get("test_readiness", {})
         readiness_text = weak_readiness_display_text(readiness)
-        values["readiness"] = readiness_text
-        values["hit_status"] = weak_hit_status_text(
+        hit_status_text = weak_hit_status_text(
             self.weak_proxy.is_running(),
             traffic_state,
             self.last_app_rx_kbps,
@@ -9967,10 +10007,14 @@ class App:
             snapshot.up_kbps,
         )
         target_hit_summary = weak_network_target_hit_summary(bypass_evidence, effectiveness)
-        values["target_hit"] = (
-            f"{target_hit_summary.get('label', '等待目标命中证据')} · "
-            f"{target_hit_summary.get('evidence', '')}"
-        ).strip()
+        values["readiness"] = weak_readiness_card_text(readiness)
+        values["hit_status"] = weak_hit_status_card_text(
+            self.weak_proxy.is_running(),
+            traffic_state,
+            self.last_app_rx_kbps,
+            self.last_app_tx_kbps,
+        )
+        values["target_hit"] = weak_target_hit_card_text(target_hit_summary)
         if hasattr(self, "weak_readiness_var"):
             self.weak_readiness_var.set(readiness_text)
         weak_traffic_vars = getattr(self, "weak_traffic_vars", {})

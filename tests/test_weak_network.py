@@ -169,7 +169,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("端口不可达", app.weak_live_summary_var.value)
         self.assertIn("先修弱网链路", app.weak_readiness_var.value)
         self.assertIn("防火墙", app.weak_readiness_var.value)
-        self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, "端口不可达")
 
     def test_refresh_proxy_traffic_shows_readiness_action_for_proxy_bypass(self) -> None:
         class FakeVar:
@@ -214,8 +214,8 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertTrue(app.weak_live_summary_var.value.startswith("弱网：先修弱网链路 · 疑似绕过代理\n"))
         self.assertIn("先修弱网链路", app.weak_readiness_var.value)
         self.assertIn("QUIC/UDP", app.weak_readiness_var.value)
-        self.assertEqual(app.weak_traffic_vars["readiness"].value, app.weak_readiness_var.value)
-        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "疑似绕过代理 · App 有流量但代理未捕获")
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, "端口不可达")
+        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "疑似绕过")
 
     def test_refresh_proxy_traffic_shows_live_target_hit_summary_for_proxy_bypass(self) -> None:
         class FakeVar:
@@ -257,10 +257,51 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
 
         App._refresh_proxy_traffic(app)
 
-        self.assertIn("目标未命中弱网", app.weak_traffic_vars["target_hit"].value)
-        self.assertIn("App 144.0 KB/s", app.weak_traffic_vars["target_hit"].value)
-        self.assertIn("代理 0.0 KB/s", app.weak_traffic_vars["target_hit"].value)
+        self.assertEqual(app.weak_traffic_vars["target_hit"].value, "未命中弱网")
         self.assertIn("目标未命中弱网", app.weak_live_summary_var.value)
+
+    def test_refresh_proxy_traffic_uses_short_card_text_for_weak_traffic_panel(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return False
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot()
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {
+            "readiness": FakeVar(),
+            "hit_status": FakeVar(),
+            "target_hit": FakeVar(),
+        }
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.last_weak_diagnostics = None
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertEqual(app.weak_traffic_vars["readiness"].value, "先启动代理")
+        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "未启动")
+        self.assertEqual(app.weak_traffic_vars["target_hit"].value, "等待证据")
+        self.assertIn("点击启动代理", app.weak_readiness_var.value)
 
     def test_refresh_proxy_traffic_shows_target_confirmation_action_for_proxy_only_hit(self) -> None:
         class FakeVar:
@@ -306,7 +347,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("下载/上传", app.weak_readiness_var.value)
         self.assertIn("代理有流量，目标待确认", app.weak_live_summary_var.value)
         self.assertIn("下载/上传", app.weak_live_summary_var.value)
-        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量 · 目标 App 待确认")
+        self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量")
 
     def test_refresh_weak_diagnostics_uses_selected_ios_device_for_manual_proxy_guidance(self) -> None:
         class FakeVar:
