@@ -4702,7 +4702,7 @@ class AndroidAdapter(BaseAdapter):
         level = parse_first_float(r"level:\s*(\d+)", output)
         temp_raw = parse_first_float(r"temperature:\s*(-?\d+)", output)
         temperature = temp_raw / 10.0 if temp_raw else 0.0
-        voltage_mv = parse_first_float(r"voltage:\s*(\d+)", output)
+        voltage_mv = parse_first_float(r"^\s*voltage:\s*(\d+)", output)
         current_raw_text = self._shell(device.serial, "cat /sys/class/power_supply/battery/current_now", timeout=2.0).strip()
         voltage_raw_text = self._shell(device.serial, "cat /sys/class/power_supply/battery/voltage_now", timeout=2.0).strip()
         power_w = 0.0
@@ -10116,6 +10116,8 @@ class App:
         self.device_var.set(f"{device.display_name} · OS {device.os_version or '-'} · {device.serial}")
         self.app_hint_var.set("可直接输入包名/Bundle ID，或点击读取前台应用。")
         self.status_var.set(f"已选择 {device.display_name}")
+        if hasattr(self, "app_var"):
+            self.app_var.set("")
         self.app_list.delete(0, tk.END)
         if hasattr(self, "app_picker"):
             self.app_picker.configure(values=())

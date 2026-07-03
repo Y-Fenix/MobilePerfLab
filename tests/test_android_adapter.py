@@ -764,6 +764,29 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.fps_source, "missing")
         self.assertIn(("FPS", "不可用", "未发现 gfxinfo/framestats/SurfaceFlinger 帧数据"), diagnostics.rows)
 
+    def test_battery_power_falls_back_to_dumpsys_current_when_sysfs_is_unreadable(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys battery": "\n".join(
+                    [
+                        "Max charging voltage: 0",
+                        "level: 100",
+                        "voltage: 4408",
+                        "temperature: 334",
+                        "current now: -327343",
+                    ]
+                ),
+                "cat /sys/class/power_supply/battery/current_now": "NA",
+                "cat /sys/class/power_supply/battery/voltage_now": "NA",
+            }
+        )
+
+        level, temperature, power_w = adapter._battery(self.device)
+
+        self.assertEqual(level, 100)
+        self.assertAlmostEqual(temperature, 33.4)
+        self.assertAlmostEqual(power_w, 1.443, places=3)
+
     def test_network_kbps_falls_back_to_device_totals_with_note_when_uid_is_missing(self) -> None:
         adapter = FakeAndroidAdapter(
             {

@@ -972,6 +972,53 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.capability_var.value, "capabilities")
         self.assertEqual(app.render_calls, 1)
 
+    def test_selecting_device_clears_previous_target_app(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        class FakeTree:
+            def selection(self) -> tuple[str, ...]:
+                return ("1",)
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.deleted = False
+
+            def delete(self, _start: object, _end: object = None) -> None:
+                self.deleted = True
+
+        app = object.__new__(App)
+        app.devices = [
+            DeviceInfo("Android", "serial-1", "Pixel", "15", "Pixel", "ready"),
+            DeviceInfo("Android", "serial-2", "Galaxy", "16", "Galaxy", "ready"),
+        ]
+        app.device_tree = FakeTree()
+        app.selected_device = app.devices[0]
+        app.app_task_generation = 0
+        app.device_var = FakeVar()
+        app.app_var = FakeVar("com.old.game")
+        app.app_picker_var = FakeVar("com.old.game")
+        app.app_hint_var = FakeVar()
+        app.status_var = FakeVar()
+        app.app_list = FakeList()
+        app._refresh_proxy_preview = lambda: None
+        app._refresh_weak_diagnostics = lambda: None
+        app._refresh_session_chips = lambda: None
+
+        App._on_device_selected(app)
+
+        self.assertEqual(app.selected_device, app.devices[1])
+        self.assertEqual(app.app_var.value, "")
+        self.assertEqual(app.app_picker_var.value, "")
+        self.assertTrue(app.app_list.deleted)
+
     def test_stale_device_refresh_result_does_not_override_demo_mode(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
