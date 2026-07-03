@@ -1193,6 +1193,48 @@ class FullscreenStartupTest(unittest.TestCase):
         self.assertEqual(app.app_list.items[-1], "com.example.app599")
         self.assertEqual(app.app_picker.values[-1], "com.example.app599")
 
+    def test_app_list_result_keeps_current_manual_target_selectable(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeList:
+            def __init__(self) -> None:
+                self.items: list[str] = []
+
+            def delete(self, _start: object, _end: object = None) -> None:
+                self.items.clear()
+
+            def insert(self, _index: object, value: str) -> None:
+                self.items.append(value)
+
+        class FakePicker:
+            def __init__(self) -> None:
+                self.values: tuple[str, ...] = ()
+
+            def configure(self, **kwargs: object) -> None:
+                self.values = tuple(kwargs.get("values", ()))
+
+        app = object.__new__(App)
+        app.app_var = FakeVar("com.manual.target")
+        app.app_picker_var = FakeVar("com.manual.target")
+        app.app_hint_var = FakeVar()
+        app.app_task_generation = 1
+        app.app_list = FakeList()
+        app.app_picker = FakePicker()
+        app._refresh_session_chips = lambda: None
+
+        App._handle_app_task_result(app, {"generation": 1, "kind": "list_apps", "apps": ["com.a", "com.b"], "error": ""})
+
+        self.assertEqual(app.app_picker_var.value, "com.manual.target")
+        self.assertIn("com.manual.target", app.app_picker.values)
+
     def test_app_picker_selection_updates_target_app_var(self) -> None:
         class FakeVar:
             def __init__(self, value: str = "") -> None:

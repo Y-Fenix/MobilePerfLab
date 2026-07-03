@@ -10227,7 +10227,11 @@ class App:
             for app_id in apps:
                 self.app_list.insert(tk.END, str(app_id))
             if hasattr(self, "app_picker"):
-                self.app_picker.configure(values=tuple(str(app_id) for app_id in apps))
+                picker_values = tuple(str(app_id) for app_id in apps)
+                current_app = self.app_var.get().strip().split()[0] if hasattr(self, "app_var") and self.app_var.get().strip() else ""
+                if current_app and current_app not in picker_values:
+                    picker_values = (*picker_values, current_app)
+                self.app_picker.configure(values=picker_values)
             self.app_hint_var.set(f"已读取 {len(apps)} 个应用。" if apps else "未读取到应用，请手动输入。")
             self._refresh_session_chips()
             return
