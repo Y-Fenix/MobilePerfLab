@@ -12,6 +12,7 @@ from mobileperflab import (
     live_session_usability_text,
     live_realtime_conclusion_text,
     live_sampling_action_label,
+    metric_card_recent_summary,
     performance_conclusion_status,
     performance_conclusion_text,
     recommended_sampling_interval,
@@ -369,6 +370,20 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
         )
 
 
+class MetricCardSummaryTest(unittest.TestCase):
+    def test_cpu_recent_summary_uses_display_clamp(self) -> None:
+        samples = [
+            PerfSample(timestamp=1.0, elapsed=1.0, cpu_percent=126.4),
+            PerfSample(timestamp=2.0, elapsed=2.0, cpu_percent=131.0),
+        ]
+
+        summary = metric_card_recent_summary(samples, "cpu_percent", "%")
+
+        self.assertEqual(summary, "均值 100.0% · 峰值 100.0%")
+        self.assertNotIn("126", summary)
+        self.assertNotIn("131", summary)
+
+
 class LiveQualityTrackerTest(unittest.TestCase):
     def test_summarizes_network_fallback_and_missing_metrics(self) -> None:
         tracker = LiveQualityTracker()
@@ -537,7 +552,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         tracker.update(PerfSample(timestamp=4.5, elapsed=4.5, fps=54.0))
         text = tracker.update(PerfSample(timestamp=5.5, elapsed=5.5, fps=53.0))
 
-        self.assertIn("不可信", text)
+        self.assertIn("谨慎参考", text)
         self.assertIn("慢采样 2", text)
         self.assertTrue(tracker.low_end_display_mode())
         self.assertIn("展示：低端机保守", text)
@@ -648,7 +663,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
 
         self.assertEqual(
             live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.0),
-            "建议：采样间隔调到 1.5s，优先看稳定展示",
+            "建议：采样间隔调到 2.0s，优先看稳定展示",
         )
         self.assertEqual(
             live_sampling_action_label(recent_window, low_end_display_mode=True, expected_interval=1.5),
@@ -667,7 +682,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
 
         self.assertEqual(
             live_recent_window_summary(recent_window, low_end_display_mode=True, expected_interval=1.0),
-            "采集波动 · 窗口：节拍失稳 · 推荐 1.5s",
+            "采集波动 · 窗口：节拍失稳 · 推荐 2.0s",
         )
 
     def test_live_recent_window_summary_distinguishes_real_performance_volatility(self) -> None:
@@ -779,7 +794,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
                 {"state": "blocked", "label": "先修采集链路", "detail": "最近窗口主要是采集波动，不能直接作为性能结论。"},
                 expected_interval=1.0,
             ),
-            "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。 · 采样间隔 1.0s -> 1.5s",
+            "性能结论：先修采集链路 · 最近窗口主要是采集波动，不能直接作为性能结论。 · 采样间隔 1.0s -> 2.0s",
         )
 
     def test_performance_conclusion_text_includes_network_source_action_for_fallback(self) -> None:
@@ -855,13 +870,13 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertNotIn("采样间隔 1.0s", text)
 
     def test_recommended_sampling_interval_returns_selectable_option(self) -> None:
-        self.assertEqual(recommended_sampling_interval(1.0), 1.5)
+        self.assertEqual(recommended_sampling_interval(1.0), 2.0)
         self.assertEqual(recommended_sampling_interval(1.5), 2.0)
         self.assertEqual(recommended_sampling_interval(2.0), 2.0)
         self.assertIn(f"{recommended_sampling_interval(1.0):.1f}", SAMPLING_INTERVAL_OPTIONS)
 
     def test_recommended_sampling_interval_button_text_shows_next_target(self) -> None:
-        self.assertEqual(recommended_sampling_interval_button_text(1.0), "推荐 1.5s")
+        self.assertEqual(recommended_sampling_interval_button_text(1.0), "推荐 2.0s")
         self.assertEqual(recommended_sampling_interval_button_text(1.5), "推荐 2.0s")
         self.assertEqual(recommended_sampling_interval_button_text(2.0), "推荐 2.0s")
 
@@ -872,7 +887,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
         tracker.update(PerfSample(timestamp=4.6, elapsed=4.6, fps=20.0, note="Android FPS 当前无帧增量"))
         text = tracker.update(PerfSample(timestamp=6.5, elapsed=6.5, fps=52.0))
 
-        self.assertIn("建议：采样间隔调到 1.5s", text)
+        self.assertIn("建议：采样间隔调到 2.0s", text)
 
     def test_session_quality_gate_marks_clean_session_as_trustworthy(self) -> None:
         gate = session_quality_gate(sample_count=10, issue_count=1, fallback_count=0, foreground_count=0, slow_count=0)
@@ -888,15 +903,24 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertEqual(gate.label, "谨慎参考")
         self.assertEqual(gate.confidence_percent, 60.0)
 
-    def test_session_quality_gate_marks_foreground_or_slow_session_as_untrusted(self) -> None:
+    def test_session_quality_gate_marks_foreground_or_slow_session_as_caution_when_confidence_is_high(self) -> None:
         foreground_gate = session_quality_gate(sample_count=10, issue_count=2, fallback_count=0, foreground_count=2, slow_count=0)
         slow_gate = session_quality_gate(sample_count=10, issue_count=2, fallback_count=0, foreground_count=0, slow_count=3)
 
-        self.assertEqual(foreground_gate.state, "bad")
-        self.assertEqual(foreground_gate.label, "不可信")
-        self.assertIn("前台异常", foreground_gate.detail)
-        self.assertEqual(slow_gate.state, "bad")
+        self.assertEqual(foreground_gate.state, "caution")
+        self.assertEqual(foreground_gate.label, "谨慎参考")
+        self.assertIn("前后台样本", foreground_gate.detail)
+        self.assertEqual(foreground_gate.confidence_percent, 80.0)
+        self.assertEqual(slow_gate.state, "caution")
+        self.assertEqual(slow_gate.label, "谨慎参考")
         self.assertIn("慢采样", slow_gate.detail)
+
+    def test_session_quality_gate_still_blocks_low_confidence_collection(self) -> None:
+        gate = session_quality_gate(sample_count=10, issue_count=4, fallback_count=2, foreground_count=0, slow_count=0)
+
+        self.assertEqual(gate.state, "bad")
+        self.assertEqual(gate.label, "不可信")
+        self.assertEqual(gate.confidence_percent, 40.0)
 
     def test_sampling_cadence_summary_marks_stable_intervals(self) -> None:
         samples = [
@@ -964,7 +988,7 @@ class SampleQualityTagTest(unittest.TestCase):
 
         self.assertEqual(sample_quality_tag(sample), "ok")
 
-    def test_does_not_mark_no_delta_samples_as_collection_issue(self) -> None:
+    def test_marks_no_delta_samples_as_limited_events_not_collection_issues(self) -> None:
         fps_idle = PerfSample(
             timestamp=1.0,
             elapsed=1.0,
@@ -981,8 +1005,32 @@ class SampleQualityTagTest(unittest.TestCase):
 
         self.assertEqual(sample_quality_tag(fps_idle), "limited")
         self.assertEqual(sample_quality_tag(cpu_idle), "limited")
-        self.assertIsNone(quality_event_from_sample(fps_idle))
-        self.assertIsNone(quality_event_from_sample(cpu_idle))
+        self.assertEqual(
+            quality_event_from_sample(fps_idle),
+            ("1.0s", "受限样本", "Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。"),
+        )
+        self.assertEqual(
+            quality_event_from_sample(cpu_idle),
+            ("2.0s", "受限样本", "Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。"),
+        )
+
+    def test_ad_foreground_return_no_frame_delta_is_recovery_not_limited(self) -> None:
+        sample = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            jank_percent=0.0,
+            note="Android FPS 当前无帧增量，Surface=com.losttemplegames.wordsolitaire/com.applovin.adview",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "recovery")
+        self.assertEqual(
+            quality_event_from_sample(sample),
+            ("3.0s", "前台恢复窗口", "广告或前后台切换后等待 Surface 恢复"),
+        )
+        health = MetricHealthAnalyzer().analyze(sample)
+        self.assertEqual(health["fps"].state, "recovering")
+        self.assertEqual(health["jank_percent"].state, "recovering")
 
     def test_keeps_hard_collection_issue_when_no_delta_note_is_mixed_with_failure(self) -> None:
         sample = PerfSample(
@@ -1137,16 +1185,18 @@ class QualityEventTest(unittest.TestCase):
     def test_ignores_ok_sample(self) -> None:
         self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))
 
-    def test_ignores_no_delta_samples_as_realtime_events(self) -> None:
-        self.assertIsNone(
+    def test_builds_limited_realtime_events_for_no_delta_samples(self) -> None:
+        self.assertEqual(
             quality_event_from_sample(
                 PerfSample(timestamp=1.0, elapsed=1.0, fps=0.0, note="Android FPS 当前无帧增量")
-            )
+            ),
+            ("1.0s", "受限样本", "Android FPS 当前无帧增量"),
         )
-        self.assertIsNone(
+        self.assertEqual(
             quality_event_from_sample(
                 PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, note="Android CPU 当前无进程增量")
-            )
+            ),
+            ("2.0s", "受限样本", "Android CPU 当前无进程增量"),
         )
 
 

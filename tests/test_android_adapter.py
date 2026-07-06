@@ -2,7 +2,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from mobileperflab import AndroidAdapter, DeviceInfo, format_android_collection_diagnostics
+from mobileperflab import (
+    AndroidAdapter,
+    DeviceInfo,
+    collection_diagnostic_status_rows,
+    format_android_collection_diagnostics,
+)
 
 
 class FakeAndroidAdapter(AndroidAdapter):
@@ -88,6 +93,10 @@ class SlowDiagnosticAndroidAdapter(AndroidAdapter):
     def _diagnose_network_source(self, device: DeviceInfo, app_id: str, uid: int | None) -> str:
         self._record("network")
         return "per-UID"
+
+    def _diagnose_network_channel(self, device: DeviceInfo, app_id: str, uid: int | None) -> tuple[str, str, str]:
+        self._record("network")
+        return "per-UID", "per-UID", "目标 App 独占上下行"
 
 
 class FailingMetricAndroidAdapter(SlowMetricAndroidAdapter):
@@ -1116,12 +1125,28 @@ class AndroidAdapterTest(unittest.TestCase):
             adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
             "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
         )
-        self.assertEqual(adapter._foreground_recovery_remaining[key], 1)
+        self.assertEqual(adapter._foreground_recovery_remaining[key], adapter._FOREGROUND_RECOVERY_SAMPLE_COUNT - 1)
+        for _index in range(adapter._FOREGROUND_RECOVERY_SAMPLE_COUNT - 1):
+            self.assertEqual(
+                adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
+                "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            )
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+
+    def test_foreground_recovery_window_covers_ad_return_surface_rebuild(self) -> None:
+        adapter = FakeAndroidAdapter({})
+
+        adapter._foreground_session_note(self.device, "com.example.game", "com.ad.network")
+        notes = [
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.game")
+            for _index in range(adapter._FOREGROUND_RECOVERY_SAMPLE_COUNT)
+        ]
+
+        self.assertTrue(all("目标应用刚回到前台" in note for note in notes))
         self.assertEqual(
             adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
-            "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            "",
         )
-        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
 
     def test_gfxinfo_counter_fps_uses_counter_read_time_to_reduce_low_end_rate_jitter(self) -> None:
         adapter = FakeAndroidAdapter(
@@ -1228,6 +1253,60 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertNotIn("dumpsys gfxinfo com.example.game framestats", adapter.calls)
         self.assertNotIn("dumpsys SurfaceFlinger --list", adapter.calls)
 
+    def test_surface_layer_frame_counter_gives_stable_fps_before_latency_fallback(self) -> None:
+        surface = "4dc50d SurfaceView[com.example.game/com.example.game.MainActivity]@0(BLAST)#29474"
+        surface_dump_first = "\n".join(
+            [
+                f"  Layer [29474] {surface}",
+                "    visible reason= buffer=131048042135557 frame=41058 contentDirty",
+                "    metadata{9:4bytes}",
+                "    frameRate: 60.00 Hz, category: Default, selectionStrategy: Propagate, uid: 10856",
+            ]
+        )
+        surface_dump_second = surface_dump_first.replace("frame=41058", "frame=41148")
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys SurfaceFlinger": f"{surface_dump_first}\n---NEXT---\n{surface_dump_second}",
+                "dumpsys gfxinfo com.example.game framestats": "",
+                "dumpsys SurfaceFlinger --list": surface,
+                f"dumpsys SurfaceFlinger --latency '{surface}'": "\n".join(
+                    [
+                        "16666666",
+                        "1000000000 1100000000 0",
+                        "1050000000 1100000000 0",
+                        "1066666666 1100000000 1050000000",
+                    ]
+                ),
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.5]):
+            self.assertEqual(adapter._surface_layer_counter_fps_and_jank(self.device, "com.example.game"), (60.0, 0.0))
+            fps, jank = adapter._surface_fps_and_jank(self.device, "com.example.game", 11.5)
+
+        self.assertEqual(fps, 60.0)
+        self.assertEqual(jank, 0.0)
+        self.assertNotIn(f"dumpsys SurfaceFlinger --latency '{surface}'", adapter.calls)
+
+    def test_surface_layer_frame_rate_wins_when_counter_under_reports_unity_blast_fps(self) -> None:
+        surface = "4dc50d SurfaceView[com.example.game/com.example.game.MainActivity]@0(BLAST)#29474"
+        first = "\n".join(
+            [
+                f"  Layer [29474] {surface}",
+                "    visible reason= buffer=131048042135557 frame=41058 contentDirty",
+                "    frameRate: 60.00 Hz, category: Default, selectionStrategy: Propagate, uid: 10856",
+            ]
+        )
+        second = first.replace("frame=41058", "frame=41125")
+        adapter = FakeAndroidAdapter({"dumpsys SurfaceFlinger": f"{first}\n---NEXT---\n{second}"})
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 11.5]):
+            adapter._surface_layer_counter_fps_and_jank(self.device, "com.example.game")
+            fps, jank = adapter._surface_layer_counter_fps_and_jank(self.device, "com.example.game")
+
+        self.assertEqual(fps, 60.0)
+        self.assertEqual(jank, 0.0)
+
     def test_collect_sample_runs_android_metrics_in_parallel_to_reduce_low_end_drift(self) -> None:
         adapter = SlowMetricAndroidAdapter(sleep_seconds=0.04)
 
@@ -1270,6 +1349,7 @@ class AndroidAdapterTest(unittest.TestCase):
         adapter._frame_cache[key] = (1.0, 100, 10)
         adapter._framestats_cache[key] = (1.0, 200)
         adapter._surface_frame_cache[key] = (1.0, 300)
+        adapter._surface_layer_counter_cache[key] = (1.0, 400)
         adapter._net_cache[key] = (1.0, 1_000, 2_000)
         adapter._device_net_cache[key] = (1.0, 3_000, 4_000)
         adapter._cpu_proc_cache[key] = (1.0, {101: 100})
@@ -1280,6 +1360,7 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertNotIn(key, adapter._frame_cache)
         self.assertNotIn(key, adapter._framestats_cache)
         self.assertNotIn(key, adapter._surface_frame_cache)
+        self.assertNotIn(key, adapter._surface_layer_counter_cache)
         self.assertNotIn(key, adapter._net_cache)
         self.assertNotIn(key, adapter._device_net_cache)
         self.assertNotIn(key, adapter._cpu_proc_cache)
@@ -1399,6 +1480,60 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.fps_source, "gfxinfo counters")
         self.assertEqual(diagnostics.network_source, "per-UID")
 
+    def test_android_collection_diagnostics_marks_fps_counter_no_delta_as_limited(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
+                "dumpsys gfxinfo com.example.game framestats": "",
+                "dumpsys SurfaceFlinger --list": "",
+                "cat /proc/uid_stat/10234/tcp_rcv": "4096",
+                "cat /proc/uid_stat/10234/tcp_snd": "2048",
+            }
+        )
+        adapter._frame_cache[(self.device.serial, "com.example.game")] = (9.0, 100, 4)
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+        formatted = format_android_collection_diagnostics(diagnostics)
+        rows = collection_diagnostic_status_rows(diagnostics)
+
+        self.assertEqual(diagnostics.overall_state, "warning")
+        self.assertEqual(diagnostics.fps_source, "gfxinfo counters · 当前无新增帧")
+        self.assertIn(("FPS", "源可读", "gfxinfo counters 当前无新增帧，页面静止或三星/低端机短采样窗口可能导致计数不增长"), diagnostics.rows)
+        self.assertIn("FPS: 源可读", formatted)
+        self.assertIn(("FPS", "受限", "gfxinfo counters 当前无新增帧，页面静止或三星/低端机短采样窗口可能导致计数不增长。下一步：保持页面可见并产生动画/滚动，再检查 gfxinfo 或 SurfaceFlinger 来源。", "limited"), rows)
+
+    def test_android_collection_diagnostics_marks_surfaceflinger_no_delta_as_limited(self) -> None:
+        surface = "SurfaceView[com.example.game/com.example.game.MainActivity](BLAST)#1"
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "",
+                "dumpsys gfxinfo com.example.game framestats": "",
+                "dumpsys SurfaceFlinger --list": surface,
+                f"dumpsys SurfaceFlinger --latency '{surface}'": "\n".join(
+                    [
+                        "16666666",
+                        "0 1000000000 1000000000",
+                        "0 1016666666 1016666666",
+                    ]
+                ),
+                "cat /proc/uid_stat/10234/tcp_rcv": "4096",
+                "cat /proc/uid_stat/10234/tcp_snd": "2048",
+            }
+        )
+        adapter._surface_frame_cache[(self.device.serial, "com.example.game")] = (9.0, 1016666666)
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+
+        self.assertEqual(diagnostics.overall_state, "warning")
+        self.assertEqual(diagnostics.fps_source, f"SurfaceFlinger: {surface} · 当前无新增帧")
+        self.assertIn(("FPS", "源可读", f"SurfaceFlinger: {surface} 当前无新增帧，页面静止或三星/低端机短采样窗口可能导致计数不增长"), diagnostics.rows)
+
     def test_android_collection_diagnostics_runs_independent_probes_concurrently(self) -> None:
         adapter = SlowDiagnosticAndroidAdapter(sleep_seconds=0.04)
 
@@ -1429,6 +1564,48 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(diagnostics.network_source, "per-UID")
         self.assertIn("网络: per-UID", formatted)
         self.assertNotIn("cat /proc/net/dev", adapter.calls)
+
+    def test_android_collection_diagnostics_marks_zero_uid_stat_as_no_traffic_not_normal(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "0",
+                "cat /proc/uid_stat/10234/tcp_snd": "0",
+                "cat /proc/net/dev": "Inter-| Receive | Transmit\n wlan0: 100000 0 0 0 0 0 0 0 200000 0 0 0 0 0 0 0",
+            }
+        )
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+        formatted = format_android_collection_diagnostics(diagnostics)
+        rows = collection_diagnostic_status_rows(diagnostics)
+
+        self.assertEqual(diagnostics.overall_state, "warning")
+        self.assertEqual(diagnostics.network_source, "per-UID")
+        self.assertIn(("网络", "per-UID 无流量", "per-UID 可读，但目标 App 当前累计上下行为 0；请在 App 内触发下载/上传或联网请求"), diagnostics.rows)
+        self.assertIn("网络: per-UID 无流量", formatted)
+        self.assertIn(("网络", "受限", "per-UID 可读，但目标 App 当前累计上下行为 0；请在 App 内触发下载/上传或联网请求。下一步：制造明确下载/上传动作，确认 per-UID 网络统计可读；设备级兜底只作趋势参考。", "limited"), rows)
+
+    def test_android_collection_diagnostics_marks_per_uid_no_delta_as_no_traffic(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys window": "mCurrentFocus=Window{42ab com.example.game/com.example.game.MainActivity}",
+                "pidof com.example.game": "101",
+                "dumpsys package com.example.game": "userId=10234",
+                "dumpsys gfxinfo com.example.game": "Total frames rendered: 100\nJanky frames: 4\n",
+                "cat /proc/uid_stat/10234/tcp_rcv": "4096",
+                "cat /proc/uid_stat/10234/tcp_snd": "2048",
+            }
+        )
+        adapter._net_cache[(self.device.serial, "com.example.game")] = (9.0, 4096, 2048)
+
+        diagnostics = adapter.collection_diagnostics(self.device, "com.example.game", now=10.0)
+
+        self.assertEqual(diagnostics.overall_state, "warning")
+        self.assertEqual(diagnostics.network_source, "per-UID")
+        self.assertIn(("网络", "per-UID 无流量", "per-UID 可读，但最近采样没有上下行增量；请在 App 内触发下载/上传或联网请求"), diagnostics.rows)
 
     def test_android_collection_diagnostics_treats_zero_netstats_uid_as_per_uid_available(self) -> None:
         adapter = FakeAndroidAdapter(

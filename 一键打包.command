@@ -63,6 +63,7 @@ if [ -f "$PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$PLIST" >/dev/null 2>&1
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$PLIST" >/dev/null 2>&1 || \
     /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$PLIST" >/dev/null 2>&1
+  /usr/bin/codesign --force --deep --sign - "$SCRIPT_DIR/dist/MobilePerfLab.app" >/dev/null 2>&1 || pause_on_error 1
 fi
 
 echo

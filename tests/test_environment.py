@@ -18,7 +18,9 @@ from mobileperflab import (
     format_quality_mode_label,
     format_workbench_status_chip,
     graph_diagnostic_summary_text,
+    graph_quality_interval_points_for_visual,
     graph_quality_marker_points,
+    graph_quality_marker_points_for_visual,
     graph_quality_badge_text,
     graph_quality_badge_text_for_context,
     graph_latest_display_value_for_context,
@@ -38,6 +40,7 @@ from mobileperflab import (
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
     smooth_graph_series,
+    traffic_legend_layout,
     workbench_primary_metric_order,
     workbench_sidebar_steps,
     workbench_top_status_items,
@@ -1773,6 +1776,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("for key in workbench_primary_metric_order()", dashboard_body)
         self.assertNotIn("for index, card in enumerate(self.cards.values())", dashboard_body)
 
+    def test_metric_cards_keep_equal_columns_and_trim_changing_subtitles(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        dashboard_start = text.index("def _build_dashboard")
+        dashboard_end = text.index("def _build_metric_health_strip", dashboard_start)
+        dashboard_body = text[dashboard_start:dashboard_end]
+        metric_card_start = text.index("class MetricCard")
+        metric_card_end = text.index("class GraphPanel", metric_card_start)
+        metric_card_body = text[metric_card_start:metric_card_end]
+
+        self.assertIn('cards.columnconfigure(col, weight=1, uniform="metric_cards")', dashboard_body)
+        self.assertIn("card.grid_propagate(False)", dashboard_body)
+        self.assertIn("trim_text(sub or \"实时\"", metric_card_body)
+        self.assertIn("wraplength=", metric_card_body)
+
     def test_dashboard_removes_low_value_metric_health_strip_from_primary_workspace(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
@@ -1844,18 +1862,21 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertGreater(late_bind_index, traffic_panel_index)
         self.assertNotIn("unbind_all", bind_body)
 
-    def test_weak_status_lights_use_two_columns_to_avoid_right_edge_clipping(self) -> None:
+    def test_weak_status_lights_use_single_column_to_avoid_right_edge_clipping(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
         text = source.read_text(encoding="utf-8")
         status_start = text.index("def _build_weak_status_lights")
         status_end = text.index("def _refresh_weak_status_lights", status_start)
         status_body = text[status_start:status_end]
 
-        self.assertIn("status_columns = 2", status_body)
+        self.assertIn("status_columns = 1", status_body)
+        self.assertIn("panel.columnconfigure(0, weight=1)", status_body)
         self.assertIn("for column in range(status_columns)", status_body)
         self.assertIn("row = index // status_columns", status_body)
         self.assertIn("col = index % status_columns", status_body)
-        self.assertIn("wraplength=260", status_body)
+        self.assertIn("height=116", status_body)
+        self.assertIn("item.grid_propagate(False)", status_body)
+        self.assertIn("wraplength=360", status_body)
         self.assertNotIn("range(3)", status_body)
         self.assertNotIn("row = index // 3", status_body)
         self.assertNotIn("col = index % 3", status_body)
@@ -1905,6 +1926,35 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self._running", chart_body)
         self.assertIn("if len(points) < 2 and not self._running", chart_body)
         self.assertIn("self.weak_traffic_chart.set_running(self.weak_proxy.is_running())", refresh_body)
+
+    def test_weak_proxy_traffic_chart_uses_distinct_down_and_up_colors(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        chart_start = text.index("class TrafficMiniChart")
+        chart_end = text.index("class App", chart_start)
+        chart_body = text[chart_start:chart_end]
+
+        self.assertIn("PROXY_DOWN_COLOR", chart_body)
+        self.assertIn("PROXY_UP_COLOR", chart_body)
+        self.assertIn('PROXY_DOWN_COLOR = "#EF4444"', text)
+        self.assertIn('PROXY_UP_COLOR = "#2563EB"', text)
+        self.assertNotIn('fill="#0D9488"', chart_body)
+        self.assertIn("traffic_legend_layout(width)", chart_body)
+        self.assertIn('{"label": "下行"', text)
+        self.assertIn('{"label": "上行"', text)
+        self.assertNotIn('text="下行 / 上行"', chart_body)
+        self.assertNotIn('canvas.create_rectangle(*layout["background"]', chart_body)
+        self.assertNotIn("legend_y + 18", chart_body)
+
+    def test_weak_proxy_traffic_legend_places_down_and_up_horizontally_inside_chart(self) -> None:
+        layout = traffic_legend_layout(420)
+
+        self.assertEqual([item["label"] for item in layout["items"]], ["下行", "上行"])
+        self.assertLess(layout["items"][0]["line"][0], layout["items"][1]["line"][0])
+        self.assertEqual(layout["items"][0]["color"], "#EF4444")
+        self.assertEqual(layout["items"][1]["color"], "#2563EB")
+        self.assertGreaterEqual(layout["background"][0], 42)
+        self.assertLessEqual(layout["background"][2], 404)
 
     def test_weak_proxy_traffic_readiness_card_does_not_overwrite_right_status_detail(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2028,7 +2078,9 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn("self.weak_live_summary_var", diagnostics_body)
         self.assertIn("self.quality_event_tree", diagnostics_body)
         self.assertIn("self.log_text", diagnostics_body)
-        self.assertIn("wraplength=420", diagnostics_body)
+        self.assertIn("_configure_collection_link_wraplength", diagnostics_body)
+        self.assertIn("_configure_weak_status_wraplength", diagnostics_body)
+        self.assertIn('link_grid.bind("<Configure>"', diagnostics_body)
         self.assertNotIn("wraplength=320", diagnostics_body)
         self.assertNotIn("将在这里汇总", diagnostics_body)
 
@@ -2141,6 +2193,31 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         points = [(float(index), 60.0 - index, "issue") for index in range(8)]
 
         self.assertEqual(graph_quality_marker_points(points, max_markers=2), [points[0], points[-1]])
+
+    def test_graph_visual_quality_filters_limited_samples_from_marker_and_interval_layers(self) -> None:
+        marker_points = [
+            (10.0, 60.0, "ok"),
+            (11.0, 0.0, "limited"),
+            (12.0, 58.0, "ok"),
+            (13.0, 42.0, "issue"),
+            (14.0, 56.0, "limited"),
+            (15.0, 52.0, "fallback"),
+            (16.0, 57.0, "recovery"),
+        ]
+        interval_points = [(elapsed, quality) for elapsed, _value, quality in marker_points]
+
+        self.assertEqual(
+            graph_quality_marker_points_for_visual(marker_points),
+            [
+                (13.0, 42.0, "issue"),
+                (15.0, 52.0, "fallback"),
+                (16.0, 57.0, "recovery"),
+            ],
+        )
+        self.assertEqual(
+            graph_quality_interval_points_for_visual(interval_points),
+            [(10.0, "ok"), (11.0, "ok"), (12.0, "ok"), (13.0, "issue"), (14.0, "ok"), (15.0, "fallback"), (16.0, "recovery")],
+        )
 
     def test_graph_quality_badge_summarizes_visible_issue_and_fallback_points(self) -> None:
         self.assertEqual(
@@ -2256,6 +2333,19 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         self.assertIn("graph_diagnostic_summary_text", panel_body)
         self.assertIn("def set_diagnostic_detail", panel_body)
         self.assertIn("wraplength=", panel_body)
+
+    def test_graph_panel_declares_hover_value_readout(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
+        text = source.read_text(encoding="utf-8")
+        panel_start = text.index("class GraphPanel")
+        panel_end = text.index("class TrafficMiniChart", panel_start)
+        panel_body = text[panel_start:panel_end]
+
+        self.assertIn('self.canvas.bind("<Motion>", self._on_canvas_motion)', panel_body)
+        self.assertIn('self.canvas.bind("<Leave>", self._on_canvas_leave)', panel_body)
+        self.assertIn("def _nearest_hover_point", panel_body)
+        self.assertIn("def _draw_hover_overlay", panel_body)
+        self.assertIn("self._hover_x", panel_body)
 
     def test_dashboard_removes_performance_fluctuation_panel_and_moves_graph_up(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2443,7 +2533,7 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertNotIn('self.quality_mode_var = tk.StringVar(value="稳定曲线：开 · 报告：原始采样")', text)
 
     def test_sampling_interval_options_include_low_end_guidance_target(self) -> None:
-        self.assertEqual(DEFAULT_INTERVAL_SECONDS, 1.5)
+        self.assertEqual(DEFAULT_INTERVAL_SECONDS, 2.0)
         self.assertIn("1.5", SAMPLING_INTERVAL_OPTIONS)
         self.assertIn("2.0", SAMPLING_INTERVAL_OPTIONS)
 
@@ -2483,10 +2573,10 @@ class QualityModeLabelTest(unittest.TestCase):
 
         App.apply_recommended_sampling_interval(app)
 
-        self.assertEqual(app.interval_var.get(), "1.5")
+        self.assertEqual(app.interval_var.get(), "2.0")
         self.assertEqual(app.recommended_interval_var.get(), "推荐 2.0s")
-        self.assertEqual(app.recorder.expected_interval, 1.5)
-        self.assertEqual(app.live_quality.expected_interval, 1.5)
+        self.assertEqual(app.recorder.expected_interval, 2.0)
+        self.assertEqual(app.live_quality.expected_interval, 2.0)
         self.assertIn("推荐采样间隔", app.logs[-1])
 
     def test_app_applies_recommended_sampling_interval_to_running_sampler(self) -> None:
@@ -2520,7 +2610,7 @@ class QualityModeLabelTest(unittest.TestCase):
 
         App.apply_recommended_sampling_interval(app)
 
-        self.assertEqual(app.sampler.interval, 1.5)
+        self.assertEqual(app.sampler.interval, 2.0)
 
     def test_live_recent_window_summary_has_short_ui_message(self) -> None:
         summary = live_recent_window_summary(
@@ -2731,7 +2821,7 @@ class QualityModeLabelTest(unittest.TestCase):
         )
 
         self.assertIn("性能结论：先修采集链路", app.performance_conclusion_var.value)
-        self.assertIn("采样间隔 1.0s -> 1.5s", app.performance_conclusion_var.value)
+        self.assertIn("采样间隔 1.0s -> 2.0s", app.performance_conclusion_var.value)
         self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
 
     def test_handle_sample_records_same_quality_event_tag_shown_on_graphs(self) -> None:
@@ -2826,7 +2916,10 @@ class QualityModeLabelTest(unittest.TestCase):
         App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
         App._handle_sample(app, PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
 
-        self.assertEqual(app.graphs["fps"].points[-1], (2.8, 55.0, "issue"))
+        self.assertEqual(app.graphs["fps"].points[-1][0], 2.8)
+        self.assertEqual(app.graphs["fps"].points[-1][2], "issue")
+        self.assertGreater(app.graphs["fps"].points[-1][1], 55.0)
+        self.assertEqual(app.recorder.samples[-1].fps, 55.0)
         self.assertEqual(app.quality_event_tree.rows[-1], ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
         self.assertEqual(app.quality_event_tree.tags[-1], ("quality_issue",))
 
@@ -2895,9 +2988,43 @@ class QualityModeLabelTest(unittest.TestCase):
             app.quality_event_tree.rows,
             [
                 ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
+                ("2.0s", "受限样本", "Android CPU 当前无进程增量"),
                 ("3.0s", "设备级兜底", "非目标 App 独占流量"),
             ],
         )
+
+    def test_quality_events_show_limited_samples_that_are_marked_on_graphs(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+                self.tags.append(tags)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+                del self.tags[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.quality_event_tree = FakeTree()
+
+        App._append_quality_event(
+            app,
+            PerfSample(timestamp=2.0, elapsed=2.0, note="Android CPU 当前无进程增量"),
+            "limited",
+        )
+
+        self.assertEqual(app.quality_event_tree.rows, [("2.0s", "受限样本", "Android CPU 当前无进程增量")])
+        self.assertEqual(app.quality_event_tree.tags, [("quality_limited",)])
 
     def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
         class FakeVar:
@@ -3217,8 +3344,165 @@ class QualityModeLabelTest(unittest.TestCase):
         )
 
         self.assertGreater(app.stabilizer.outputs[-1].fps, 0.0)
-        self.assertEqual(app.graphs["fps"].points[-1], (2.0, 0.0, "limited"))
+        self.assertGreater(app.graphs["fps"].points[-1][1], 0.0)
+        self.assertEqual(app.graphs["fps"].points[-1][2], "limited")
+        self.assertGreater(app.cards["fps"].value, 0.0)
+        self.assertEqual(app.cards["jank_percent"].value, 0.0)
+        self.assertIn("受限样本", app.cards["fps"].sub)
+        self.assertIn("受限样本", app.cards["jank_percent"].sub)
         self.assertEqual(app.recorder.samples[-1].fps, 0.0)
+
+    def test_handle_sample_feeds_graphs_stable_values_for_ok_fps_spikes_when_smoothing_is_on(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def set_value(self, _value: object, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda *_args: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
+        App._handle_sample(app, PerfSample(timestamp=2.0, elapsed=2.0, fps=120.0, cpu_percent=22.0))
+
+        self.assertEqual(app.recorder.samples[-1].fps, 120.0)
+        self.assertEqual(app.graphs["fps"].points[-1][2], "ok")
+        self.assertLess(app.graphs["fps"].points[-1][1], 90.0)
+
+    def test_handle_sample_feeds_recovery_graphs_stable_values_without_mutating_raw_sample(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def set_value(self, _value: object, _sub: str) -> None:
+                pass
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda *_args: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=20.0))
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=42.0,
+                elapsed=42.0,
+                fps=0.0,
+                cpu_percent=95.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            ),
+        )
+
+        self.assertEqual(app.recorder.samples[-1].fps, 0.0)
+        self.assertEqual(app.graphs["fps"].points[-1][2], "recovery")
+        self.assertGreater(app.graphs["fps"].points[-1][1], 0.0)
+        self.assertLess(app.graphs["cpu_percent"].points[-1][1], 95.0)
 
     def test_handle_sample_caps_realtime_cpu_display_without_mutating_raw_sample(self) -> None:
         class FakeVar:
@@ -3409,6 +3693,37 @@ class CollectionDiagnosticStatusRowsTest(unittest.TestCase):
         self.assertIn("网络: 异常", app.collection_link_vars["网络"].value)
         self.assertIn("下一步", app.collection_link_vars["网络"].value)
         self.assertIn("下载/上传", app.collection_link_vars["网络"].value)
+
+    def test_update_collection_links_colors_status_rows_by_state(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeLabel:
+            def __init__(self) -> None:
+                self.style = ""
+
+            def configure(self, **kwargs: str) -> None:
+                self.style = kwargs.get("style", self.style)
+
+        app = object.__new__(App)
+        network_label = FakeLabel()
+        app.collection_link_vars = {"网络": FakeVar()}
+        app.collection_link_widgets = {"网络": [network_label]}
+        diagnostics = AndroidCollectionDiagnostics(
+            overall_state="warning",
+            summary="Android 采集自检发现 1 项风险",
+            rows=[("网络", "per-UID 无流量", "per-UID 可读，但最近采样没有上下行增量")],
+            network_source="per-UID",
+        )
+
+        App._update_collection_links(app, diagnostics)
+
+        self.assertIn("网络: 受限", app.collection_link_vars["网络"].value)
+        self.assertEqual(network_label.style, "StateWarning.TLabel")
 
 
 if __name__ == "__main__":

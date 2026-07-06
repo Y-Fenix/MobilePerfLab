@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mobileperflab import (
     AndroidCollectionDiagnostics,
+    CHART_VIEW_SECONDS,
     DeviceInfo,
     PerfSample,
     SessionRecorder,
@@ -111,8 +112,31 @@ class ReportExportTest(unittest.TestCase):
 
         self.assertEqual(cadence["state"], "bad")
         self.assertEqual(cadence["slow_intervals"], 3)
-        self.assertEqual(gate["label"], "不可信")
+        self.assertEqual(gate["label"], "谨慎参考")
         self.assertIn("慢采样", gate["detail"])
+
+    def test_quality_gate_marks_foreground_samples_as_caution_without_contradicting_confidence(self) -> None:
+        recorder = SessionRecorder(expected_interval=2.0)
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        for index in range(8):
+            recorder.append(
+                PerfSample(
+                    timestamp=float(index + 1),
+                    elapsed=float((index + 1) * 2),
+                    fps=58.0,
+                    cpu_percent=22.0,
+                    memory_mb=520.0,
+                    note="目标应用不在前台，当前前台=com.google.android.gms.ads.AdActivity。",
+                )
+            )
+        recorder.append(PerfSample(timestamp=20.0, elapsed=20.0, fps=59.0, cpu_percent=21.0, memory_mb=522.0))
+        recorder.append(PerfSample(timestamp=22.0, elapsed=22.0, fps=60.0, cpu_percent=20.0, memory_mb=521.0))
+
+        gate = recorder.quality_summary()["quality_gate"]
+
+        self.assertEqual(gate["label"], "谨慎参考")
+        self.assertEqual(gate["confidence_percent"], 100.0)
+        self.assertIn("前后台", gate["detail"])
 
     def test_quality_summary_includes_real_device_validation_checklist(self) -> None:
         recorder = SessionRecorder(expected_interval=1.0)
@@ -422,6 +446,47 @@ class ReportExportTest(unittest.TestCase):
 
         self.assertEqual(positions, sorted(positions))
 
+    def test_html_report_charts_use_five_minute_viewport_with_horizontal_scroll(self) -> None:
+        recorder = SessionRecorder(expected_interval=2.0)
+        recorder.reset(DeviceInfo("Android", "serial-1", "Model", "13", "LowEnd", "ready"), "com.example.game")
+        for index in range(0, 8):
+            elapsed = float(index * 120)
+            recorder.append(PerfSample(timestamp=elapsed, elapsed=elapsed, fps=60.0, cpu_percent=20.0, memory_mb=512.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(CHART_VIEW_SECONDS, 5 * 60)
+        self.assertIn("const VIEW_SECONDS = 300;", html_text)
+        self.assertNotIn("const VIEW_SECONDS = 30 * 60;", html_text)
+        self.assertIn("timelineSeconds / viewportSeconds", html_text)
+        self.assertIn("overflow-x: auto", html_text)
+
+    def test_html_report_visual_layer_does_not_draw_limited_samples_as_chart_anomalies(self) -> None:
+        recorder = SessionRecorder(expected_interval=2.0)
+        recorder.reset(DeviceInfo("Android", "serial-1", "Model", "13", "LowEnd", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=0.0,
+                cpu_percent=20.0,
+                memory_mb=512.0,
+                note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn('"qualityTag": "limited"', html_text)
+        self.assertIn("function visualSampleQualityTag(sample)", html_text)
+        self.assertIn("if (tag === 'limited') return 'ok';", html_text)
+        self.assertNotIn("legend-square", html_text)
+        self.assertNotIn("连续受限、兜底或异常区间", html_text)
+
     def test_metric_availability_treats_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
@@ -477,6 +542,57 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("FPS 来源可用", availability["fps"]["detail"])
         self.assertIn("无新增帧", html_text)
         self.assertIn("const emptyLabel = config.availabilityLabel || '无有效数据'", html_text)
+
+    def test_metric_availability_excludes_fps_no_frame_delta_from_coverage_denominator_when_source_exists(self) -> None:
+        recorder = SessionRecorder(expected_interval=2.0)
+        recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
+        recorder.set_collection_diagnostics(
+            AndroidCollectionDiagnostics(
+                overall_state="ok",
+                summary="Android 采集链路正常",
+                rows=[
+                    ("前台", "匹配", "com.example.game"),
+                    ("PID", "已获取", "101"),
+                    ("UID", "已获取", "10234"),
+                    ("FPS", "可用", "SurfaceFlinger"),
+                    ("网络", "per-UID", "目标 App 独占上下行"),
+                ],
+                foreground_app="com.example.game",
+                foreground_state="ok",
+                pid_source="pidof",
+                pids=[101],
+                uid_source="dumpsys package",
+                uid=10234,
+                fps_source="SurfaceFlinger",
+                network_source="per-UID",
+            )
+        )
+        for index in range(6):
+            recorder.append(
+                PerfSample(timestamp=float(index * 2), elapsed=float(index * 2), fps=59.0, cpu_percent=22.0, memory_mb=520.0)
+            )
+        for index in range(4):
+            recorder.append(
+                PerfSample(
+                    timestamp=float(20 + index * 2),
+                    elapsed=float(20 + index * 2),
+                    fps=0.0,
+                    cpu_percent=20.0,
+                    memory_mb=521.0,
+                    note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。",
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, json_path, _html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+        fps = {item["key"]: item for item in payload["quality"]["metric_availability"]}["fps"]
+        self.assertEqual(fps["valid_samples"], 6)
+        self.assertEqual(fps["sample_count"], 6)
+        self.assertEqual(fps["raw_sample_count"], 10)
+        self.assertEqual(fps["coverage_percent"], 100.0)
+        self.assertIn("4 个受限样本未计入覆盖率分母", fps["detail"])
 
     def test_metric_availability_treats_cpu_no_process_delta_as_idle_when_pid_exists(self) -> None:
         recorder = SessionRecorder()
@@ -740,7 +856,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(len(payload["display_samples"]), 3)
         self.assertGreater(payload["display_samples"][2]["fps"], payload["samples"][2]["fps"])
         checklist = {item["key"]: item for item in payload["quality"]["validation_checklist"]}
-        self.assertEqual(checklist["cadence"]["state"], "pass")
+        self.assertEqual(checklist["cadence"]["state"], "warning")
         self.assertIn("const displaySamples", html_text)
         self.assertIn("原始值", html_text)
         self.assertIn("稳定展示", html_text)
@@ -858,18 +974,18 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["recent_window"]["state"], "bad")
         self.assertEqual(payload["quality"]["recent_window"]["label"], "窗口：节拍失稳")
         self.assertEqual(payload["quality"]["recent_window"]["trend_source"], "collection")
-        self.assertIn("采样间隔调到 1.5s", payload["quality"]["recent_window"]["action"])
-        self.assertEqual(payload["quality"]["recent_window"]["summary"], "采集波动 · 窗口：节拍失稳 · 推荐 1.5s")
+        self.assertIn("采样间隔调到 2.0s", payload["quality"]["recent_window"]["action"])
+        self.assertEqual(payload["quality"]["recent_window"]["summary"], "采集波动 · 窗口：节拍失稳 · 推荐 2.0s")
         self.assertEqual(payload["quality"]["performance_conclusion"]["state"], "blocked")
         self.assertEqual(payload["quality"]["performance_conclusion"]["label"], "先修采集链路")
         self.assertIn("最近窗口", html_text)
-        self.assertIn("采集波动 · 窗口：节拍失稳 · 推荐 1.5s", html_text)
+        self.assertIn("采集波动 · 窗口：节拍失稳 · 推荐 2.0s", html_text)
         self.assertIn("性能结论", html_text)
         self.assertIn("先修采集链路", html_text)
         self.assertIn("窗口：节拍失稳", html_text)
         self.assertIn("趋势：采集波动", html_text)
         self.assertIn("采样建议", html_text)
-        self.assertIn("采样间隔调到 1.5s", html_text)
+        self.assertIn("采样间隔调到 2.0s", html_text)
 
     def test_html_report_includes_quality_summary_and_network_source(self) -> None:
         recorder = SessionRecorder()
@@ -956,7 +1072,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("前台恢复窗口", html_text)
         self.assertIn("qualityTag", html_text)
         self.assertIn("qualityIntervals", html_text)
-        self.assertIn("连续受限、兜底或异常区间", html_text)
+        self.assertIn("连续恢复、兜底或异常区间", html_text)
         self.assertIn("异常区间", html_text)
         self.assertIn("采集异常", html_text)
         self.assertIn("设备级兜底", html_text)
@@ -996,8 +1112,8 @@ class ReportExportTest(unittest.TestCase):
             "traffic_state_label": "已命中目标流量",
             "summary": "弱网 ON · 127.0.0.1:18888 · 已命中目标流量 · ↓12.3 KB/s ↑4.5 KB/s · 2/8 连接 · 丢弃 1",
             "diagnostics": {
-                "overall_state": "ok",
-                "summary": "弱网代理已确认生效，端口可达",
+                "overall_state": "warning",
+                "summary": "弱网链路已就绪，等待真实流量",
                 "rows": [
                     {"name": "本机代理", "state": "运行中", "detail": "127.0.0.1:18888"},
                     {"name": "Android 设备", "state": "已选择", "detail": "LowEnd"},
@@ -1057,7 +1173,7 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["weak_network"]["traffic_state"], "hit")
         self.assertEqual(payload["weak_network"]["config"]["profile"], "弱网")
         self.assertEqual(payload["weak_network"]["history"][1]["down_kbps"], 12.3)
-        self.assertEqual(payload["weak_network"]["diagnostics"]["summary"], "弱网代理已确认生效，端口可达")
+        self.assertEqual(payload["weak_network"]["diagnostics"]["summary"], "弱网链路已就绪，等待真实流量")
         self.assertEqual(payload["weak_network"]["hit_status"], "代理有流量 · 目标 App 待确认")
         self.assertEqual(payload["weak_network"]["effectiveness"]["state"], "target_unconfirmed")
         self.assertIn("目标 App 上下行未确认", payload["weak_network"]["risk_message"])
@@ -1293,12 +1409,10 @@ class ReportExportTest(unittest.TestCase):
 
         self.assertIn("fps", recommendations)
         self.assertIn("network", recommendations)
-        self.assertIn("cadence", recommendations)
         self.assertIn("sampling_action", recommendations)
         self.assertIn("weak_network", recommendations)
         self.assertIn("保持目标页面可见", recommendations["fps"]["action"])
         self.assertIn("设备级兜底不能当目标 App 独占流量", recommendations["network"]["action"])
-        self.assertIn("采样间隔", recommendations["cadence"]["action"])
         self.assertIn("优先看稳定展示", recommendations["sampling_action"]["action"])
         self.assertIn("系统 HTTP/HTTPS 代理", recommendations["weak_network"]["action"])
         self.assertIn("修复建议", html_text)

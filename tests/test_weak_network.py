@@ -17,6 +17,8 @@ from mobileperflab import (
     format_live_proxy_summary,
     format_proxy_traffic_snapshot,
     live_weak_network_action_text,
+    proxy_traffic_state,
+    weak_network_target_hit_summary,
     weak_network_status_lights,
     weak_hit_status_text,
     weak_proxy_preview_text,
@@ -103,6 +105,61 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.diagnostic_calls, 1)
         self.assertEqual(app.traffic_calls, 1)
         self.assertIn("停止弱网时已清理 Android 代理：serial-1", app.logs)
+
+    def test_start_weak_proxy_updates_port_input_when_proxy_falls_back_to_free_port(self) -> None:
+        class FakeVar:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def __init__(self) -> None:
+                self.port = 18888
+                self.configured: tuple[object, ...] | None = None
+
+            def is_running(self) -> bool:
+                return False
+
+            def configure(self, *values: object) -> None:
+                self.configured = values
+                self.port = int(values[0])
+
+            def reset_traffic(self) -> None:
+                pass
+
+            def start(self) -> None:
+                self.port = 18889
+
+            def local_endpoint(self) -> str:
+                return f"192.168.1.2:{self.port}"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_port_var = FakeVar("18888")
+        app.weak_latency_var = FakeVar("300")
+        app.weak_jitter_var = FakeVar("120")
+        app.weak_loss_var = FakeVar("2")
+        app.weak_down_var = FakeVar("512")
+        app.weak_up_var = FakeVar("256")
+        app.weak_status_var = FakeVar()
+        app.logs: list[str] = []
+        app._refresh_proxy_preview = lambda: None
+        app._refresh_weak_diagnostics = lambda: None
+        app._refresh_proxy_traffic = lambda: None
+        app._refresh_session_chips = lambda: None
+        app.append_log = lambda text: app.logs.append(text)
+
+        App.start_weak_proxy(app)
+
+        self.assertEqual(app.weak_port_var.value, "18889")
+        self.assertEqual(app.weak_status_var.value, "代理运行中：192.168.1.2:18889")
 
     def test_exit_cleanup_keeps_exit_wording(self) -> None:
         class DummyApp:
@@ -276,7 +333,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
                 return "192.168.1.2:18888"
 
             def traffic_snapshot(self) -> ProxyTrafficSnapshot:
-                return ProxyTrafficSnapshot()
+                return ProxyTrafficSnapshot(active_connections=1, total_connections=2)
 
             def traffic_history(self) -> list[tuple[float, float, float]]:
                 return []
@@ -290,6 +347,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
             "readiness": FakeVar(),
             "hit_status": FakeVar(),
             "target_hit": FakeVar(),
+            "connections": FakeVar(),
         }
         app.weak_live_summary_var = FakeVar()
         app.last_app_rx_kbps = 0.0
@@ -301,6 +359,7 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.weak_traffic_vars["readiness"].value, "先启动代理")
         self.assertEqual(app.weak_traffic_vars["hit_status"].value, "未启动")
         self.assertEqual(app.weak_traffic_vars["target_hit"].value, "等待证据")
+        self.assertEqual(app.weak_traffic_vars["connections"].value, "1/2")
         self.assertIn("点击启动代理", app.weak_readiness_var.value)
 
     def test_refresh_proxy_traffic_shows_target_confirmation_action_for_proxy_only_hit(self) -> None:
@@ -348,6 +407,49 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertIn("代理有流量，目标待确认", app.weak_live_summary_var.value)
         self.assertIn("下载/上传", app.weak_live_summary_var.value)
         self.assertEqual(app.weak_traffic_vars["hit_status"].value, "代理有流量")
+
+    def test_refresh_proxy_traffic_keeps_target_pending_when_rates_decay_after_proxy_hits(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.1.2:18888"
+
+            def traffic_snapshot(self) -> ProxyTrafficSnapshot:
+                return ProxyTrafficSnapshot(total_connections=9, down_bytes=42 * 1024, up_bytes=22 * 1024)
+
+            def traffic_history(self) -> list[tuple[float, float, float]]:
+                return []
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.weak_proxy = FakeWeakProxy()
+        app.weak_readiness_var = FakeVar()
+        app.weak_traffic_vars = {"target_hit": FakeVar()}
+        app.weak_live_summary_var = FakeVar()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.last_weak_diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+
+        App._refresh_proxy_traffic(app)
+
+        self.assertEqual(app.weak_traffic_vars["target_hit"].value, "待确认")
+        self.assertIn("目标流量待确认", app.weak_live_summary_var.value)
 
     def test_refresh_weak_diagnostics_uses_selected_ios_device_for_manual_proxy_guidance(self) -> None:
         class FakeVar:
@@ -476,13 +578,229 @@ class WeakProxyStopCleanupTest(unittest.TestCase):
         self.assertEqual(app.weak_status_light_vars["target_hit"]["state"].value, "正常")
         self.assertIn("弱网已生效", app.weak_status_light_vars["target_hit"]["detail"].value)
 
+    def test_weak_state_style_maps_chinese_statuses_to_colors(self) -> None:
+        from mobileperflab import App
+
+        self.assertEqual(App._weak_state_style("已确认"), "StateOk.TLabel")
+        self.assertEqual(App._weak_state_style("不可达"), "StateFail.TLabel")
+        self.assertEqual(App._weak_state_style("不一致"), "StateWarning.TLabel")
+        self.assertEqual(App._weak_state_style("未检查"), "StateIdle.TLabel")
+        self.assertEqual(App._weak_state_style("ok", large=True), "StateOkLarge.TLabel")
+
+    def test_apply_android_proxy_uses_first_endpoint_reachable_from_device(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.100.110:18888"
+
+            def local_endpoints(self) -> list[str]:
+                return ["192.168.100.110:18888", "192.168.1.163:18888"]
+
+        class FakeAndroid:
+            def __init__(self) -> None:
+                self.probes: list[tuple[str, int]] = []
+                self.set_calls: list[tuple[str, int]] = []
+
+            def probe_tcp_connectivity(self, _device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+                self.probes.append((host, port))
+                if host == "192.168.1.163":
+                    return True, f"{host}:{port}"
+                return False, "nc: Timeout"
+
+            def set_http_proxy(self, _device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+                self.set_calls.append((host, port))
+                return True, f"{host}:{port}"
+
+            def current_http_proxy(self, _device: DeviceInfo) -> str:
+                host, port = self.set_calls[-1]
+                return f"{host}:{port}"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        device = DeviceInfo("Android", "serial-1", "Samsung", "16", "SM", "ready")
+        app.selected_device = device
+        app.weak_proxy = FakeWeakProxy()
+        app.android = FakeAndroid()
+        app.weak_registry = WeakProxyDeviceRegistry()
+        app.weak_status_var = FakeVar()
+        app.logs = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_weak_diagnostics = lambda *_args, **_kwargs: None
+        app._refresh_proxy_traffic = lambda: None
+        app._refresh_proxy_preview = lambda: None
+        app._refresh_session_chips = lambda: None
+
+        App.apply_android_proxy(app)
+
+        self.assertEqual(app.android.probes, [("192.168.100.110", 18888), ("192.168.1.163", 18888)])
+        self.assertEqual(app.android.set_calls, [("192.168.1.163", 18888)])
+        self.assertEqual(app.weak_registry.proxy_for(device), "192.168.1.163:18888")
+
+    def test_apply_android_proxy_falls_back_to_adb_reverse_when_lan_is_unreachable(self) -> None:
+        class FakeVar:
+            def set(self, _value: str) -> None:
+                pass
+
+        class FakeWeakProxy:
+            port = 18888
+
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.100.110:18888"
+
+            def local_endpoints(self) -> list[str]:
+                return ["192.168.100.110:18888", "192.168.100.151:18888"]
+
+            def remember_device_endpoint(self, _device: DeviceInfo, endpoint: str) -> None:
+                self.endpoint = endpoint
+
+        class FakeAndroid:
+            def __init__(self) -> None:
+                self.reversed_ports: list[int] = []
+                self.probes: list[tuple[str, int]] = []
+                self.set_calls: list[tuple[str, int]] = []
+
+            def probe_tcp_connectivity(self, _device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+                self.probes.append((host, port))
+                return (host == "127.0.0.1" and port in self.reversed_ports), f"{host}:{port}"
+
+            def setup_reverse_proxy(self, _device: DeviceInfo, port: int) -> tuple[bool, str]:
+                self.reversed_ports.append(port)
+                return True, f"reverse tcp:{port}"
+
+            def set_http_proxy(self, _device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+                self.set_calls.append((host, port))
+                return True, f"{host}:{port}"
+
+            def current_http_proxy(self, _device: DeviceInfo) -> str:
+                host, port = self.set_calls[-1]
+                return f"{host}:{port}"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        device = DeviceInfo("Android", "serial-1", "Samsung", "16", "SM", "ready")
+        app.selected_device = device
+        app.weak_proxy = FakeWeakProxy()
+        app.android = FakeAndroid()
+        app.weak_registry = WeakProxyDeviceRegistry()
+        app.weak_status_var = FakeVar()
+        app.logs = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_weak_diagnostics = lambda *_args, **_kwargs: None
+        app._refresh_proxy_traffic = lambda: None
+        app._refresh_proxy_preview = lambda: None
+        app._refresh_session_chips = lambda: None
+
+        App.apply_android_proxy(app)
+
+        self.assertIn(("127.0.0.1", 18888), app.android.probes)
+        self.assertEqual(app.android.set_calls, [("127.0.0.1", 18888)])
+        self.assertEqual(app.weak_registry.proxy_for(device), "127.0.0.1:18888")
+
+    def test_refresh_weak_diagnostics_uses_android_reachable_endpoint(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def is_running(self) -> bool:
+                return True
+
+            def local_endpoint(self) -> str:
+                return "192.168.100.110:18888"
+
+            def device_endpoint(self, _device: DeviceInfo | None = None) -> str:
+                return "192.168.1.163:18888"
+
+        class FakeAndroid:
+            def current_http_proxy(self, _device: DeviceInfo) -> str:
+                return "192.168.1.163:18888"
+
+            def probe_tcp_connectivity(self, _device: DeviceInfo, host: str, port: int) -> tuple[bool, str]:
+                return host == "192.168.1.163", f"{host}:{port}"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("Android", "serial-1", "Samsung", "16", "SM", "ready")
+        app.weak_proxy = FakeWeakProxy()
+        app.android = FakeAndroid()
+        app.weak_diagnostic_summary_var = FakeVar()
+        app.weak_diagnostic_row_vars = [(FakeVar(), FakeVar(), FakeVar()) for _ in range(4)]
+        app.logs = []
+        app.append_log = lambda text: app.logs.append(text)
+        app._refresh_weak_status_lights = lambda: None
+        app._set_weak_diagnostic_summary_state = lambda _state: None
+
+        App._refresh_weak_diagnostics(app, probe_connectivity=True)
+
+        self.assertEqual(app.weak_diagnostic_summary_var.value, "弱网链路已就绪，等待真实流量")
+        rows = [(name.value, state.value, detail.value) for name, state, detail in app.weak_diagnostic_row_vars]
+        self.assertIn(("本机代理", "运行中", "192.168.1.163:18888"), rows)
+        self.assertIn(("设备代理", "已确认", "192.168.1.163:18888"), rows)
+
+    def test_refresh_android_proxy_status_refreshes_live_traffic_cards_after_diagnostics(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        class FakeWeakProxy:
+            def local_endpoints(self) -> list[str]:
+                return ["192.168.1.2:18888"]
+
+            def remember_device_endpoint(self, _device: DeviceInfo, _endpoint: str) -> None:
+                pass
+
+        class FakeAndroid:
+            def current_http_proxy(self, _device: DeviceInfo) -> str:
+                return "192.168.1.2:18888"
+
+        from mobileperflab import App
+
+        app = object.__new__(App)
+        app.selected_device = DeviceInfo("Android", "serial-1", "Samsung", "16", "SM", "ready")
+        app.weak_proxy = FakeWeakProxy()
+        app.android = FakeAndroid()
+        app.weak_status_var = FakeVar()
+        app.logs = []
+        app.append_log = lambda text: app.logs.append(text)
+        app.diagnostic_calls = []
+        app.live_refresh_calls = 0
+        app._refresh_weak_diagnostics = lambda proxy, probe_connectivity=False: app.diagnostic_calls.append((proxy, probe_connectivity))
+        app._refresh_proxy_traffic = lambda: setattr(app, "live_refresh_calls", app.live_refresh_calls + 1)
+        app._refresh_session_chips = lambda: None
+
+        App.refresh_android_proxy_status(app)
+
+        self.assertEqual(app.diagnostic_calls, [("192.168.1.2:18888", True)])
+        self.assertEqual(app.live_refresh_calls, 1)
+
 
 class AndroidProxyVerificationTest(unittest.TestCase):
     def test_confirms_proxy_when_device_state_matches_expected_endpoint(self) -> None:
         result = verify_android_proxy_state("192.168.1.2:18888", "192.168.1.2:18888")
 
         self.assertTrue(result.confirmed)
-        self.assertEqual(result.status_text, "Android 代理已确认生效：192.168.1.2:18888")
+        self.assertEqual(result.status_text, "Android 代理已确认：192.168.1.2:18888")
         self.assertEqual(result.log_text, "Android 代理读回确认：192.168.1.2:18888")
 
     def test_reports_mismatch_when_device_keeps_different_proxy(self) -> None:
@@ -526,8 +844,8 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
             proxy_reachable=True,
         )
 
-        self.assertEqual(diagnostics.overall_state, "ok")
-        self.assertEqual(diagnostics.summary, "弱网代理已确认生效，端口可达")
+        self.assertEqual(diagnostics.overall_state, "warning")
+        self.assertEqual(diagnostics.summary, "弱网链路已就绪，等待真实流量")
         self.assertEqual(
             diagnostics.rows,
             [
@@ -537,6 +855,45 @@ class WeakNetworkDiagnosticsTest(unittest.TestCase):
                 ("端口连通", "可达", "Android 可连接本机代理端口"),
             ],
         )
+
+    def test_confirmed_proxy_and_reachable_port_are_link_ready_not_effective(self) -> None:
+        device = DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready")
+
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=device,
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+        snapshot = ProxyTrafficSnapshot()
+        traffic_state, _label = proxy_traffic_state(True, snapshot)
+        effectiveness = build_weak_network_effectiveness(
+            running=True,
+            traffic_state=traffic_state,
+            diagnostics=diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+        lights = weak_network_status_lights(
+            running=True,
+            traffic_state=traffic_state,
+            diagnostics=diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+        by_key = {light["key"]: light for light in lights}
+
+        self.assertEqual(diagnostics.summary, "弱网链路已就绪，等待真实流量")
+        self.assertNotIn("生效", diagnostics.summary)
+        self.assertEqual(effectiveness["state"], "waiting")
+        self.assertEqual(effectiveness["test_readiness"]["label"], "先触发业务请求")
+        self.assertEqual(by_key["proxy_listener"]["state"], "ok")
+        self.assertEqual(by_key["device_proxy"]["state"], "ok")
+        self.assertEqual(by_key["port_reachability"]["state"], "ok")
+        self.assertEqual(by_key["proxy_traffic"]["state"], "waiting")
+        self.assertEqual(by_key["target_hit"]["state"], "waiting")
+        self.assertIn("触发 HTTP/HTTPS 请求", by_key["proxy_traffic"]["detail"])
 
     def test_reports_actionable_states_when_proxy_is_not_ready(self) -> None:
         diagnostics = build_weak_network_diagnostics(
@@ -919,6 +1276,63 @@ class WeakNetworkProxyHealthTest(unittest.TestCase):
         finally:
             proxy.stop()
 
+    def test_idle_proxy_timeout_is_closed_without_failure_log(self) -> None:
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def settimeout(self, _timeout: float) -> None:
+                pass
+
+            def close(self) -> None:
+                self.closed = True
+
+        def raise_timeout(_sock: object) -> bytes:
+            raise socket.timeout("timed out")
+
+        logs: list[str] = []
+        proxy = WeakNetworkProxy(logs.append)
+        proxy._recv_header = raise_timeout
+        client = FakeSocket()
+
+        proxy._handle_client(client, ("127.0.0.1", 12345))
+
+        self.assertEqual(logs, [])
+        self.assertTrue(client.closed)
+
+    def test_repeated_target_timeouts_are_throttled_per_target(self) -> None:
+        proxy = WeakNetworkProxy(lambda _text: None)
+
+        first = proxy._target_timeout_log_message(
+            ("192.168.1.53", 42000),
+            "play-fe.googleapis.com:443",
+            "timed out",
+            now=10.0,
+        )
+        repeated = proxy._target_timeout_log_message(
+            ("192.168.1.53", 42001),
+            "play-fe.googleapis.com:443",
+            "timed out",
+            now=20.0,
+        )
+        other_target = proxy._target_timeout_log_message(
+            ("192.168.1.53", 42002),
+            "prod-mediate-events.applovin.com:443",
+            "timed out",
+            now=25.0,
+        )
+        summary = proxy._target_timeout_log_message(
+            ("192.168.1.53", 42003),
+            "play-fe.googleapis.com:443",
+            "timed out",
+            now=75.0,
+        )
+
+        self.assertEqual(first, "弱网代理目标超时：192.168.1.53 -> play-fe.googleapis.com:443")
+        self.assertIsNone(repeated)
+        self.assertEqual(other_target, "弱网代理目标超时：192.168.1.53 -> prod-mediate-events.applovin.com:443")
+        self.assertEqual(summary, "弱网代理目标超时：192.168.1.53 -> play-fe.googleapis.com:443（已合并 1 次重复超时）")
+
 
 class WeakNetworkProxyTrafficTest(unittest.TestCase):
     def test_runtime_config_reflects_last_configured_proxy_values(self) -> None:
@@ -939,6 +1353,25 @@ class WeakNetworkProxyTrafficTest(unittest.TestCase):
                 "up_kbps": 128.0,
             },
         )
+
+    def test_start_moves_to_next_port_when_requested_port_is_already_in_use(self) -> None:
+        logs: list[str] = []
+        occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        occupied.bind(("0.0.0.0", 0))
+        occupied.listen(1)
+        occupied_port = occupied.getsockname()[1]
+        proxy = WeakNetworkProxy(logs.append)
+        proxy.configure(occupied_port, 0, 0, 0.0, 0.0, 0.0)
+
+        try:
+            proxy.start()
+
+            self.assertTrue(proxy.is_running())
+            self.assertNotEqual(proxy.port, occupied_port)
+            self.assertIn(f"端口 {occupied_port} 已占用", "\n".join(logs))
+        finally:
+            proxy.stop()
+            occupied.close()
 
     def test_tracks_real_proxy_bytes_and_recent_rates(self) -> None:
         proxy = WeakNetworkProxy(lambda _text: None)
@@ -1174,6 +1607,37 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
 
         self.assertIn("代理有真实流量/目标待确认", text)
 
+    def test_target_hit_summary_uses_total_proxy_bytes_when_current_rate_is_zero(self) -> None:
+        diagnostics = build_weak_network_diagnostics(
+            proxy_running=True,
+            endpoint="192.168.1.2:18888",
+            device=DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"),
+            current_proxy="192.168.1.2:18888",
+            proxy_reachable=True,
+        )
+        effectiveness = build_weak_network_effectiveness(
+            True,
+            "hit",
+            diagnostics,
+            app_rx_kbps=0.0,
+            app_tx_kbps=0.0,
+        )
+        evidence = build_weak_network_bypass_evidence(
+            "hit",
+            app_rx_peak=0.0,
+            app_tx_peak=0.0,
+            proxy_down_peak=0.0,
+            proxy_up_peak=0.0,
+            proxy_down_total_bytes=42 * 1024,
+            proxy_up_total_bytes=22 * 1024,
+        )
+
+        summary = weak_network_target_hit_summary(evidence, effectiveness)
+
+        self.assertEqual(summary["state"], "target_unconfirmed")
+        self.assertEqual(summary["label"], "目标流量待确认")
+        self.assertIn("代理 64.0 KB", summary["evidence"])
+
     def test_formats_confirmed_target_hit_when_proxy_and_app_both_have_traffic(self) -> None:
         text = format_live_proxy_summary(
             True,
@@ -1281,8 +1745,8 @@ class ProxyTrafficFormattingTest(unittest.TestCase):
             diagnostics=diagnostics,
         )
 
-        self.assertEqual(payload["diagnostics"]["overall_state"], "ok")
-        self.assertEqual(payload["diagnostics"]["summary"], "弱网代理已确认生效，端口可达")
+        self.assertEqual(payload["diagnostics"]["overall_state"], "warning")
+        self.assertEqual(payload["diagnostics"]["summary"], "弱网链路已就绪，等待真实流量")
         self.assertEqual(payload["diagnostics"]["rows"][2]["name"], "设备代理")
         self.assertEqual(payload["diagnostics"]["rows"][2]["state"], "已确认")
         self.assertEqual(payload["diagnostics"]["rows"][3]["detail"], "Android 可连接本机代理端口")
