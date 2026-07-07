@@ -23,12 +23,38 @@ from mobileperflab import (
     quality_intervals_from_points,
     quality_event_from_sample,
     quality_interval_label,
+    format_timeline_seconds,
+    fps_deficit_jank_percent,
+    normalize_cpu_percent,
     sample_quality_tags_with_cadence,
     sample_quality_tag,
 )
 
 
 class MetricStabilizerTest(unittest.TestCase):
+    def test_timeline_time_matches_graph_axis_format(self) -> None:
+        self.assertEqual(format_timeline_seconds(1.2), "00:01")
+        self.assertEqual(format_timeline_seconds(177.2), "02:57")
+        self.assertEqual(format_timeline_seconds(3661.0), "1:01:01")
+
+    def test_normalizes_raw_cpu_with_frequency_capacity_like_perfdog(self) -> None:
+        self.assertEqual(normalize_cpu_percent(200.0, core_count=8), 25.0)
+        self.assertEqual(
+            normalize_cpu_percent(
+                200.0,
+                core_count=8,
+                current_freq_total=12_000_000,
+                max_freq_total=24_000_000,
+            ),
+            12.5,
+        )
+        self.assertEqual(normalize_cpu_percent(1200.0, core_count=8), 100.0)
+
+    def test_fps_deficit_jank_matches_60fps_target_loss(self) -> None:
+        self.assertAlmostEqual(fps_deficit_jank_percent(44.7), 25.5, places=1)
+        self.assertEqual(fps_deficit_jank_percent(60.0), 0.0)
+        self.assertEqual(fps_deficit_jank_percent(68.0), 0.0)
+
     def test_holds_fps_through_short_zero_gap_without_changing_raw_sample(self) -> None:
         stabilizer = MetricStabilizer()
         first = PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0)
@@ -170,6 +196,55 @@ class MetricStabilizerTest(unittest.TestCase):
         self.assertGreater(limited_display.fps, 50.0)
         self.assertGreater(recovered_display.fps, 55.0)
 
+    def test_repeated_ok_no_frame_delta_holds_last_valid_fps_without_decay(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+
+        displays = [
+            stabilizer.smooth_sample(
+                PerfSample(
+                    timestamp=float(index),
+                    elapsed=float(index),
+                    fps=0.0,
+                    note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。",
+                ),
+                quality_tag="ok",
+            ).fps
+            for index in range(2, 9)
+        ]
+        recovered_display = stabilizer.smooth_sample(PerfSample(timestamp=9.0, elapsed=9.0, fps=59.0), quality_tag="ok")
+
+        self.assertGreaterEqual(min(displays), 58.0)
+        self.assertGreater(recovered_display.fps, 58.0)
+
+    def test_repeated_ok_no_frame_delta_holds_last_valid_jank(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, jank_percent=1.2))
+
+        displays = [
+            stabilizer.smooth_sample(
+                PerfSample(
+                    timestamp=float(index),
+                    elapsed=float(index),
+                    fps=0.0,
+                    jank_percent=0.0,
+                    note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0(BLAST)#1。",
+                ),
+                quality_tag="ok",
+            ).jank_percent
+            for index in range(2, 9)
+        ]
+
+        self.assertGreaterEqual(min(displays), 1.1)
+
+    def test_holds_implausible_short_temperature_cliff_for_display(self) -> None:
+        stabilizer = MetricStabilizer()
+        stabilizer.smooth_sample(PerfSample(timestamp=1.0, elapsed=1.0, temperature_c=34.5))
+
+        display = stabilizer.smooth_sample(PerfSample(timestamp=3.0, elapsed=3.0, temperature_c=24.3))
+
+        self.assertEqual(display.temperature_c, 34.5)
+
     def test_low_end_quality_notes_reduce_display_oscillation_range(self) -> None:
         normal = MetricStabilizer()
         low_end = MetricStabilizer()
@@ -265,6 +340,14 @@ class MetricHealthAnalyzerTest(unittest.TestCase):
 
         self.assertEqual(health["rx_kbps"].state, "idle")
         self.assertEqual(health["tx_kbps"].state, "idle")
+
+    def test_marks_zero_jank_with_valid_fps_as_ok(self) -> None:
+        sample = PerfSample(timestamp=8.0, elapsed=8.0, fps=60.0, jank_percent=0.0, cpu_percent=22.0)
+
+        health = MetricHealthAnalyzer().analyze(sample)
+
+        self.assertEqual(health["fps"].state, "ok")
+        self.assertEqual(health["jank_percent"].state, "ok")
 
     def test_marks_fps_no_frame_delta_as_idle_when_source_exists(self) -> None:
         sample = PerfSample(
@@ -478,6 +561,22 @@ class LiveQualityTrackerTest(unittest.TestCase):
         self.assertIn("先触发业务动作", text)
         self.assertNotIn("可分析性能", text)
 
+    def test_recent_valid_fps_suppresses_short_no_frame_delta_quality_noise(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        tracker.update(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0))
+        no_delta = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            note="Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0(BLAST)#1。",
+        )
+
+        self.assertEqual(tracker.quality_tag_for_sample(no_delta), "ok")
+        text = tracker.update(no_delta)
+
+        self.assertIn("受限 0/2", text)
+        self.assertEqual(tracker.limited_sample_count, 0)
+
     def test_live_session_usability_limits_cpu_delta_and_idle_network(self) -> None:
         health = MetricHealthAnalyzer().analyze(
             PerfSample(
@@ -541,7 +640,7 @@ class LiveQualityTrackerTest(unittest.TestCase):
             )
         )
 
-        self.assertIn("不可信 33.3%", text)
+        self.assertIn("谨慎参考 66.7%", text)
         self.assertIn("前台 1", text)
         self.assertIn("慢采样 1", text)
 
@@ -1007,11 +1106,11 @@ class SampleQualityTagTest(unittest.TestCase):
         self.assertEqual(sample_quality_tag(cpu_idle), "limited")
         self.assertEqual(
             quality_event_from_sample(fps_idle),
-            ("1.0s", "受限样本", "Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。"),
+            ("00:01", "受限样本", "Android FPS 当前无帧增量，Surface=SurfaceView[com.example.game]。低端机/静止页面可能需要更长采样窗口。"),
         )
         self.assertEqual(
             quality_event_from_sample(cpu_idle),
-            ("2.0s", "受限样本", "Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。"),
+            ("00:02", "受限样本", "Android CPU 当前无进程增量，可能是采样间隔过短或系统限制读取 /proc。"),
         )
 
     def test_ad_foreground_return_no_frame_delta_is_recovery_not_limited(self) -> None:
@@ -1026,11 +1125,146 @@ class SampleQualityTagTest(unittest.TestCase):
         self.assertEqual(sample_quality_tag(sample), "recovery")
         self.assertEqual(
             quality_event_from_sample(sample),
-            ("3.0s", "前台恢复窗口", "广告或前后台切换后等待 Surface 恢复"),
+            ("00:03", "前台恢复窗口", "广告或前后台切换后等待 Surface 恢复"),
         )
         health = MetricHealthAnalyzer().analyze(sample)
         self.assertEqual(health["fps"].state, "recovering")
         self.assertEqual(health["jank_percent"].state, "recovering")
+
+    def test_in_app_ad_surface_with_valid_fps_is_recovery_marker(self) -> None:
+        sample = PerfSample(
+            timestamp=10.0,
+            elapsed=10.0,
+            fps=58.0,
+            jank_percent=0.0,
+            note="目标 App 正在播放广告 Surface：SurfaceView[com.example.game/com.applovin.adview.FullscreenActivity]@0(BLAST)#99。",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "recovery")
+        self.assertEqual(
+            quality_event_from_sample(sample),
+            ("00:10", "前台恢复窗口", "广告播放中"),
+        )
+
+    def test_in_app_ad_activity_with_valid_fps_is_recovery_marker(self) -> None:
+        sample = PerfSample(
+            timestamp=10.0,
+            elapsed=10.0,
+            fps=30.0,
+            jank_percent=80.0,
+            note="目标 App 正在播放广告 Activity：com.example.game/com.applovin.adview.AppLovinFullscreenActivity。",
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "recovery")
+        self.assertEqual(
+            quality_event_from_sample(sample),
+            ("00:10", "前台恢复窗口", "广告播放中"),
+        )
+
+    def test_ad_store_overlay_with_missing_surface_is_recovery_not_collection_issue(self) -> None:
+        sample = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            jank_percent=0.0,
+            cpu_percent=14.0,
+            note=(
+                "目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。；"
+                "Android FPS 未采集到 Surface，请在目标页面停留 2-3 秒后重试，或确认目标 App 有可见界面。"
+            ),
+        )
+
+        self.assertEqual(sample_quality_tag(sample), "recovery")
+        self.assertEqual(
+            quality_event_from_sample(sample),
+            ("00:03", "前台恢复窗口", "广告/商店覆盖层"),
+        )
+        health = MetricHealthAnalyzer().analyze(sample, quality_tag="recovery")
+        self.assertEqual(health["fps"].state, "recovering")
+        self.assertEqual(health["jank_percent"].state, "recovering")
+
+    def test_live_quality_does_not_count_ad_store_overlay_surface_missing_as_issue(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        sample = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            note=(
+                "目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。；"
+                "Android FPS 未采集到 Surface，请在目标页面停留 2-3 秒后重试，或确认目标 App 有可见界面。"
+            ),
+        )
+
+        text = tracker.update(sample)
+
+        self.assertEqual(tracker.issue_count, 0)
+        self.assertIn("异常样本 0/1", text)
+
+    def test_live_quality_keeps_surface_missing_in_recovery_window_after_ad_overlay(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        overlay = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            note="目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。",
+        )
+        next_surface_gap = PerfSample(
+            timestamp=5.0,
+            elapsed=5.0,
+            fps=0.0,
+            note="Android FPS 未采集到 Surface，请在目标页面停留 2-3 秒后重试，或确认目标 App 有可见界面。",
+        )
+
+        tracker.update(overlay)
+
+        self.assertEqual(tracker.quality_tag_for_sample(next_surface_gap), "recovery")
+
+    def test_live_quality_releases_recovery_after_two_stable_target_fps_samples(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        tracker.update(
+            PerfSample(
+                timestamp=3.0,
+                elapsed=3.0,
+                fps=0.0,
+                note="目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。",
+            )
+        )
+        first_stable = PerfSample(
+            timestamp=5.0,
+            elapsed=5.0,
+            fps=57.0,
+            note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+        )
+        second_stable = PerfSample(
+            timestamp=7.0,
+            elapsed=7.0,
+            fps=58.5,
+            note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+        )
+
+        self.assertEqual(tracker.quality_tag_for_sample(first_stable), "recovery")
+        tracker.update(first_stable)
+
+        self.assertEqual(tracker.quality_tag_for_sample(second_stable), "ok")
+
+    def test_live_quality_does_not_extend_recovery_window_to_hard_collection_issue(self) -> None:
+        tracker = LiveQualityTracker(expected_interval=2.0)
+        overlay = PerfSample(
+            timestamp=3.0,
+            elapsed=3.0,
+            fps=0.0,
+            note="目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。",
+        )
+        hard_issue = PerfSample(
+            timestamp=5.0,
+            elapsed=5.0,
+            fps=0.0,
+            note="Android FPS 未采集到 Surface；Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。",
+        )
+
+        tracker.update(overlay)
+
+        self.assertEqual(tracker.quality_tag_for_sample(hard_issue), "issue")
 
     def test_keeps_hard_collection_issue_when_no_delta_note_is_mixed_with_failure(self) -> None:
         sample = PerfSample(
@@ -1043,18 +1277,18 @@ class SampleQualityTagTest(unittest.TestCase):
         self.assertEqual(sample_quality_tag(sample), "issue")
         self.assertEqual(
             quality_event_from_sample(sample),
-            ("1.0s", "采集异常", "Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"),
+            ("00:01", "采集异常", "Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"),
         )
 
-    def test_classifies_slow_sampling_window_as_issue(self) -> None:
+    def test_pure_slow_sampling_note_does_not_become_quality_issue(self) -> None:
         sample = PerfSample(timestamp=3.0, elapsed=3.0, fps=60.0)
         annotated = append_sampling_latency_note(sample, spent_seconds=1.6, interval_seconds=1.0)
 
         self.assertIn("采样耗时 1.60s 超过采样间隔 1.00s", annotated.note)
         self.assertEqual(sample.note, "")
-        self.assertEqual(sample_quality_tag(annotated), "issue")
+        self.assertEqual(sample_quality_tag(annotated), "ok")
 
-    def test_marks_cadence_inferred_slow_samples_as_quality_issues(self) -> None:
+    def test_keeps_cadence_inferred_slow_samples_out_of_quality_tags(self) -> None:
         samples = [
             PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0),
             PerfSample(timestamp=2.8, elapsed=2.8, fps=24.0),
@@ -1063,7 +1297,7 @@ class SampleQualityTagTest(unittest.TestCase):
 
         tags = sample_quality_tags_with_cadence(samples, expected_interval=1.0)
 
-        self.assertEqual(tags, ["ok", "issue", "issue"])
+        self.assertEqual(tags, ["ok", "ok", "ok"])
 
     def test_classifies_foreground_state_quality_from_note(self) -> None:
         self.assertEqual(
@@ -1139,7 +1373,7 @@ class QualityEventTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(event, ("12.4s", "采集异常", "Android FPS 未采集到 Surface"))
+        self.assertEqual(event, ("00:12", "采集异常", "Android FPS 未采集到 Surface"))
 
     def test_builds_realtime_event_for_network_fallback_sample(self) -> None:
         event = quality_event_from_sample(
@@ -1151,7 +1385,7 @@ class QualityEventTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(event, ("5.0s", "设备级兜底", "非目标 App 独占流量"))
+        self.assertEqual(event, ("00:05", "设备级兜底", "非目标 App 独占流量"))
 
     def test_builds_realtime_event_for_collection_issue_before_network_fallback(self) -> None:
         event = quality_event_from_sample(
@@ -1163,7 +1397,7 @@ class QualityEventTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(event, ("5.0s", "采集异常", "Android FPS 未采集到 Surface"))
+        self.assertEqual(event, ("00:05", "采集异常", "Android FPS 未采集到 Surface"))
 
     def test_builds_realtime_event_for_foreground_recovery_sample(self) -> None:
         event = quality_event_from_sample(
@@ -1175,12 +1409,12 @@ class QualityEventTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(event, ("7.5s", "前台恢复窗口", "目标应用刚回到前台"))
+        self.assertEqual(event, ("00:08", "前台恢复窗口", "目标应用刚回到前台"))
 
     def test_builds_realtime_event_for_cadence_inferred_issue(self) -> None:
         event = quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=2.8, fps=55.0), quality_tag="issue")
 
-        self.assertEqual(event, ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
+        self.assertEqual(event, ("00:03", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
 
     def test_ignores_ok_sample(self) -> None:
         self.assertIsNone(quality_event_from_sample(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0)))
@@ -1190,13 +1424,13 @@ class QualityEventTest(unittest.TestCase):
             quality_event_from_sample(
                 PerfSample(timestamp=1.0, elapsed=1.0, fps=0.0, note="Android FPS 当前无帧增量")
             ),
-            ("1.0s", "受限样本", "Android FPS 当前无帧增量"),
+            ("00:01", "受限样本", "Android FPS 当前无帧增量"),
         )
         self.assertEqual(
             quality_event_from_sample(
                 PerfSample(timestamp=2.0, elapsed=2.0, fps=58.0, note="Android CPU 当前无进程增量")
             ),
-            ("2.0s", "受限样本", "Android CPU 当前无进程增量"),
+            ("00:02", "受限样本", "Android CPU 当前无进程增量"),
         )
 
 

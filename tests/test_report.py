@@ -417,6 +417,105 @@ class ReportExportTest(unittest.TestCase):
         self.assertIn("峰值", html_text)
         self.assertNotIn("stat.textContent = `avg ${fmt(avg, config.decimals)}${config.unit} / max ${fmt(peak, config.decimals)}${config.unit}`", html_text)
 
+    def test_html_report_chart_tooltip_shows_nearest_sample_on_hover(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=50.0, cpu_percent=20.0, memory_mb=500.0, note="首帧稳定"))
+        recorder.append(PerfSample(timestamp=2.0, elapsed=2.0, fps=55.0, cpu_percent=30.0, memory_mb=520.0))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp))
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn(".chart-tooltip", html_text)
+        self.assertIn("function nearestSampleIndexForElapsed(elapsedSeconds)", html_text)
+        self.assertIn("function chartTooltipHtml(config, index)", html_text)
+        self.assertIn("canvas.addEventListener('mousemove'", html_text)
+        self.assertIn("tooltip.innerHTML = chartTooltipHtml(config, index)", html_text)
+        self.assertIn("展示值", html_text)
+        self.assertIn("原始值", html_text)
+        self.assertIn("质量", html_text)
+        self.assertIn("config.title", html_text)
+
+    def test_html_report_proxy_traffic_chart_tooltip_shows_nearest_up_and_down_rates(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
+        recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=480.0))
+        weak_network = {
+            "running": True,
+            "endpoint": "127.0.0.1:18888",
+            "traffic_state": "hit",
+            "traffic_state_label": "已命中目标流量",
+            "summary": "弱网 ON · 127.0.0.1:18888 · 已命中目标流量",
+            "config": {"profile": "弱网", "port": 18888},
+            "snapshot": {"down_kbps": 18.0, "up_kbps": 5.8, "total_connections": 2},
+            "history": [
+                {"elapsed": 0.0, "down_kbps": 0.0, "up_kbps": 0.0},
+                {"elapsed": 1.0, "down_kbps": 12.3, "up_kbps": 4.5},
+                {"elapsed": 2.0, "down_kbps": 18.0, "up_kbps": 5.8},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _csv_path, _json_path, html_path = recorder.export_bundle(Path(tmp), weak_network=weak_network)
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("function nearestProxyTrafficPoint(elapsedSeconds)", html_text)
+        self.assertIn("function proxyTrafficTooltipHtml(point)", html_text)
+        self.assertIn("function ensureProxyTrafficTooltip(parent, canvas, pad, plotW, start, end)", html_text)
+        self.assertIn("proxyTrafficTooltipHtml(point)", html_text)
+        self.assertIn("下行：", html_text)
+        self.assertIn("上行：", html_text)
+
+    def test_html_report_uses_normalized_cpu_and_keeps_raw_cpu(self) -> None:
+        recorder = SessionRecorder()
+        recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
+        recorder.append(
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=52.0,
+                cpu_percent=240.0,
+                cpu_normalized_percent=30.0,
+                cpu_core_count=8,
+                memory_mb=500.0,
+            )
+        )
+        recorder.append(
+            PerfSample(
+                timestamp=2.0,
+                elapsed=2.0,
+                fps=101.3,
+                cpu_percent=400.0,
+                cpu_normalized_percent=50.0,
+                cpu_core_count=8,
+                memory_mb=520.0,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path, json_path, html_path = recorder.export_bundle(Path(tmp))
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            csv_text = csv_path.read_text(encoding="utf-8-sig")
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["samples"][1]["cpu_percent"], 400.0)
+        self.assertEqual(payload["samples"][1]["cpu_normalized_percent"], 50.0)
+        self.assertEqual(payload["display_samples"][0]["cpu_percent"], 30.0)
+        self.assertLess(payload["display_samples"][1]["cpu_percent"], 100.0)
+        self.assertGreater(payload["display_samples"][1]["cpu_percent"], 30.0)
+        self.assertIn("cpu_normalized_percent", csv_text)
+        self.assertIn("CPU 归一化占用", html_text)
+        self.assertIn('"key": "fps"', html_text)
+        self.assertIn('"axisMax": 120.0', html_text)
+        self.assertIn('"key": "cpu_percent"', html_text)
+        self.assertIn('"axisMax": 100.0', html_text)
+        self.assertIn("function metricDisplayValue(key, value)", html_text)
+        self.assertIn("if (key === 'cpu_percent') return Math.max(0, Math.min(numeric, 100));", html_text)
+        self.assertIn("if (key === 'fps') return Math.max(0, Math.min(numeric, 120));", html_text)
+        self.assertIn("function chartMaxY(config, displayMax)", html_text)
+        self.assertIn("if (config.key === 'fps' || config.key === 'cpu_percent')", html_text)
+
     def test_html_report_chart_cards_follow_workbench_metric_priority(self) -> None:
         recorder = SessionRecorder()
         recorder.reset(DeviceInfo("Android", "serial-1", "Pixel", "14", "Pixel", "ready"), "com.example.game")
@@ -913,15 +1012,24 @@ class ReportExportTest(unittest.TestCase):
         self.assertEqual(payload["quality"]["cadence"]["slow_intervals"], 2)
         self.assertEqual(payload["quality"]["display_strategy"]["mode"], "conservative")
         self.assertEqual(payload["display_samples"][0]["qualityTag"], "ok")
-        self.assertEqual(payload["display_samples"][1]["qualityTag"], "issue")
-        self.assertEqual(payload["display_samples"][2]["qualityTag"], "issue")
-        self.assertIn('"qualityTag": "issue"', html_text)
+        self.assertEqual(payload["display_samples"][1]["qualityTag"], "ok")
+        self.assertEqual(payload["display_samples"][2]["qualityTag"], "ok")
+        self.assertNotIn('"qualityTag": "issue"', html_text)
 
     def test_export_bundle_uses_quality_tags_to_isolate_bad_display_samples(self) -> None:
         recorder = SessionRecorder(expected_interval=1.0)
         recorder.reset(DeviceInfo("Android", "serial-1", "LowEnd", "13", "LE", "ready"), "com.example.game")
         recorder.append(PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=18.0, memory_mb=520.0))
-        recorder.append(PerfSample(timestamp=2.8, elapsed=2.8, fps=0.0, cpu_percent=92.0, memory_mb=521.0))
+        recorder.append(
+            PerfSample(
+                timestamp=2.8,
+                elapsed=2.8,
+                fps=0.0,
+                cpu_percent=92.0,
+                memory_mb=521.0,
+                note="Android FPS 未采集到 Surface",
+            )
+        )
         recorder.append(PerfSample(timestamp=3.8, elapsed=3.8, fps=58.0, cpu_percent=20.0, memory_mb=522.0))
 
         with tempfile.TemporaryDirectory() as tmp:

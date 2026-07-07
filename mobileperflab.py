@@ -236,6 +236,8 @@ class PerfSample:
     fps: float = 0.0
     jank_percent: float = 0.0
     cpu_percent: float = 0.0
+    cpu_normalized_percent: float = 0.0
+    cpu_core_count: int = 1
     memory_mb: float = 0.0
     battery_percent: float = 0.0
     temperature_c: float = 0.0
@@ -243,6 +245,62 @@ class PerfSample:
     rx_kbps: float = 0.0
     tx_kbps: float = 0.0
     note: str = ""
+
+
+def normalize_cpu_percent(
+    raw_cpu_percent: object,
+    core_count: object = 1,
+    current_freq_total: object = 0.0,
+    max_freq_total: object = 0.0,
+) -> float:
+    try:
+        raw = float(raw_cpu_percent or 0.0)
+    except (TypeError, ValueError):
+        raw = 0.0
+    try:
+        cores = int(float(core_count or 1))
+    except (TypeError, ValueError):
+        cores = 1
+    try:
+        current_total = float(current_freq_total or 0.0)
+        max_total = float(max_freq_total or 0.0)
+    except (TypeError, ValueError):
+        current_total = 0.0
+        max_total = 0.0
+    if not math.isfinite(raw):
+        raw = 0.0
+    cores = max(cores, 1)
+    normalized = max(raw, 0.0) / cores
+    if math.isfinite(current_total) and math.isfinite(max_total) and current_total > 0 and max_total > 0:
+        normalized *= min(max(current_total / max_total, 0.0), 1.0)
+    return round(max(0.0, min(normalized, 100.0)), 3)
+
+
+def fps_deficit_jank_percent(fps: object, target_fps: object = 60.0) -> float:
+    try:
+        current = float(fps or 0.0)
+        target = float(target_fps or 60.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(current) or not math.isfinite(target) or current <= 0.0 or target <= 0.0:
+        return 0.0
+    return round(max(0.0, min((target - current) / target * 100.0, 100.0)), 3)
+
+
+def sample_cpu_display_percent(sample: "PerfSample") -> float:
+    normalized = float(getattr(sample, "cpu_normalized_percent", 0.0) or 0.0)
+    if normalized > 0 and math.isfinite(normalized):
+        return normalized
+    return normalize_cpu_percent(
+        getattr(sample, "cpu_percent", 0.0),
+        getattr(sample, "cpu_core_count", 1),
+    )
+
+
+def sample_with_display_cpu(sample: "PerfSample") -> "PerfSample":
+    payload = asdict(sample)
+    payload["cpu_percent"] = sample_cpu_display_percent(sample)
+    return PerfSample(**payload)
 
 
 @dataclass(frozen=True)
@@ -1366,7 +1424,7 @@ def workbench_top_status_items() -> list[dict[str, str]]:
 
 
 def workbench_primary_metric_order() -> list[str]:
-    return ["fps", "cpu_percent", "memory_mb", "rx_kbps", "tx_kbps", "jank_percent", "temperature_c", "power_w"]
+    return ["fps", "jank_percent", "memory_mb", "cpu_percent", "tx_kbps", "rx_kbps", "temperature_c", "power_w"]
 
 
 def format_workbench_status_chip(label: str, value: str, max_length: int = 28) -> str:
@@ -1557,7 +1615,7 @@ def traffic_legend_layout(width: int) -> dict[str, object]:
 def metric_graph_layout() -> list[dict[str, object]]:
     definitions = {
         "fps": {"title": "帧率", "unit": "FPS", "color": "#1F8FFF"},
-        "cpu_percent": {"title": "CPU 占用", "unit": "%", "color": "#FF8A34"},
+        "cpu_percent": {"title": "CPU 归一化", "unit": "%", "color": "#FF8A34"},
         "memory_mb": {"title": "内存", "unit": "MB", "color": "#4F46E5"},
         "rx_kbps": {"title": "网络下行", "unit": "KB/s", "color": "#16A34A"},
         "tx_kbps": {"title": "网络上行", "unit": "KB/s", "color": "#0D9488"},
@@ -1619,8 +1677,28 @@ def graph_quality_marker_points_for_visual(
     points: list[tuple[float, float, str]],
     max_markers: int = 16,
 ) -> list[tuple[float, float, str]]:
-    actionable_points = [point for point in points if point[2] in {"issue", "fallback", "recovery"}]
-    return graph_quality_marker_points(actionable_points, max_markers=max_markers)
+    marker_points: list[tuple[float, float, str]] = []
+    active_quality = "ok"
+    active_start: tuple[float, float, str] | None = None
+    active_end: tuple[float, float, str] | None = None
+    for point in points:
+        quality = point[2] if point[2] in {"issue", "fallback", "recovery"} else "ok"
+        if quality == active_quality:
+            if quality != "ok":
+                active_end = point
+            continue
+        if active_quality != "ok" and active_start is not None:
+            marker_points.append(active_start)
+            if active_end is not None and active_end != active_start:
+                marker_points.append(active_end)
+        active_quality = quality
+        active_start = point if quality != "ok" else None
+        active_end = point if quality != "ok" else None
+    if active_quality != "ok" and active_start is not None:
+        marker_points.append(active_start)
+        if active_end is not None and active_end != active_start:
+            marker_points.append(active_end)
+    return graph_quality_marker_points(marker_points, max_markers=max_markers)
 
 
 def graph_quality_interval_points_for_visual(points: list[tuple[float, str]]) -> list[tuple[float, str]]:
@@ -1687,10 +1765,15 @@ def graph_metric_diagnostic_detail(metric: str, health_detail: str, weak_summary
 
 def metric_card_recent_summary(samples: list["PerfSample"], metric: str, unit: str, window_size: int = 5) -> str:
     recent = samples[-max(1, int(window_size)) :]
+    def sample_metric_value(sample: "PerfSample") -> float:
+        if metric == "cpu_percent":
+            return sample_cpu_display_percent(sample)
+        return float(getattr(sample, metric, 0.0) or 0.0)
+
     values = [
-        realtime_metric_display_value(metric, float(getattr(sample, metric, 0.0) or 0.0))
+        realtime_metric_display_value(metric, sample_metric_value(sample))
         for sample in recent
-        if math.isfinite(float(getattr(sample, metric, 0.0) or 0.0))
+        if math.isfinite(sample_metric_value(sample))
     ]
     if not values:
         return ""
@@ -1734,7 +1817,9 @@ def graph_display_series_for_context(
         return normalized
     quality_values = list(qualities or [])
     has_visible_issue = any(quality in {"issue", "fallback", "recovery", "limited"} for quality in quality_values)
-    if not low_end_display_mode and not has_visible_issue:
+    latest_quality = quality_values[-1] if quality_values else "ok"
+    has_active_issue = latest_quality in {"issue", "fallback", "recovery", "limited"}
+    if not low_end_display_mode and not has_active_issue:
         return normalized
     alpha = 0.2 if low_end_display_mode else 0.28
     return smooth_graph_series(normalized, alpha=alpha)
@@ -1774,6 +1859,40 @@ def graph_display_max_value(
     return max_value
 
 
+def report_metric_display_value(metric: str, value: object) -> float:
+    try:
+        numeric = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    if metric == "cpu_percent":
+        return max(0.0, min(numeric, 100.0))
+    if metric == "fps":
+        return max(0.0, min(numeric, 120.0))
+    return max(0.0, numeric)
+
+
+def report_chart_axis_max(metric: str, values: object) -> float:
+    finite_values: list[float] = []
+    try:
+        iterator = iter(values)  # type: ignore[arg-type]
+    except TypeError:
+        iterator = iter(())
+    for value in iterator:
+        finite_values.append(report_metric_display_value(metric, value))
+    display_max = max(finite_values, default=0.0)
+    if metric == "fps":
+        if display_max <= 30.0:
+            return 30.0
+        if display_max <= 60.0:
+            return 60.0
+        return 120.0
+    if metric == "cpu_percent":
+        return 100.0
+    return max(display_max, 1.0)
+
+
 QUALITY_ISSUE_TOKENS = (
     "未采集",
     "未匹配",
@@ -1782,7 +1901,6 @@ QUALITY_ISSUE_TOKENS = (
     "采集不可用",
     "未找到运行中的",
     "不在前台",
-    "采样耗时",
 )
 
 NON_SAMPLE_QUALITY_ISSUE_TOKENS = (
@@ -1821,6 +1939,10 @@ def note_has_limited_quality(note: str) -> bool:
 def note_is_ad_or_foreground_recovery_no_frame(note: str) -> bool:
     if not note:
         return False
+    if "广告/商店覆盖层" in note:
+        return True
+    if "广告 Surface" in note or "广告 Activity" in note or "广告播放" in note:
+        return True
     if "恢复窗口内" in note or "目标应用刚回到前台" in note:
         return True
     if "FPS 当前无帧增量" not in note:
@@ -1870,18 +1992,7 @@ def sample_quality_tags_with_cadence(
     samples: list[PerfSample],
     expected_interval: float = DEFAULT_INTERVAL_SECONDS,
 ) -> list[str]:
-    expected = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
-    slow_threshold = max(expected * 1.25, expected + 0.25)
-    tags: list[str] = []
-    previous_elapsed: float | None = None
-    for sample in samples:
-        tag = sample_quality_tag(sample)
-        current_elapsed = float(sample.elapsed)
-        if previous_elapsed is not None and current_elapsed - previous_elapsed > slow_threshold:
-            tag = "issue"
-        tags.append(tag)
-        previous_elapsed = current_elapsed
-    return tags
+    return [sample_quality_tag(sample) for sample in samples]
 
 
 def append_sampling_latency_note(sample: PerfSample, spent_seconds: float, interval_seconds: float) -> PerfSample:
@@ -1968,9 +2079,11 @@ def build_recent_window_health(
     samples: list[PerfSample],
     expected_interval: float = DEFAULT_INTERVAL_SECONDS,
     window_size: int = 8,
+    quality_tags: list[str] | None = None,
 ) -> dict[str, object]:
     size = max(int(window_size or 0), 1)
     window = list(samples[-size:])
+    tag_window = list(quality_tags[-size:]) if quality_tags and len(quality_tags) >= len(samples) else []
     total = len(window)
     if total <= 0:
         return {
@@ -1993,9 +2106,13 @@ def build_recent_window_health(
             slow_samples += 1
     slow_samples += sum(1 for sample in window if "采样耗时" in sample.note)
     slow_samples = min(slow_samples, total)
-    issue_samples = sum(1 for sample in window if sample_quality_tag(sample) == "issue")
+    if tag_window and len(tag_window) == len(window):
+        quality_for_window = tag_window
+    else:
+        quality_for_window = [sample_quality_tag(sample) for sample in window]
+    issue_samples = sum(1 for quality in quality_for_window if quality == "issue")
     fallback_samples = sum(1 for sample in window if "设备级网络兜底" in sample.note)
-    limited_samples = sum(1 for sample in window if sample_quality_tag(sample) == "limited")
+    limited_samples = sum(1 for quality in quality_for_window if quality == "limited")
     fps_values = [float(sample.fps) for sample in window if float(sample.fps or 0.0) > 0.0]
     fps_range = max(fps_values) - min(fps_values) if len(fps_values) >= 2 else 0.0
     fps_average = sum(fps_values) / len(fps_values) if fps_values else 0.0
@@ -2839,7 +2956,11 @@ def build_display_samples(
     display_rows: list[dict[str, object]] = []
     quality_tags = sample_quality_tags_with_cadence(samples, expected_interval)
     for sample, quality_tag in zip(samples, quality_tags):
-        display = stabilizer.smooth_sample(sample, conservative=conservative, quality_tag=quality_tag)
+        display = stabilizer.smooth_sample(
+            sample_with_display_cpu(sample),
+            conservative=conservative,
+            quality_tag=quality_tag,
+        )
         row = asdict(display)
         row["qualityTag"] = quality_tag
         display_rows.append(row)
@@ -2907,9 +3028,11 @@ QUALITY_INTERVAL_FILLS = {
 }
 
 QUALITY_EVENT_TREE_TAGS = {
+    "ok": "quality_ok",
     "issue": "quality_issue",
     "fallback": "quality_fallback",
     "recovery": "quality_recovery",
+    "ad_recovery": "quality_recovery",
     "limited": "quality_limited",
 }
 
@@ -2926,6 +3049,40 @@ def quality_event_tree_tag(quality: str) -> str:
     return QUALITY_EVENT_TREE_TAGS.get(quality, "quality_issue")
 
 
+def format_timeline_seconds(value: float) -> str:
+    total = max(0, int(round(float(value or 0.0))))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def parse_timeline_seconds(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if len(parts) not in {2, 3}:
+        return None
+    try:
+        numbers = [int(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 for number in numbers):
+        return None
+    if len(numbers) == 2:
+        minutes, seconds = numbers
+        if seconds >= 60:
+            return None
+        return float(minutes * 60 + seconds)
+    hours, minutes, seconds = numbers
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
 def format_report_seconds(value: float) -> str:
     return f"{float(value):.1f}s"
 
@@ -2935,19 +3092,27 @@ def quality_event_from_sample(sample: PerfSample, quality_tag: str | None = None
     if tag == "ok":
         return None
     note = sample.note or ""
+    if tag == "recovery":
+        if "广告 Surface" in note or "广告 Activity" in note or "广告播放" in note:
+            detail = "广告播放中"
+        elif "广告/商店覆盖层" in note:
+            detail = "广告/商店覆盖层"
+        else:
+            detail = "广告或前后台切换后等待 Surface 恢复" if "FPS 当前无帧增量" in note else "目标应用刚回到前台"
+        return format_timeline_seconds(sample.elapsed), "前台恢复窗口", detail
     if "恢复窗口内" in note or note_is_ad_or_foreground_recovery_no_frame(note):
         is_ad_no_frame = note_is_ad_or_foreground_recovery_no_frame(note) and "恢复窗口内" not in note and "目标应用刚回到前台" not in note
         detail = "广告或前后台切换后等待 Surface 恢复" if is_ad_no_frame else "目标应用刚回到前台"
-        return format_report_seconds(sample.elapsed), "前台恢复窗口", detail
+        return format_timeline_seconds(sample.elapsed), "前台恢复窗口", detail
     if tag == "fallback":
         detail = "非目标 App 独占流量" if "非目标 App 独占流量" in note else "网络使用设备级兜底"
-        return format_report_seconds(sample.elapsed), "设备级兜底", detail
+        return format_timeline_seconds(sample.elapsed), "设备级兜底", detail
     if tag == "limited":
-        return format_report_seconds(sample.elapsed), "受限样本", primary_quality_limited_note(note)[:80]
+        return format_timeline_seconds(sample.elapsed), "受限样本", primary_quality_limited_note(note)[:80]
     if tag == "issue" and not note:
-        return format_report_seconds(sample.elapsed), "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"
+        return format_timeline_seconds(sample.elapsed), "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"
     detail = primary_quality_issue_note(note)
-    return format_report_seconds(sample.elapsed), "采集异常", detail[:80]
+    return format_timeline_seconds(sample.elapsed), "采集异常", detail[:80]
 
 
 @dataclass(frozen=True)
@@ -2981,10 +3146,26 @@ class MetricHealthAnalyzer:
         "missing": "异常",
     }
 
-    def analyze(self, sample: PerfSample) -> dict[str, MetricHealth]:
+    def analyze(self, sample: PerfSample, quality_tag: str | None = None) -> dict[str, MetricHealth]:
         note = sample.note or ""
         values = asdict(sample)
-        return {metric: self._metric_health(metric, float(values.get(metric, 0.0) or 0.0), sample.elapsed, note) for metric in self.METRICS}
+        health = {metric: self._metric_health(metric, float(values.get(metric, 0.0) or 0.0), sample.elapsed, note) for metric in self.METRICS}
+        if float(values.get("fps", 0.0) or 0.0) > 0.0:
+            jank = health.get("jank_percent")
+            if jank is not None and jank.state == "missing" and not self._note_marks_missing("jank_percent", note):
+                health["jank_percent"] = self._health("ok", "FPS 有效且未检测到卡顿帧")
+        if quality_tag in {"ok", "recovery"}:
+            for metric in ("fps", "jank_percent"):
+                if health.get(metric) and health[metric].state == "no_frame_delta":
+                    if quality_tag == "recovery":
+                        health[metric] = self._health("recovering", "Surface/FPS 刚恢复，等待重新建立基线")
+                    else:
+                        health[metric] = self._health("ok", "最近有效 FPS 稳定，短暂无帧增量已并入稳态展示")
+        if quality_tag == "recovery":
+            jank = health.get("jank_percent")
+            if jank is not None and jank.state == "missing" and self._note_marks_missing("jank_percent", note):
+                health["jank_percent"] = self._health("recovering", "Surface/FPS 刚恢复，等待重新建立基线")
+        return health
 
     def _metric_health(self, metric: str, value: float, elapsed: float, note: str) -> MetricHealth:
         if self._is_foreground_recovery_delta_metric(metric, note):
@@ -3190,6 +3371,10 @@ def live_session_usability_text(health: dict[str, MetricHealth]) -> str:
 
 
 class LiveQualityTracker:
+    _FPS_RECOVERY_SAMPLE_COUNT = 5
+    _RECOVERY_STABLE_FPS_RELEASE_COUNT = 2
+    _RECOVERY_STABLE_FPS_THRESHOLD = 55.0
+
     def __init__(self, expected_interval: float = DEFAULT_INTERVAL_SECONDS) -> None:
         self.sample_count = 0
         self.issue_count = 0
@@ -3202,8 +3387,12 @@ class LiveQualityTracker:
         self.network_source = "等待数据"
         self._last_elapsed: float | None = None
         self._recent_samples: list[PerfSample] = []
+        self._recent_quality_tags: list[str] = []
         self._health_analyzer = MetricHealthAnalyzer()
         self.last_metric_health: dict[str, MetricHealth] = {}
+        self._last_valid_fps_elapsed: float | None = None
+        self._last_recovery_elapsed: float | None = None
+        self._stable_recovery_fps_count = 0
 
     def reset(self) -> None:
         self.sample_count = 0
@@ -3216,7 +3405,11 @@ class LiveQualityTracker:
         self.network_source = "等待数据"
         self._last_elapsed = None
         self._recent_samples.clear()
+        self._recent_quality_tags.clear()
         self.last_metric_health = {}
+        self._last_valid_fps_elapsed = None
+        self._last_recovery_elapsed = None
+        self._stable_recovery_fps_count = 0
 
     def set_expected_interval(self, expected_interval: float) -> None:
         self.expected_interval = max(float(expected_interval or DEFAULT_INTERVAL_SECONDS), 0.1)
@@ -3224,15 +3417,24 @@ class LiveQualityTracker:
     def update(self, sample: PerfSample) -> str:
         self.sample_count += 1
         note = sample.note or ""
+        quality_tag = sample_quality_tag(sample)
+        quality_tag = self._contextual_quality_tag(sample, quality_tag)
         self._recent_samples.append(sample)
         self._recent_samples = self._recent_samples[-8:]
-        self.last_metric_health = self._health_analyzer.analyze(sample)
-        quality_tag = sample_quality_tag(sample)
+        self._recent_quality_tags.append(quality_tag)
+        self._recent_quality_tags = self._recent_quality_tags[-8:]
+        self.last_metric_health = self._health_analyzer.analyze(sample, quality_tag=quality_tag)
         has_issue = self._has_quality_issue(note)
+        if quality_tag == "recovery":
+            has_issue = False
         if has_issue:
             self.issue_count += 1
         if quality_tag == "limited":
             self.limited_sample_count += 1
+        if float(sample.fps or 0.0) > 0.0:
+            self._last_valid_fps_elapsed = float(sample.elapsed)
+        if quality_tag == "recovery":
+            self._last_recovery_elapsed = float(sample.elapsed)
         if "设备级网络兜底" in note:
             self.network_fallback_count += 1
         if "网络未匹配" in note or "无法按应用统计" in note or "网络采集失败" in note or "网络采集不可用" in note:
@@ -3241,6 +3443,7 @@ class LiveQualityTracker:
             self.foreground_issue_count += 1
         if "采样耗时" in note or self._is_slow_elapsed_interval(sample.elapsed):
             self.slow_sample_count += 1
+        self._update_recovery_stability(sample)
         self._last_elapsed = float(sample.elapsed)
         self.network_source = self._network_source(sample, note)
         return self.status_text()
@@ -3278,7 +3481,11 @@ class LiveQualityTracker:
         return slow_samples >= 2 or issue_samples >= 2
 
     def recent_window_health(self) -> dict[str, object]:
-        return build_recent_window_health(self._recent_samples, expected_interval=self.expected_interval)
+        return build_recent_window_health(
+            self._recent_samples,
+            expected_interval=self.expected_interval,
+            quality_tags=self._recent_quality_tags,
+        )
 
     def quality_gate(self) -> SessionQualityGate:
         return session_quality_gate(
@@ -3303,11 +3510,83 @@ class LiveQualityTracker:
 
     def quality_tag_for_sample(self, sample: PerfSample) -> str:
         sample_tag = sample_quality_tag(sample)
-        if sample_tag == "recovery":
+        return self._contextual_quality_tag(sample, sample_tag)
+
+    def _contextual_quality_tag(self, sample: PerfSample, sample_tag: str) -> str:
+        if sample_tag == "recovery" and self._should_release_recovery_sample(sample):
+            return "ok"
+        if sample_tag == "issue" and self._is_recovery_surface_gap(sample):
+            return "recovery"
+        if sample_tag != "limited":
             return sample_tag
-        if self._is_slow_elapsed_interval(sample.elapsed):
-            return "issue"
+        note = sample.note or ""
+        if "FPS 当前无帧增量" not in note:
+            return sample_tag
+        last_valid = self._last_valid_fps_elapsed
+        if last_valid is None:
+            return sample_tag
+        elapsed_since_valid = float(sample.elapsed) - last_valid
+        recovery_window_seconds = max(self.expected_interval * self._FPS_RECOVERY_SAMPLE_COUNT, self.expected_interval)
+        if 0.0 <= elapsed_since_valid <= recovery_window_seconds:
+            return "ok"
         return sample_tag
+
+    def _is_recovery_surface_gap(self, sample: PerfSample) -> bool:
+        note = sample.note or ""
+        if "FPS 未采集" not in note and "FPS 当前无帧增量" not in note:
+            return False
+        last_recovery = self._last_recovery_elapsed
+        if last_recovery is None:
+            return False
+        elapsed_since_recovery = float(sample.elapsed) - last_recovery
+        recovery_window_seconds = max(self.expected_interval * self._FPS_RECOVERY_SAMPLE_COUNT, self.expected_interval)
+        if elapsed_since_recovery < 0.0 or elapsed_since_recovery > recovery_window_seconds:
+            return False
+        hard_issue_tokens = (
+            "网络未匹配",
+            "无法按应用统计",
+            "网络采集失败",
+            "网络采集不可用",
+            "未匹配到目标 PID",
+            "未找到运行中的",
+            "目标应用不在前台",
+        )
+        return not any(token in note for token in hard_issue_tokens)
+
+    def _should_release_recovery_sample(self, sample: PerfSample) -> bool:
+        return (
+            self._stable_recovery_fps_count >= self._RECOVERY_STABLE_FPS_RELEASE_COUNT - 1
+            and self._is_stable_foreground_recovery_sample(sample)
+        )
+
+    def _update_recovery_stability(self, sample: PerfSample) -> None:
+        if self._is_stable_foreground_recovery_sample(sample):
+            self._stable_recovery_fps_count += 1
+            return
+        note = sample.note or ""
+        if "恢复窗口内" not in note and "目标应用刚回到前台" not in note:
+            self._stable_recovery_fps_count = 0
+
+    def _is_stable_foreground_recovery_sample(self, sample: PerfSample) -> bool:
+        note = sample.note or ""
+        if float(sample.fps or 0.0) < self._RECOVERY_STABLE_FPS_THRESHOLD:
+            return False
+        if "恢复窗口内" not in note and "目标应用刚回到前台" not in note:
+            return False
+        if "广告" in note or "商店覆盖层" in note:
+            return False
+        hard_issue_tokens = (
+            "FPS 未采集",
+            "FPS 采集失败",
+            "网络未匹配",
+            "无法按应用统计",
+            "网络采集失败",
+            "网络采集不可用",
+            "未匹配到目标 PID",
+            "未找到运行中的",
+            "目标应用不在前台",
+        )
+        return not any(token in note for token in hard_issue_tokens)
 
     @staticmethod
     def _network_source(sample: PerfSample, note: str) -> str:
@@ -3405,13 +3684,19 @@ class MetricStabilizer:
         raw_elapsed_delta = self._elapsed_delta(timestamp, previous_timestamp)
         elapsed_delta = self._display_elapsed_delta(raw_elapsed_delta, quality_tag)
         historical_volatility = self._volatility.get(metric, 0.0)
+        if self._should_hold_implausible_temperature_cliff(metric, previous, value, raw_elapsed_delta):
+            self._remember_raw_volatility(metric, value)
+            return float(previous or 0.0)
         if value <= 0 and previous and previous > 0:
+            if self._should_hold_last_value_for_zero_metric(metric, note):
+                self._remember_raw_volatility(metric, value)
+                return previous
             hold_seconds = self.ZERO_HOLD_SECONDS.get(metric, 0.0) + self._quality_hold_extension(
                 metric, note, conservative, quality_tag
             )
             if hold_seconds and elapsed_delta <= hold_seconds:
                 held = previous * self._quality_hold_decay(metric, note, conservative, quality_tag)
-                if not self._should_isolate_quality_sample(quality_tag):
+                if not self._should_isolate_metric_sample(metric, note, quality_tag):
                     self._values[metric] = held
                     self._timestamps[metric] = timestamp
                 self._remember_raw_volatility(metric, value)
@@ -3431,7 +3716,7 @@ class MetricStabilizer:
             blended = blended * (1.0 - keep) + value * keep
         blended = self._limit_display_step(metric, previous, blended, note, elapsed_delta, conservative, quality_tag)
         blended = self._dampen_when_volatile(metric, previous, blended, historical_volatility, conservative)
-        if not self._should_isolate_quality_sample(quality_tag):
+        if not self._should_isolate_metric_sample(metric, note, quality_tag):
             self._values[metric] = blended
             self._timestamps[metric] = timestamp
         self._remember_raw_volatility(metric, value)
@@ -3539,6 +3824,37 @@ class MetricStabilizer:
     @staticmethod
     def _should_isolate_quality_sample(quality_tag: str) -> bool:
         return quality_tag in {"issue", "fallback", "recovery", "limited"}
+
+    @classmethod
+    def _should_isolate_metric_sample(cls, metric: str, note: str, quality_tag: str) -> bool:
+        if cls._should_isolate_quality_sample(quality_tag):
+            return True
+        if metric in {"fps", "jank_percent"} and cls._is_fps_no_frame_note(note):
+            return True
+        return False
+
+    @classmethod
+    def _should_hold_last_value_for_zero_metric(cls, metric: str, note: str) -> bool:
+        return metric in {"fps", "jank_percent"} and cls._is_fps_no_frame_note(note)
+
+    @staticmethod
+    def _should_hold_implausible_temperature_cliff(
+        metric: str,
+        previous: float | None,
+        value: float,
+        elapsed_delta: float,
+    ) -> bool:
+        if metric != "temperature_c" or previous is None:
+            return False
+        if previous < 30.0 or value <= 0.0:
+            return False
+        return previous - value >= 5.0 and elapsed_delta <= 10.0
+
+    @staticmethod
+    def _is_fps_no_frame_note(note: str) -> bool:
+        if not note:
+            return False
+        return "FPS 当前无帧增量" in note and "FPS 未采集" not in note and "FPS 采集失败" not in note
 
     def _quality_hold_extension(
         self, metric: str, note: str, conservative: bool = False, quality_tag: str = "ok"
@@ -4142,6 +4458,7 @@ class AndroidAdapter(BaseAdapter):
     platform_name = "Android"
     _FPS_COUNTER_NO_DELTA_REPROBE_THRESHOLD = 2
     _FOREGROUND_RECOVERY_SAMPLE_COUNT = 5
+    _FOREGROUND_MISMATCH_CONFIRMATION_COUNT = 2
 
     def __init__(self) -> None:
         self.adb_path = resolve_adb_path()
@@ -4160,10 +4477,13 @@ class AndroidAdapter(BaseAdapter):
         self._pid_list_cache: dict[tuple[str, str], list[int]] = {}
         self._cpu_proc_cache: dict[tuple[str, str], tuple[float, dict[int, int]]] = {}
         self._clk_tck_cache: dict[str, int] = {}
+        self._cpu_capacity_cache: dict[str, tuple[float, tuple[int, float, float]]] = {}
         self._sample_count: dict[tuple[str, str], int] = {}
         self._foreground_missing: set[tuple[str, str]] = set()
         self._foreground_recovery_remaining: dict[tuple[str, str], int] = {}
         self._foreground_cache: dict[tuple[str, str], tuple[float, str]] = {}
+        self._foreground_seen_target: set[tuple[str, str]] = set()
+        self._foreground_mismatch_pending: dict[tuple[str, str], int] = {}
 
     def is_available(self) -> bool:
         return self.adb_path is not None
@@ -4413,11 +4733,22 @@ class AndroidAdapter(BaseAdapter):
             r"\bpackageName=([a-zA-Z][\w.]+)",
             r"\bcmp=([a-zA-Z][\w.]+)/[A-Za-z0-9_.$]+",
         )
-        ignored_prefixes = ("android.", "com.android.", "com.google.android.")
+        ignored_packages = {
+            "android",
+            "com.android.systemui",
+            "com.android.launcher",
+            "com.sec.android.app.launcher",
+        }
+        ignored_prefixes = (
+            "android.",
+            "com.android.systemui",
+            "com.android.launcher",
+            "com.sec.android.app.launcher",
+        )
         for pattern in patterns:
             for match in re.finditer(pattern, text):
                 package = match.group(1)
-                if "." not in package or package.startswith(ignored_prefixes):
+                if "." not in package or package in ignored_packages or package.startswith(ignored_prefixes):
                     continue
                 return package
         return ""
@@ -4618,6 +4949,8 @@ class AndroidAdapter(BaseAdapter):
         self._foreground_missing.discard(key)
         self._foreground_recovery_remaining.pop(key, None)
         self._foreground_cache.pop(key, None)
+        self._foreground_seen_target.discard(key)
+        self._foreground_mismatch_pending.pop(key, None)
         surface = self._surface_name(device, app_id) if app_id else ""
         if surface:
             self._shell(device.serial, f"dumpsys SurfaceFlinger --latency-clear {shlex.quote(surface)}", timeout=3.0)
@@ -4747,6 +5080,8 @@ class AndroidAdapter(BaseAdapter):
         self._foreground_missing.discard(key)
         self._foreground_recovery_remaining.pop(key, None)
         self._foreground_cache.pop(key, None)
+        self._foreground_seen_target.discard(key)
+        self._foreground_mismatch_pending.pop(key, None)
 
     def _shutdown_metric_executor(self) -> None:
         executor = self._metric_executor
@@ -5094,6 +5429,66 @@ class AndroidAdapter(BaseAdapter):
         self._clk_tck_cache[device.serial] = value
         return value
 
+    def _cpu_normalization_capacity(self, device: DeviceInfo) -> tuple[int, float, float]:
+        cached = self._cpu_capacity_cache.get(device.serial)
+        now = time.time()
+        if cached and now - cached[0] < 10.0:
+            return cached[1]
+        core_count = self._cpu_core_count(device)
+        current_total = 0.0
+        max_total = 0.0
+        readable_cores = 0
+        for index in range(core_count):
+            current_freq = self._cpu_frequency_value(
+                device,
+                (
+                    f"cat /sys/devices/system/cpu/cpu{index}/cpufreq/scaling_cur_freq",
+                    f"cat /sys/devices/system/cpu/cpu{index}/cpufreq/cpuinfo_cur_freq",
+                ),
+            )
+            max_freq = self._cpu_frequency_value(
+                device,
+                (
+                    f"cat /sys/devices/system/cpu/cpu{index}/cpufreq/cpuinfo_max_freq",
+                    f"cat /sys/devices/system/cpu/cpu{index}/cpufreq/scaling_max_freq",
+                ),
+            )
+            if current_freq > 0 and max_freq > 0:
+                readable_cores += 1
+                current_total += min(current_freq, max_freq)
+                max_total += max_freq
+        if readable_cores < core_count or current_total <= 0 or max_total <= 0:
+            capacity = (core_count, 0.0, 0.0)
+            self._cpu_capacity_cache[device.serial] = (now, capacity)
+            return capacity
+        capacity = (core_count, current_total, max_total)
+        self._cpu_capacity_cache[device.serial] = (now, capacity)
+        return capacity
+
+    def _cpu_core_count(self, device: DeviceInfo) -> int:
+        for command in ("getconf _NPROCESSORS_ONLN", "nproc"):
+            output = self._shell(device.serial, command, timeout=2.0)
+            try:
+                value = int(re.findall(r"\d+", output)[0])
+            except Exception:
+                value = 0
+            if value > 0:
+                return min(value, 128)
+        output = self._shell(device.serial, "ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null", timeout=2.0)
+        indexes = {int(match) for match in re.findall(r"/cpu(\d+)\b", output)}
+        return min(max(len(indexes), 1), 128)
+
+    def _cpu_frequency_value(self, device: DeviceInfo, commands: tuple[str, ...]) -> float:
+        for command in commands:
+            output = self._shell(device.serial, command, timeout=1.5)
+            try:
+                value = float(re.findall(r"\d+(?:\.\d+)?", output)[0])
+            except Exception:
+                value = 0.0
+            if value > 0:
+                return value
+        return 0.0
+
     def _memory_mb(self, device: DeviceInfo, app_id: str) -> float:
         if not app_id:
             return 0.0
@@ -5435,12 +5830,10 @@ class AndroidAdapter(BaseAdapter):
         prev_time, prev_frames, prev_janky = previous
         seconds = max(read_time - prev_time, 0.1)
         frame_delta = max(total_frames - prev_frames, 0)
-        jank_delta = max(janky_frames - prev_janky, 0)
         if frame_delta <= 0:
             return None
         fps = min(frame_delta / seconds, 240.0)
-        jank_percent = (jank_delta / frame_delta * 100.0) if frame_delta else 0.0
-        return fps, jank_percent
+        return fps, fps_deficit_jank_percent(fps)
 
     def _gfxinfo_framestats_fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float] | None:
         output = self._shell(device.serial, f"dumpsys gfxinfo {shlex.quote(app_id)} framestats", timeout=5.0)
@@ -5519,8 +5912,7 @@ class AndroidAdapter(BaseAdapter):
         if span_seconds <= 0:
             return None
         fps = min(max(len(interval_frames) - 1, 0) / span_seconds, 240.0)
-        jank_percent = self._surface_jank_percent(interval_frames, refresh_period_ns)
-        return fps, jank_percent
+        return fps, fps_deficit_jank_percent(fps)
 
     def _surface_latency_frames(self, device: DeviceInfo, app_id: str) -> tuple[int, list[int]]:
         surfaces = self._surface_latency_candidates(device, app_id)
@@ -5782,6 +6174,8 @@ class AndroidAdapter(BaseAdapter):
         battery, temperature, power = metrics.get("battery", (0.0, 0.0, 0.0))
         rx, tx = metrics.get("network", (0.0, 0.0))
         cpu = float(metrics.get("cpu", 0.0) or 0.0)
+        cpu_core_count, current_freq_total, max_freq_total = metrics.get("cpu_capacity", (1, 0.0, 0.0))
+        cpu_normalized = normalize_cpu_percent(cpu, cpu_core_count, current_freq_total, max_freq_total)
         memory = float(metrics.get("memory", 0.0) or 0.0)
         note = self._android_sample_note(device, app_id, sample_count, fps, cpu, memory, rx, tx)
         if foreground_metric_note:
@@ -5790,6 +6184,12 @@ class AndroidAdapter(BaseAdapter):
             note = f"{note}；{'；'.join(metric_notes)}" if note else "；".join(metric_notes)
         if foreground_note:
             note = f"{foreground_note}；{note}" if note else foreground_note
+        ad_activity_note = self._ad_activity_note(device, app_id, foreground_app)
+        if ad_activity_note:
+            note = f"{ad_activity_note}；{note}" if note else ad_activity_note
+        ad_surface_note = self._ad_surface_note(device, app_id)
+        if ad_surface_note:
+            note = f"{ad_surface_note}；{note}" if note else ad_surface_note
         network_note = self._network_note_cache.get(key, "")
         if network_note:
             note = f"{note}；{network_note}" if note else network_note
@@ -5799,6 +6199,8 @@ class AndroidAdapter(BaseAdapter):
             fps=fps,
             jank_percent=jank_percent,
             cpu_percent=cpu,
+            cpu_normalized_percent=cpu_normalized,
+            cpu_core_count=int(cpu_core_count or 1),
             memory_mb=memory,
             battery_percent=battery,
             temperature_c=temperature,
@@ -5819,6 +6221,7 @@ class AndroidAdapter(BaseAdapter):
             "battery": lambda: self._battery(device),
             "network": lambda: self._network_kbps(device, app_id, current),
             "cpu": lambda: self._cpu_percent(device, app_id),
+            "cpu_capacity": lambda: self._cpu_normalization_capacity(device),
             "memory": lambda: self._memory_mb(device, app_id),
         }
         labels = {
@@ -5826,6 +6229,7 @@ class AndroidAdapter(BaseAdapter):
             "battery": "电量/温度/功耗",
             "network": "网络",
             "cpu": "CPU",
+            "cpu_capacity": "CPU 容量",
             "memory": "内存",
         }
         values: dict[str, object] = {}
@@ -5842,6 +6246,54 @@ class AndroidAdapter(BaseAdapter):
             except Exception as exc:
                 notes.append(f"Android {labels[key]} 采集失败：{WeakNetworkProxy._short_error(str(exc))}")
         return values, notes
+
+    def _ad_surface_note(self, device: DeviceInfo, app_id: str) -> str:
+        surface = self._surface_cache.get((device.serial, app_id), "")
+        if not surface or not self._surface_name_is_ad_context(surface):
+            return ""
+        return f"目标 App 正在播放广告 Surface：{surface}。"
+
+    def _ad_activity_note(self, device: DeviceInfo, app_id: str, foreground_app: str) -> str:
+        if not app_id or foreground_app != app_id:
+            return ""
+        activity = self._focused_activity_component(device, app_id)
+        if not activity or not self._surface_name_is_ad_context(activity):
+            return ""
+        return f"目标 App 正在播放广告 Activity：{activity}。"
+
+    def _focused_activity_component(self, device: DeviceInfo, app_id: str) -> str:
+        output = self._shell(device.serial, "dumpsys window", timeout=4.0)
+        if not output:
+            return ""
+        escaped_app = re.escape(app_id)
+        pattern = re.compile(rf"\b({escaped_app}/[A-Za-z0-9_.$]+)")
+        for line in output.splitlines():
+            if not any(token in line for token in ("mCurrentFocus", "mFocusedApp", "topResumedActivity", "mResumedActivity", "ResumedActivity")):
+                continue
+            match = pattern.search(line)
+            if match:
+                return match.group(1)
+        match = pattern.search(output)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _surface_name_is_ad_context(surface: str) -> bool:
+        lowered = surface.lower()
+        tokens = (
+            "adview",
+            "admob",
+            "applovin",
+            "pangle",
+            "bytedance",
+            "ironsource",
+            "mintegral",
+            "unityads",
+            "fullscreenactivity",
+            "reward",
+            "激励",
+            "广告",
+        )
+        return any(token in lowered for token in tokens)
 
     def _cached_foreground_app(self, device: DeviceInfo, app_id: str, now: float) -> str:
         key = (device.serial, app_id)
@@ -5863,9 +6315,22 @@ class AndroidAdapter(BaseAdapter):
             return ""
         key = (device.serial, app_id)
         if foreground_app != app_id:
+            if key in self._foreground_seen_target and self._is_target_launched_foreground_overlay(device, app_id, foreground_app):
+                self._foreground_mismatch_pending.pop(key, None)
+                return "目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。"
+            if key in self._foreground_missing:
+                return f"目标应用不在前台，当前前台为 {foreground_app}。"
+            if key in self._foreground_seen_target:
+                pending = self._foreground_mismatch_pending.get(key, 0) + 1
+                self._foreground_mismatch_pending[key] = pending
+                if pending < self._FOREGROUND_MISMATCH_CONFIRMATION_COUNT:
+                    return ""
             self._foreground_missing.add(key)
             self._foreground_recovery_remaining.pop(key, None)
+            self._foreground_mismatch_pending.pop(key, None)
             return f"目标应用不在前台，当前前台为 {foreground_app}。"
+        self._foreground_seen_target.add(key)
+        self._foreground_mismatch_pending.pop(key, None)
         if key in self._foreground_missing:
             self._foreground_missing.discard(key)
             self._foreground_recovery_remaining[key] = self._FOREGROUND_RECOVERY_SAMPLE_COUNT
@@ -5876,6 +6341,65 @@ class AndroidAdapter(BaseAdapter):
             return "目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。"
         self._foreground_recovery_remaining.pop(key, None)
         return ""
+
+    def _is_target_launched_foreground_overlay(self, device: DeviceInfo, app_id: str, foreground_app: str) -> bool:
+        if not app_id or not foreground_app or foreground_app == app_id:
+            return False
+        if self._package_name_is_ad_context(foreground_app):
+            return True
+        output = self._shell(device.serial, "dumpsys activity activities", timeout=4.0)
+        if not output:
+            return False
+        for block in self._activity_record_blocks(output):
+            if not self._activity_record_block_is_visible(block):
+                continue
+            if f"packageName={foreground_app}" not in block:
+                continue
+            if f"launchedFromPackage={app_id}" in block:
+                return True
+            if app_id in block and any(token in block.lower() for token in ("referrer=", "applovin", "admob", "ads", "pangle")):
+                return True
+        return False
+
+    @staticmethod
+    def _package_name_is_ad_context(package_name: str) -> bool:
+        lowered = str(package_name or "").lower()
+        tokens = (
+            "admob",
+            "applovin",
+            "pangle",
+            "bytedance",
+            "ironsource",
+            "mintegral",
+            "unityads",
+            ".ads",
+            "reward",
+        )
+        return any(token in lowered for token in tokens)
+
+    @staticmethod
+    def _activity_record_blocks(output: str) -> list[str]:
+        matches = list(re.finditer(r"(?m)^\s*\* Task\{", output))
+        if matches:
+            blocks: list[str] = []
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+                blocks.append(output[match.start():end])
+            return blocks
+        matches = list(re.finditer(r"(?m)^\s*\* Hist\s+#\d+:", output))
+        if not matches:
+            return [output]
+        blocks: list[str] = []
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+            blocks.append(output[match.start():end])
+        return blocks
+
+    @staticmethod
+    def _activity_record_block_is_visible(block: str) -> bool:
+        if re.search(r"\bvisible=true\b", block) or re.search(r"\bvisibleRequested=true\b", block):
+            return True
+        return not ("visible=false" in block or "visibleRequested=false" in block)
 
     def _reset_foreground_delta_caches(self, key: tuple[str, str]) -> None:
         self._frame_cache.pop(key, None)
@@ -6407,6 +6931,8 @@ class IOSAdapter(BaseAdapter):
             fps=fps,
             jank_percent=jank_percent,
             cpu_percent=cpu_percent,
+            cpu_normalized_percent=realtime_metric_display_value("cpu_percent", cpu_percent),
+            cpu_core_count=1,
             memory_mb=memory_mb,
             battery_percent=battery,
             temperature_c=temperature,
@@ -7014,10 +7540,7 @@ class IOSAdapter(BaseAdapter):
 
     @staticmethod
     def _estimate_ios_jank_percent(fps: float) -> float:
-        if fps <= 0:
-            return 0.0
-        target_fps = 60.0
-        return max(0.0, min((target_fps - fps) / target_fps * 100.0, 100.0))
+        return fps_deficit_jank_percent(fps)
 
     def _battery(self, device: DeviceInfo) -> tuple[float, float, float]:
         if self.pymobiledevice3:
@@ -7310,6 +7833,8 @@ class DemoAdapter(BaseAdapter):
             fps=fps,
             jank_percent=jank,
             cpu_percent=cpu,
+            cpu_normalized_percent=realtime_metric_display_value("cpu_percent", cpu),
+            cpu_core_count=1,
             memory_mb=memory,
             battery_percent=max(1.0, 92.0 - elapsed / 110.0),
             temperature_c=temp,
@@ -7371,6 +7896,9 @@ class SessionRecorder:
             values = [getattr(sample, name) for sample in self.samples if getattr(sample, name) > 0]
             return round(sum(values) / len(values), 3) if values else 0.0
 
+        cpu_display_values = [sample_cpu_display_percent(sample) for sample in self.samples if sample_cpu_display_percent(sample) > 0]
+        avg_cpu_display = round(sum(cpu_display_values) / len(cpu_display_values), 3) if cpu_display_values else 0.0
+
         def peak(name: str) -> float:
             values = [getattr(sample, name) for sample in self.samples]
             return round(max(values), 3) if values else 0.0
@@ -7380,7 +7908,8 @@ class SessionRecorder:
             "app_id": self.app_id,
             "duration_seconds": round(self.samples[-1].elapsed, 3),
             "avg_fps": avg("fps"),
-            "avg_cpu_percent": avg("cpu_percent"),
+            "avg_cpu_percent": avg_cpu_display,
+            "avg_cpu_raw_percent": avg("cpu_percent"),
             "peak_memory_mb": peak("memory_mb"),
             "peak_temperature_c": peak("temperature_c"),
             "avg_power_w": avg("power_w"),
@@ -7635,6 +8164,8 @@ class SessionRecorder:
             "fps",
             "jank_percent",
             "cpu_percent",
+            "cpu_normalized_percent",
+            "cpu_core_count",
             "memory_mb",
             "battery_percent",
             "temperature_c",
@@ -7720,7 +8251,8 @@ class SessionRecorder:
             "app_id": "目标应用",
             "duration_seconds": "时长",
             "avg_fps": "平均 FPS",
-            "avg_cpu_percent": "平均 CPU",
+            "avg_cpu_percent": "平均 CPU 归一化",
+            "avg_cpu_raw_percent": "平均 CPU 原始值",
             "peak_memory_mb": "峰值内存",
             "peak_temperature_c": "峰值温度",
             "avg_power_w": "平均功耗",
@@ -7731,6 +8263,7 @@ class SessionRecorder:
             "duration_seconds": "s",
             "avg_fps": "FPS",
             "avg_cpu_percent": "%",
+            "avg_cpu_raw_percent": "%",
             "peak_memory_mb": "MB",
             "peak_temperature_c": "°C",
             "avg_power_w": "W",
@@ -7740,6 +8273,7 @@ class SessionRecorder:
         summary_metric_keys = {
             "avg_fps": "fps",
             "avg_cpu_percent": "cpu_percent",
+            "avg_cpu_raw_percent": "cpu_percent",
             "peak_memory_mb": "memory_mb",
             "peak_temperature_c": "temperature_c",
             "avg_power_w": "power_w",
@@ -7759,12 +8293,22 @@ class SessionRecorder:
                 state = str(item.get("state", ""))
                 if state in {"unavailable", "waiting"}:
                     return metric_availability_state_label(state), ""
+            if key == "avg_cpu_raw_percent":
+                raw_value = summary.get(key, 0.0)
+                try:
+                    return str(round(float(raw_value or 0.0), 3)), summary_units.get(key, "")
+                except (TypeError, ValueError):
+                    return str(raw_value or "-"), summary_units.get(key, "")
+            if key in {"avg_fps", "avg_cpu_percent"}:
+                display_value = report_metric_display_value(metric_key, summary.get(key, 0.0))
+                return str(round(display_value, 3)), summary_units.get(key, "")
             return str(summary.get(key, "-")), summary_units.get(key, "")
 
         kpi_keys = [
             "duration_seconds",
             "avg_fps",
             "avg_cpu_percent",
+            "avg_cpu_raw_percent",
             "peak_memory_mb",
             "peak_temperature_c",
             "avg_power_w",
@@ -8067,7 +8611,7 @@ class SessionRecorder:
         ) or "<tr><td colspan='4'>未发现连续异常或兜底区间</td></tr>"
         chart_titles = {
             "fps": ("FPS 帧率", "越高越流畅，关注突降和长时间低帧。"),
-            "cpu_percent": ("CPU 进程占用", "观察峰值、持续高位和突降后的恢复。"),
+            "cpu_percent": ("CPU 归一化占用", "按多核容量归一化到 0-100，原始 CPU 保留在导出明细。"),
             "memory_mb": ("内存", "关注持续爬升和峰值。"),
             "rx_kbps": ("下行网络", "接收流量速率。"),
             "tx_kbps": ("上行网络", "发送流量速率。"),
@@ -8081,19 +8625,21 @@ class SessionRecorder:
             for title, desc in [chart_titles[key]]
         )
         chart_config_by_key = {
-            "fps": {"key": "fps", "unit": "FPS", "color": "#2563eb", "suggestedMax": 60, "decimals": 1, "guide": 60, "guideLabel": "60 FPS"},
-            "cpu_percent": {"key": "cpu_percent", "unit": "%", "color": "#ef4444", "suggestedMax": 100, "decimals": 1, "guide": 80, "guideLabel": "80%"},
-            "memory_mb": {"key": "memory_mb", "unit": "MB", "color": "#4f46e5", "suggestedMax": 0, "decimals": 1},
-            "rx_kbps": {"key": "rx_kbps", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
-            "tx_kbps": {"key": "tx_kbps", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
-            "jank_percent": {"key": "jank_percent", "unit": "%", "color": "#f59e0b", "suggestedMax": 10, "decimals": 1, "guide": 5, "guideLabel": "5%"},
-            "temperature_c": {"key": "temperature_c", "unit": "°C", "color": "#dc2626", "suggestedMax": 45, "decimals": 1, "guide": 42, "guideLabel": "42°C"},
-            "power_w": {"key": "power_w", "unit": "W", "color": "#0891b2", "suggestedMax": 5, "decimals": 2},
+            "fps": {"key": "fps", "title": "FPS 帧率", "unit": "FPS", "color": "#2563eb", "suggestedMax": 60, "decimals": 1, "guide": 60, "guideLabel": "60 FPS"},
+            "cpu_percent": {"key": "cpu_percent", "title": "CPU 归一化占用", "unit": "%", "color": "#ef4444", "suggestedMax": 100, "decimals": 1, "guide": 80, "guideLabel": "80%"},
+            "memory_mb": {"key": "memory_mb", "title": "内存", "unit": "MB", "color": "#4f46e5", "suggestedMax": 0, "decimals": 1},
+            "rx_kbps": {"key": "rx_kbps", "title": "下行网络", "unit": "KB/s", "color": "#16a34a", "suggestedMax": 1, "decimals": 1},
+            "tx_kbps": {"key": "tx_kbps", "title": "上行网络", "unit": "KB/s", "color": "#0d9488", "suggestedMax": 1, "decimals": 1},
+            "jank_percent": {"key": "jank_percent", "title": "Jank 卡顿率", "unit": "%", "color": "#f59e0b", "suggestedMax": 10, "decimals": 1, "guide": 5, "guideLabel": "5%"},
+            "temperature_c": {"key": "temperature_c", "title": "温度", "unit": "°C", "color": "#dc2626", "suggestedMax": 45, "decimals": 1, "guide": 42, "guideLabel": "42°C"},
+            "power_w": {"key": "power_w", "title": "功耗", "unit": "W", "color": "#0891b2", "suggestedMax": 5, "decimals": 2},
         }
         chart_config = [chart_config_by_key[key] for key in workbench_primary_metric_order()]
         report_samples: list[dict[str, object]] = []
         for sample, quality_tag in zip(self.samples, quality_tags):
             row = asdict(sample)
+            row["cpu_raw_percent"] = row.get("cpu_percent", 0.0)
+            row["cpu_percent"] = sample_cpu_display_percent(sample)
             row["qualityTag"] = quality_tag
             report_samples.append(row)
         display_samples = payload.get("display_samples")
@@ -8106,14 +8652,24 @@ class SessionRecorder:
                 for row in display_samples
                 if isinstance(row, dict)
             ]
-            axis_max_by_metric[key] = graph_display_max_value(
-                [
-                    (sample.elapsed, float(getattr(sample, key, 0.0) or 0.0), quality_tag)
-                    for sample, quality_tag in zip(self.samples, quality_tags)
-                ],
-                key,
-                display_points,
-            )
+            raw_points = [
+                (
+                    sample.elapsed,
+                    sample_cpu_display_percent(sample) if key == "cpu_percent" else float(getattr(sample, key, 0.0) or 0.0),
+                    quality_tag,
+                )
+                for sample, quality_tag in zip(self.samples, quality_tags)
+            ]
+            if key in {"fps", "cpu_percent"}:
+                axis_values = [
+                    value
+                    for _elapsed, value, quality_tag in raw_points
+                    if quality_tag == "ok"
+                ]
+                axis_values.extend(value for _elapsed, value in display_points)
+                axis_max_by_metric[key] = report_chart_axis_max(key, axis_values)
+            else:
+                axis_max_by_metric[key] = graph_display_max_value(raw_points, key, display_points)
         data = json.dumps(report_samples, ensure_ascii=False).replace("</", "<\\/")
         display_data = json.dumps(display_samples, ensure_ascii=False).replace("</", "<\\/")
         markers = json.dumps(self.markers, ensure_ascii=False).replace("</", "<\\/")
@@ -8178,9 +8734,28 @@ class SessionRecorder:
     .chart-card { min-width: 0; padding: 16px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
     .chart-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 10px; }
     .chart-stat { flex: 0 0 auto; color: #172033; font-weight: 700; text-align: right; white-space: nowrap; }
-    .chart-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; scrollbar-gutter: stable; }
+    .chart-scroll { position: relative; width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; scrollbar-gutter: stable; }
     .chart-scroll canvas { min-width: 100%; height: 250px; display: block; }
-    .weak-traffic-chart { margin-top: 14px; padding: 10px 12px 12px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
+    .chart-tooltip {
+      position: absolute;
+      z-index: 5;
+      max-width: 280px;
+      min-width: 190px;
+      padding: 9px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+      color: #172033;
+      font-size: 12px;
+      line-height: 1.45;
+      pointer-events: none;
+      transform: translate(-50%, -100%);
+      display: none;
+    }
+    .chart-tooltip strong { display: block; margin-bottom: 4px; font-size: 13px; }
+    .chart-tooltip span { display: block; color: #475569; white-space: normal; overflow-wrap: anywhere; }
+    .weak-traffic-chart { position: relative; margin-top: 14px; padding: 10px 12px 12px; background: white; border: 1px solid #d8e0ea; border-radius: 8px; }
     .weak-traffic-chart canvas { width: 100%; height: 220px; display: block; }
     .marker-table th, .marker-table td { width: auto; }
     .marker-table th:first-child, .marker-table td:first-child { width: 72px; }
@@ -8240,11 +8815,19 @@ class SessionRecorder:
     const MIN_VIEW_SECONDS = 10;
     let syncingChartScroll = false;
 
+    function metricDisplayValue(key, value) {
+      const numeric = Number(value || 0);
+      if (!Number.isFinite(numeric)) return 0;
+      if (key === 'cpu_percent') return Math.max(0, Math.min(numeric, 100));
+      if (key === 'fps') return Math.max(0, Math.min(numeric, 120));
+      return Math.max(0, numeric);
+    }
+
     const finiteValues = (key) => samples
-      .map(sample => Number(sample[key] || 0))
+      .map(sample => metricDisplayValue(key, sample[key]))
       .filter(value => Number.isFinite(value));
     const displayFiniteValues = (key) => displaySamples
-      .map(sample => Number(sample[key] || 0))
+      .map(sample => metricDisplayValue(key, sample[key]))
       .filter(value => Number.isFinite(value));
 
     const fmt = (value, decimals = 1) => Number(value || 0).toFixed(decimals);
@@ -8274,6 +8857,173 @@ class SessionRecorder:
       const scaled = value / power;
       const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
       return nice * power;
+    }
+
+    function chartMaxY(config, displayMax) {
+      const axisMax = Number(config.axisMax || 0);
+      if (config.key === 'fps' || config.key === 'cpu_percent') {
+        return Math.max(axisMax, 1);
+      }
+      const valueMax = Math.max(axisMax, Number(config.suggestedMax || 0), displayMax, 1);
+      return niceCeil(valueMax * 1.08);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function qualityLabel(tag) {
+      if (tag === 'issue') return '采集异常';
+      if (tag === 'fallback') return '设备级兜底';
+      if (tag === 'recovery') return '恢复窗口';
+      if (tag === 'limited') return '受限样本';
+      return '正常';
+    }
+
+    function nearestSampleIndexForElapsed(elapsedSeconds) {
+      if (!samples.length) return -1;
+      const target = Number(elapsedSeconds || 0);
+      let bestIndex = 0;
+      let bestDistance = Infinity;
+      samples.forEach((sample, index) => {
+        const distance = Math.abs(Number(sample.elapsed || 0) - target);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+      return bestIndex;
+    }
+
+    function chartTooltipHtml(config, index) {
+      const sample = samples[index] || {};
+      const displaySample = displaySamples[index] || sample;
+      const displayValue = metricDisplayValue(config.key, displaySample[config.key]);
+      const rawValue = metricDisplayValue(config.key, sample[config.key]);
+      const quality = qualityLabel(sampleQualityTag(sample));
+      const note = String(sample.note || '无备注');
+      const valueText = (value) => `${fmt(value, config.decimals)}${config.unit}`;
+      const title = config.title || config.key;
+      return [
+        `<strong>${escapeHtml(title)} · ${escapeHtml(timeLabel(sample.elapsed))}</strong>`,
+        `<span>展示值：${escapeHtml(valueText(displayValue))}</span>`,
+        `<span>原始值：${escapeHtml(valueText(rawValue))}</span>`,
+        `<span>质量：${escapeHtml(quality)}</span>`,
+        `<span>备注：${escapeHtml(note)}</span>`,
+      ].join('');
+    }
+
+    function ensureChartTooltip(scroller, canvas, config, pad, plotW, timelineSeconds) {
+      let tooltip = scroller.querySelector('.chart-tooltip');
+      if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.className = 'chart-tooltip';
+        scroller.appendChild(tooltip);
+      }
+      canvas.__tooltipContext = { config, pad, plotW, timelineSeconds, tooltip };
+      if (canvas.dataset.tooltipBound === '1') return;
+      canvas.addEventListener('mousemove', (event) => {
+        const context = canvas.__tooltipContext;
+        if (!context || !samples.length) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x < context.pad.left || x > rect.width - context.pad.right || y < context.pad.top || y > rect.height - context.pad.bottom) {
+          context.tooltip.style.display = 'none';
+          return;
+        }
+        const elapsedSeconds = ((x - context.pad.left) / Math.max(context.plotW, 1)) * context.timelineSeconds;
+        const index = nearestSampleIndexForElapsed(elapsedSeconds);
+        if (index < 0) {
+          context.tooltip.style.display = 'none';
+          return;
+        }
+        const config = context.config;
+        const tooltip = context.tooltip;
+        tooltip.innerHTML = chartTooltipHtml(config, index);
+        const tooltipWidth = tooltip.offsetWidth || 220;
+        const left = Math.min(Math.max(x, tooltipWidth / 2 + 6), rect.width - tooltipWidth / 2 - 6);
+        const top = Math.max(y - 10, context.pad.top + 42);
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.display = 'block';
+      });
+      canvas.addEventListener('mouseleave', () => {
+        const context = canvas.__tooltipContext;
+        if (context) context.tooltip.style.display = 'none';
+      });
+      canvas.dataset.tooltipBound = '1';
+    }
+
+    function nearestProxyTrafficPoint(elapsedSeconds) {
+      if (!proxyTrafficHistory.length) return null;
+      const target = Number(elapsedSeconds || 0);
+      let bestPoint = proxyTrafficHistory[0];
+      let bestDistance = Infinity;
+      proxyTrafficHistory.forEach(point => {
+        const distance = Math.abs(Number(point.elapsed || 0) - target);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPoint = point;
+        }
+      });
+      return bestPoint;
+    }
+
+    function proxyTrafficTooltipHtml(point) {
+      return [
+        `<strong>弱网真实流量 · ${escapeHtml(timeLabel(point.elapsed))}</strong>`,
+        `<span>下行：${escapeHtml(fmt(point.down_kbps, 1))} KB/s</span>`,
+        `<span>上行：${escapeHtml(fmt(point.up_kbps, 1))} KB/s</span>`,
+      ].join('');
+    }
+
+    function ensureProxyTrafficTooltip(parent, canvas, pad, plotW, start, end) {
+      let tooltip = parent.querySelector('.chart-tooltip');
+      if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.className = 'chart-tooltip';
+        parent.appendChild(tooltip);
+      }
+      canvas.__proxyTooltipContext = { pad, plotW, start, end, tooltip };
+      if (canvas.dataset.proxyTooltipBound === '1') return;
+      canvas.addEventListener('mousemove', (event) => {
+        const context = canvas.__proxyTooltipContext;
+        if (!context || !proxyTrafficHistory.length) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x < context.pad.left || x > rect.width - context.pad.right || y < context.pad.top || y > rect.height - context.pad.bottom) {
+          context.tooltip.style.display = 'none';
+          return;
+        }
+        const elapsedSeconds = context.start + ((x - context.pad.left) / Math.max(context.plotW, 1)) * Math.max(context.end - context.start, 1);
+        const point = nearestProxyTrafficPoint(elapsedSeconds);
+        if (!point) {
+          context.tooltip.style.display = 'none';
+          return;
+        }
+        const tooltip = context.tooltip;
+        tooltip.innerHTML = proxyTrafficTooltipHtml(point);
+        const tooltipWidth = tooltip.offsetWidth || 220;
+        const canvasLeft = canvas.offsetLeft || 0;
+        const canvasTop = canvas.offsetTop || 0;
+        const left = Math.min(Math.max(canvasLeft + x, tooltipWidth / 2 + 6), parent.clientWidth - tooltipWidth / 2 - 6);
+        const top = Math.max(canvasTop + y - 10, canvasTop + context.pad.top + 42);
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.display = 'block';
+      });
+      canvas.addEventListener('mouseleave', () => {
+        const context = canvas.__proxyTooltipContext;
+        if (context) context.tooltip.style.display = 'none';
+      });
+      canvas.dataset.proxyTooltipBound = '1';
     }
 
     function syncChartScroll(source) {
@@ -8365,7 +9115,7 @@ class SessionRecorder:
       const note = String(sample.note || '');
       if (sample.qualityTag) return sample.qualityTag;
       if (note.includes('恢复窗口内')) return 'recovery';
-      const issueTokens = ['未采集', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台', '采样耗时'];
+      const issueTokens = ['未采集', '未匹配', '无法按应用统计', '采集失败', '采集不可用', '未找到运行中的', '不在前台'];
       if (!note.includes('目标应用刚回到前台') && issueTokens.some(token => note.includes(token))) return 'issue';
       if (note.includes('设备级网络兜底')) return 'fallback';
       if (note.includes('FPS 当前无帧增量') || note.includes('CPU 当前无进程增量') || (note.includes('网络无流量') && !note.includes('网络采集'))) return 'limited';
@@ -8489,13 +9239,13 @@ class SessionRecorder:
       const displayValues = displayFiniteValues(config.key);
       const values = finiteValues(config.key);
       const displayMax = Math.max(...displayValues, 0);
-      const valueMax = Math.max(Number(config.axisMax || 0), Number(config.suggestedMax || 0), displayMax, 1);
-      const maxY = niceCeil(valueMax * 1.08);
+      const maxY = chartMaxY(config, displayMax);
       const minY = 0;
       const range = Math.max(maxY - minY, 1);
       const xFor = (seconds) => pad.left + (Math.max(0, Math.min(Number(seconds || 0), timelineSeconds)) / timelineSeconds) * plotW;
       const yFor = (value) => pad.top + (1 - (Number(value || 0) - minY) / range) * plotH;
       const markerLayouts = layoutMarkerLabels(ctx, xFor, width, pad);
+      ensureChartTooltip(scroller, canvas, config, pad, plotW, timelineSeconds);
 
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = '#ffffff';
@@ -8576,7 +9326,7 @@ class SessionRecorder:
         ctx.beginPath();
         displaySeries.forEach((sample, index) => {
           const x = xFor(sample.elapsed);
-          const y = yFor(sample[config.key]);
+          const y = yFor(metricDisplayValue(config.key, sample[config.key]));
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
@@ -8589,7 +9339,7 @@ class SessionRecorder:
         ctx.beginPath();
         samples.forEach((sample, index) => {
           const x = xFor(sample.elapsed);
-          const y = yFor(sample[config.key]);
+          const y = yFor(metricDisplayValue(config.key, sample[config.key]));
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
@@ -8603,7 +9353,7 @@ class SessionRecorder:
         ctx.beginPath();
         displaySeries.forEach((sample, index) => {
           const x = xFor(sample.elapsed);
-          const y = yFor(sample[config.key]);
+          const y = yFor(metricDisplayValue(config.key, sample[config.key]));
           if (index === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
@@ -8615,7 +9365,7 @@ class SessionRecorder:
           ctx.fillStyle = config.color;
           displaySeries.forEach(sample => {
             const x = xFor(sample.elapsed);
-            const y = yFor(sample[config.key]);
+            const y = yFor(metricDisplayValue(config.key, sample[config.key]));
             ctx.beginPath();
             ctx.arc(x, y, 2.4, 0, Math.PI * 2);
             ctx.fill();
@@ -8625,7 +9375,7 @@ class SessionRecorder:
           const tag = visualSampleQualityTag(sample);
           if (tag === 'ok') return;
           const x = xFor(sample.elapsed);
-          const y = yFor(sample[config.key]);
+          const y = yFor(metricDisplayValue(config.key, sample[config.key]));
           drawQualityMarker(ctx, x, y, tag);
         });
       }
@@ -8681,6 +9431,7 @@ class SessionRecorder:
       const end = Math.max(Number(proxyTrafficHistory[proxyTrafficHistory.length - 1].elapsed || 0), start + 1);
       const xFor = (seconds) => pad.left + ((Number(seconds || 0) - start) / Math.max(end - start, 1)) * plotW;
       const yFor = (value) => pad.top + plotH - (Number(value || 0) / maxY) * plotH;
+      ensureProxyTrafficTooltip(parent, canvas, pad, plotW, start, end);
       ctx.strokeStyle = '#e6edf5';
       ctx.lineWidth = 1;
       for (let i = 0; i < 4; i++) {
@@ -8863,6 +9614,7 @@ class GraphPanel(ttk.Frame):
         self.low_end_display_mode = False
         self.health_detail = ""
         self._hover_x: float | None = None
+        self.focus_elapsed: float | None = None
         self.header = ttk.Frame(self, style="PanelBody.TFrame")
         self.header.pack(fill="x")
         ttk.Label(self.header, text=title, style="PanelTitle.TLabel").pack(side="left")
@@ -8934,6 +9686,7 @@ class GraphPanel(ttk.Frame):
         self.view_start = 0.0
         self.view_seconds = 10.0
         self._hover_x = None
+        self.focus_elapsed = None
         self.value_var.set("--")
         self.quality_badge_var.set("")
         self.summary_var.set(graph_summary_text([], self.unit))
@@ -8944,6 +9697,10 @@ class GraphPanel(ttk.Frame):
     def set_view(self, view_start: float, view_seconds: float) -> None:
         self.view_start = max(0.0, float(view_start))
         self.view_seconds = max(1.0, float(view_seconds))
+        self.redraw()
+
+    def set_focus_time(self, elapsed: float | None) -> None:
+        self.focus_elapsed = None if elapsed is None else max(0.0, float(elapsed))
         self.redraw()
 
     def _format(self, value: float) -> str:
@@ -8957,13 +9714,7 @@ class GraphPanel(ttk.Frame):
 
     @staticmethod
     def _format_time(seconds: float) -> str:
-        total = max(0, int(round(seconds)))
-        hours = total // 3600
-        minutes = (total % 3600) // 60
-        secs = total % 60
-        if hours:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-        return f"{minutes:02d}:{secs:02d}"
+        return format_timeline_seconds(seconds)
 
     def _visible_points(self, view_start: float, view_end: float) -> list[tuple[float, float, str]]:
         visible: list[tuple[float, float, str]] = []
@@ -9136,6 +9887,17 @@ class GraphPanel(ttk.Frame):
         for x, y, quality in graph_quality_marker_points_for_visual(quality_points):
             marker_color = quality_marker_color(quality)
             canvas.create_polygon(x, y - 6, x - 5.5, y + 5, x + 5.5, y + 5, fill=marker_color, outline="#FFFFFF")
+        if self.focus_elapsed is not None and view_start <= self.focus_elapsed <= view_end:
+            focus_x = pad_left + ((self.focus_elapsed - view_start) / view_seconds) * plot_w
+            canvas.create_line(focus_x, pad_top, focus_x, height - 22, fill="#334155", width=1.5, dash=(5, 4))
+            canvas.create_text(
+                min(max(focus_x + 6, pad_left + 20), width - 52),
+                pad_top + 10,
+                anchor="w",
+                text=self._format_time(self.focus_elapsed),
+                fill="#334155",
+                font=("Helvetica", 9, "bold"),
+            )
         last_x, last_y = last_visible or (points[-2], points[-1])
         canvas.create_oval(last_x - 4, last_y - 4, last_x + 4, last_y + 4, fill=self.color, outline="#FFFFFF", width=2)
         self._draw_hover_overlay(
@@ -9270,6 +10032,11 @@ class App:
         self.health_analyzer = MetricHealthAnalyzer()
         self.live_quality = LiveQualityTracker()
         self.last_quality_event_tag = "ok"
+        self.last_quality_event_state = "ok"
+        self.last_quality_event_state_sample: PerfSample | None = None
+        self.last_quality_event_ok_count = 0
+        self.last_quality_event_exit_label = ""
+        self.last_quality_event_exit_detail = ""
         self.quality_event_keys_seen: set[str] = set()
         self.weak_proxy = WeakNetworkProxy(self._threadsafe_log)
         self.weak_registry = WeakProxyDeviceRegistry()
@@ -9674,6 +10441,8 @@ class App:
         self.quality_event_tree.tag_configure("quality_fallback", foreground=quality_marker_color("fallback"))
         self.quality_event_tree.tag_configure("quality_recovery", foreground=quality_marker_color("recovery"))
         self.quality_event_tree.tag_configure("quality_limited", foreground=quality_marker_color("limited"))
+        self.quality_event_tree.tag_configure("quality_ok", foreground="#16A34A")
+        self.quality_event_tree.bind("<<TreeviewSelect>>", self._on_quality_event_selected)
         self.quality_event_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         self.quality_event_yscrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 0))
         self.quality_event_xscrollbar.grid(row=2, column=0, sticky="ew")
@@ -10366,6 +11135,33 @@ class App:
         self.graph_view_start = min(max(self.graph_view_start, 0.0), max_start)
         self.graph_follow_latest = self.graph_view_start >= max_start - 1.0
         self._refresh_graph_time_axis()
+
+    def _focus_graphs_at_time(self, elapsed: float) -> None:
+        target = max(float(elapsed), 0.0)
+        self.graph_view_seconds = self._graph_view_duration()
+        max_start = self._graph_max_view_start()
+        self.graph_view_start = min(max(target - self.graph_view_seconds / 2.0, 0.0), max_start)
+        self.graph_follow_latest = False
+        if hasattr(self, "graphs"):
+            for graph in self.graphs.values():
+                if hasattr(graph, "set_focus_time"):
+                    graph.set_focus_time(target)
+        self._refresh_graph_time_axis()
+
+    def _on_quality_event_selected(self, _event: tk.Event | None = None) -> None:
+        if not hasattr(self, "quality_event_tree"):
+            return
+        selection = self.quality_event_tree.selection()
+        if not selection:
+            return
+        item = selection[-1]
+        values = self.quality_event_tree.item(item, "values")
+        if not values:
+            return
+        elapsed = parse_timeline_seconds(values[0])
+        if elapsed is None:
+            return
+        self._focus_graphs_at_time(elapsed)
 
     def _bind_graph_mousewheel(self, widget: tk.Widget) -> None:
         widget.bind("<MouseWheel>", self._on_graph_mousewheel)
@@ -11256,6 +12052,11 @@ class App:
         self.stabilizer.reset()
         self.live_quality.reset()
         self.last_quality_event_tag = "ok"
+        self.last_quality_event_state = "ok"
+        self.last_quality_event_state_sample = None
+        self.last_quality_event_ok_count = 0
+        self.last_quality_event_exit_label = ""
+        self.last_quality_event_exit_detail = ""
         if not hasattr(self, "quality_event_keys_seen"):
             self.quality_event_keys_seen = set()
         else:
@@ -11336,8 +12137,8 @@ class App:
         self.recorder.append(sample)
         self.last_app_rx_kbps = max(float(sample.rx_kbps or 0.0), 0.0)
         self.last_app_tx_kbps = max(float(sample.tx_kbps or 0.0), 0.0)
-        metric_health = self._update_metric_health(sample)
         quality_tag = self.live_quality.quality_tag_for_sample(sample)
+        metric_health = self._update_metric_health(sample, quality_tag=quality_tag)
         quality_text = self.live_quality.update(sample)
         recent_window = self.live_quality.recent_window_health()
         self.quality_summary_var.set(
@@ -11349,10 +12150,11 @@ class App:
         self.quality_var.set(f"采集质量：{quality_text}")
         conservative_display = self.live_quality.low_end_display_mode()
         smoothing_enabled = self.smoothing_var.get()
+        display_source_sample = sample_with_display_cpu(sample)
         display_sample = (
-            self.stabilizer.smooth_sample(sample, conservative=conservative_display, quality_tag=quality_tag)
+            self.stabilizer.smooth_sample(display_source_sample, conservative=conservative_display, quality_tag=quality_tag)
             if smoothing_enabled or quality_tag == "recovery"
-            else sample
+            else display_source_sample
         )
         realtime_sample = PerfSample(
             timestamp=display_sample.timestamp,
@@ -11371,15 +12173,7 @@ class App:
         self._refresh_quality_mode()
         for graph in self.graphs.values():
             graph.set_display_context(self.smoothing_var.get(), conservative_display)
-        self._set_metric_card("fps", realtime_sample.fps, "越高越流畅", metric_health)
-        self._set_metric_card("jank_percent", realtime_sample.jank_percent, "越低越稳", metric_health)
-        self._set_metric_card("cpu_percent", realtime_sample.cpu_percent, "进程占用", metric_health)
-        self._set_metric_card("memory_mb", realtime_sample.memory_mb, "PSS/Total", metric_health)
-        self._set_metric_card("temperature_c", realtime_sample.temperature_c, "电池温度", metric_health)
-        self._set_metric_card("power_w", realtime_sample.power_w, "估算功耗", metric_health)
-        self._set_metric_card("rx_kbps", realtime_sample.rx_kbps, "接收速率", metric_health)
-        self._set_metric_card("tx_kbps", realtime_sample.tx_kbps, "发送速率", metric_health)
-        graph_sample = display_sample if smoothing_enabled or quality_tag == "recovery" else sample
+        graph_sample = display_sample if smoothing_enabled or quality_tag == "recovery" else display_source_sample
         self.graphs["fps"].append(sample.elapsed, realtime_metric_display_value("fps", graph_sample.fps), quality_tag)
         self.graphs["jank_percent"].append(sample.elapsed, realtime_metric_display_value("jank_percent", graph_sample.jank_percent), quality_tag)
         self.graphs["cpu_percent"].append(sample.elapsed, realtime_metric_display_value("cpu_percent", graph_sample.cpu_percent), quality_tag)
@@ -11388,6 +12182,33 @@ class App:
         self.graphs["power_w"].append(sample.elapsed, realtime_metric_display_value("power_w", graph_sample.power_w), quality_tag)
         self.graphs["rx_kbps"].append(sample.elapsed, realtime_metric_display_value("rx_kbps", graph_sample.rx_kbps), quality_tag)
         self.graphs["tx_kbps"].append(sample.elapsed, realtime_metric_display_value("tx_kbps", graph_sample.tx_kbps), quality_tag)
+        card_values = {
+            "fps": realtime_sample.fps,
+            "jank_percent": realtime_sample.jank_percent,
+            "cpu_percent": realtime_sample.cpu_percent,
+            "memory_mb": realtime_sample.memory_mb,
+            "temperature_c": realtime_sample.temperature_c,
+            "power_w": realtime_sample.power_w,
+            "rx_kbps": realtime_sample.rx_kbps,
+            "tx_kbps": realtime_sample.tx_kbps,
+        }
+        for metric, fallback in list(card_values.items()):
+            graph = self.graphs.get(metric)
+            latest_display = graph_latest_display_value_for_context(
+                list(getattr(graph, "points", [])),
+                smoothing_enabled=smoothing_enabled,
+                low_end_display_mode=conservative_display,
+            )
+            if latest_display is not None:
+                card_values[metric] = realtime_metric_display_value(metric, latest_display)
+        self._set_metric_card("fps", card_values["fps"], "越高越流畅", metric_health)
+        self._set_metric_card("jank_percent", card_values["jank_percent"], "越低越稳", metric_health)
+        self._set_metric_card("cpu_percent", card_values["cpu_percent"], "进程占用", metric_health)
+        self._set_metric_card("memory_mb", card_values["memory_mb"], "PSS/Total", metric_health)
+        self._set_metric_card("temperature_c", card_values["temperature_c"], "电池温度", metric_health)
+        self._set_metric_card("power_w", card_values["power_w"], "估算功耗", metric_health)
+        self._set_metric_card("rx_kbps", card_values["rx_kbps"], "接收速率", metric_health)
+        self._set_metric_card("tx_kbps", card_values["tx_kbps"], "发送速率", metric_health)
         self.graph_last_elapsed = max(self.graph_last_elapsed, sample.elapsed)
         self._refresh_graph_time_axis()
         self._refresh_proxy_traffic()
@@ -11407,26 +12228,147 @@ class App:
 
     def _append_quality_event(self, sample: PerfSample, quality_tag: str | None = None) -> None:
         tag = quality_tag or sample_quality_tag(sample)
-        if tag == "ok":
-            self.last_quality_event_tag = "ok"
+        base_state = tag if tag in {"issue", "fallback", "recovery", "limited"} else "ok"
+        event = quality_event_from_sample(sample, quality_tag=tag) if base_state != "ok" else None
+        state = self._quality_event_state(base_state, event)
+        previous_state = getattr(self, "last_quality_event_state", getattr(self, "last_quality_event_tag", "ok"))
+        if state == previous_state:
+            if state != "ok":
+                self.last_quality_event_state_sample = sample
+                self.last_quality_event_ok_count = 0
             return
-        event = quality_event_from_sample(sample, quality_tag=tag)
-        event_key = f"{tag}:{event[1]}:{event[2]}" if event else tag
-        seen_keys = getattr(self, "quality_event_keys_seen", None)
-        if seen_keys is None:
-            seen_keys = set()
-            self.quality_event_keys_seen = seen_keys
-        if event_key in seen_keys or event_key == self.last_quality_event_tag:
+        if previous_state != "ok" and state == "ok":
+            ok_count = int(getattr(self, "last_quality_event_ok_count", 0)) + 1
+            self.last_quality_event_ok_count = ok_count
+            if ok_count < self._quality_event_exit_ok_confirmation_count(previous_state):
+                return
+        else:
+            self.last_quality_event_ok_count = 0
+        if not hasattr(self, "quality_event_tree"):
+            self.last_quality_event_state = state
+            self.last_quality_event_tag = state
+            self.last_quality_event_state_sample = sample if state != "ok" else None
+            if state != "ok":
+                self.last_quality_event_ok_count = 0
             return
-        self.last_quality_event_tag = event_key
-        if not event or not hasattr(self, "quality_event_tree"):
-            return
-        seen_keys.add(event_key)
-        self.quality_event_tree.insert("", "end", values=event, tags=(quality_event_tree_tag(tag),))
+
+        def insert_event(event_state: str, values: tuple[str, str, str]) -> None:
+            self.quality_event_tree.insert(
+                "",
+                "end",
+                values=values,
+                tags=(quality_event_tree_tag(self._quality_event_state_kind(event_state)),),
+            )
+
+        if previous_state != "ok":
+            exit_sample = sample
+            if self._quality_event_state_kind(previous_state) == "ad_recovery":
+                last_state_sample = getattr(self, "last_quality_event_state_sample", None)
+                if isinstance(last_state_sample, PerfSample):
+                    exit_sample = last_state_sample
+            if not isinstance(exit_sample, PerfSample):
+                exit_sample = sample
+            insert_event(
+                "ok",
+                self._quality_state_exit_event(
+                    exit_sample,
+                    previous_state,
+                    getattr(self, "last_quality_event_exit_label", ""),
+                    getattr(self, "last_quality_event_exit_detail", ""),
+                ),
+            )
+        if state != "ok":
+            if event:
+                entry_event, exit_label, exit_detail = self._quality_state_entry_event(event, state)
+                self.last_quality_event_exit_label = exit_label
+                self.last_quality_event_exit_detail = exit_detail
+                insert_event(state, entry_event)
+        else:
+            self.last_quality_event_exit_label = ""
+            self.last_quality_event_exit_detail = ""
+        self.last_quality_event_state = state
+        self.last_quality_event_tag = state
+        self.last_quality_event_state_sample = sample if state != "ok" else None
+        self.last_quality_event_ok_count = 0
         children = self.quality_event_tree.get_children()
         for item in children[:-80]:
             self.quality_event_tree.delete(item)
         self.quality_event_tree.yview_moveto(1.0)
+
+    @staticmethod
+    def _quality_event_state(base_state: str, event: tuple[str, str, str] | None = None) -> str:
+        if base_state == "ok":
+            return "ok"
+        state = "ad_recovery" if base_state == "recovery" and event is not None and "广告" in event[2] else base_state
+        if event is None:
+            return state
+        return f"{state}||{event[1]}||{event[2]}"
+
+    @staticmethod
+    def _quality_event_state_kind(state: str) -> str:
+        return str(state or "ok").split("||", 1)[0]
+
+    @classmethod
+    def _quality_event_exit_ok_confirmation_count(cls, state: str) -> int:
+        return 2 if cls._quality_event_state_kind(state) == "issue" else 1
+
+    @classmethod
+    def _quality_state_entry_event(cls, event: tuple[str, str, str], state: str) -> tuple[tuple[str, str, str], str, str]:
+        state_kind = cls._quality_event_state_kind(state)
+        if state_kind == "ad_recovery" or (state_kind == "recovery" and "广告" in event[2]):
+            return (event[0], "广告进入", event[2]), "广告退出", "广告播放结束"
+        labels = {
+            "issue": "异常进入",
+            "fallback": "兜底进入",
+            "recovery": "恢复进入",
+            "limited": "受限进入",
+        }
+        exit_labels = {
+            "issue": "异常退出",
+            "fallback": "兜底退出",
+            "recovery": "恢复退出",
+            "limited": "受限退出",
+        }
+        exit_details = {
+            "issue": "恢复正常",
+            "fallback": "退出设备级兜底",
+            "recovery": "恢复窗口结束",
+            "limited": "受限状态结束",
+        }
+        return (
+            event[0],
+            labels.get(state_kind, f"{event[1]}进入"),
+            event[2],
+        ), exit_labels.get(state_kind, "状态退出"), exit_details.get(state_kind, "状态恢复")
+
+    @classmethod
+    def _quality_state_exit_event(
+        cls,
+        sample: PerfSample,
+        state: str,
+        exit_label: str = "",
+        exit_detail: str = "",
+    ) -> tuple[str, str, str]:
+        state_kind = cls._quality_event_state_kind(state)
+        labels = {
+            "issue": "异常退出",
+            "fallback": "兜底退出",
+            "recovery": "恢复退出",
+            "ad_recovery": "广告退出",
+            "limited": "受限退出",
+        }
+        details = {
+            "issue": "恢复正常",
+            "fallback": "退出设备级兜底",
+            "recovery": "恢复窗口结束",
+            "ad_recovery": "广告播放结束",
+            "limited": "受限状态结束",
+        }
+        return (
+            format_timeline_seconds(sample.elapsed),
+            exit_label or labels.get(state_kind, "状态退出"),
+            exit_detail or details.get(state_kind, "状态恢复"),
+        )
 
     def _set_metric_card(
         self,
@@ -11450,6 +12392,9 @@ class App:
         if status is not None and status.state in {"no_frame_delta", "no_cpu_delta"}:
             self.cards[metric].set_value(value, f"受限样本 · {status.detail}")
             return
+        if status is not None and status.state == "recovering" and (float(value or 0.0) > 0.0 or metric == "jank_percent"):
+            self.cards[metric].set_value(value, status.detail)
+            return
         if status is not None and status.state in {"missing", "waiting", "recovering"}:
             display = "不可用" if status.state == "missing" else status.label
             self.cards[metric].set_value(display, status.detail)
@@ -11466,7 +12411,7 @@ class App:
         sub = " · ".join(part for part in (healthy_label, default_sub, recent_summary) if part)
         self.cards[metric].set_value(value, sub)
 
-    def _update_metric_health(self, sample: PerfSample) -> dict[str, MetricHealth]:
+    def _update_metric_health(self, sample: PerfSample, quality_tag: str | None = None) -> dict[str, MetricHealth]:
         labels = {
             "fps": "FPS",
             "jank_percent": "Jank",
@@ -11487,7 +12432,10 @@ class App:
             "no_cpu_delta": "□",
             "missing": "!",
         }
-        health = self.health_analyzer.analyze(sample)
+        try:
+            health = self.health_analyzer.analyze(sample, quality_tag=quality_tag)
+        except TypeError:
+            health = self.health_analyzer.analyze(sample)
         for metric, status in health.items():
             variable = self.metric_health_vars.get(metric)
             if not variable:
@@ -11506,9 +12454,7 @@ class App:
 
     @staticmethod
     def _format_elapsed(seconds: float) -> str:
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes:02d}:{secs:02d}"
+        return format_timeline_seconds(seconds)
 
     def append_log(self, text: str) -> None:
         self.recorder.log(text)

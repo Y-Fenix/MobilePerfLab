@@ -28,6 +28,8 @@ from mobileperflab import (
     graph_display_series,
     graph_display_series_for_context,
     graph_summary_text,
+    report_chart_axis_max,
+    report_metric_display_value,
     graph_scroll_row_step,
     graph_visible_rows_for_height,
     ios_service_launch_plan,
@@ -36,6 +38,7 @@ from mobileperflab import (
     MetricHealthAnalyzer,
     MetricStabilizer,
     metric_graph_layout,
+    parse_timeline_seconds,
     PerfSample,
     recommended_sampling_interval_button_text,
     SAMPLING_INTERVAL_OPTIONS,
@@ -1757,13 +1760,13 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
     def test_workbench_primary_metric_order_prioritizes_core_readability(self) -> None:
         self.assertEqual(
             workbench_primary_metric_order(),
-            ["fps", "cpu_percent", "memory_mb", "rx_kbps", "tx_kbps", "jank_percent", "temperature_c", "power_w"],
+            ["fps", "jank_percent", "memory_mb", "cpu_percent", "tx_kbps", "rx_kbps", "temperature_c", "power_w"],
         )
 
     def test_metric_graph_layout_uses_workbench_priority_for_first_four_graphs(self) -> None:
         layout = metric_graph_layout()
 
-        self.assertEqual([item["key"] for item in layout[:4]], ["fps", "cpu_percent", "memory_mb", "rx_kbps"])
+        self.assertEqual([item["key"] for item in layout[:4]], ["fps", "jank_percent", "memory_mb", "cpu_percent"])
 
     def test_metric_cards_follow_workbench_priority_for_first_screen_readability(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2147,7 +2150,7 @@ class WorkbenchLayoutContractTest(unittest.TestCase):
         self.assertIn('tag_configure("quality_issue", foreground=quality_marker_color("issue"))', diagnostics_body)
         self.assertIn('tag_configure("quality_fallback", foreground=quality_marker_color("fallback"))', diagnostics_body)
         self.assertIn('tag_configure("quality_recovery", foreground=quality_marker_color("recovery"))', diagnostics_body)
-        self.assertIn('tags=(quality_event_tree_tag(tag),)', append_body)
+        self.assertIn("quality_event_tree_tag(self._quality_event_state_kind(event_state))", append_body)
 
     def test_diagnostics_rail_keeps_logs_fixed_below_quality_events(self) -> None:
         source = Path(__file__).resolve().parents[1] / "mobileperflab.py"
@@ -2193,6 +2196,26 @@ class GraphScrollBehaviorTest(unittest.TestCase):
         points = [(float(index), 60.0 - index, "issue") for index in range(8)]
 
         self.assertEqual(graph_quality_marker_points(points, max_markers=2), [points[0], points[-1]])
+
+    def test_graph_visual_quality_marks_issue_entry_and_exit_only_for_dense_runs(self) -> None:
+        points = [
+            (0.0, 60.0, "ok"),
+            (1.0, 58.0, "issue"),
+            (2.0, 57.0, "issue"),
+            (3.0, 56.0, "issue"),
+            (4.0, 59.0, "ok"),
+            (5.0, 58.0, "issue"),
+            (6.0, 60.0, "ok"),
+        ]
+
+        self.assertEqual(
+            graph_quality_marker_points_for_visual(points),
+            [
+                (1.0, 58.0, "issue"),
+                (3.0, 56.0, "issue"),
+                (5.0, 58.0, "issue"),
+            ],
+        )
 
     def test_graph_visual_quality_filters_limited_samples_from_marker_and_interval_layers(self) -> None:
         marker_points = [
@@ -2401,11 +2424,11 @@ class GraphScrollBehaviorTest(unittest.TestCase):
             keys,
             [
                 "fps",
-                "cpu_percent",
-                "memory_mb",
-                "rx_kbps",
-                "tx_kbps",
                 "jank_percent",
+                "memory_mb",
+                "cpu_percent",
+                "tx_kbps",
+                "rx_kbps",
                 "temperature_c",
                 "power_w",
             ],
@@ -2484,11 +2507,25 @@ class GraphScrollBehaviorTest(unittest.TestCase):
             qualities=["ok", "limited", "ok", "ok"],
         )
 
-        raw_range = max(value for _elapsed, value in raw) - min(value for _elapsed, value in raw)
-        display_range = max(value for _elapsed, value in display) - min(value for _elapsed, value in display)
         self.assertEqual(len(display), len(raw))
-        self.assertLess(display_range, raw_range)
+        self.assertEqual(display[-1], raw[-1])
         self.assertEqual(raw[1], (1.0, 0.0))
+
+    def test_graph_latest_display_returns_current_ok_value_after_recovery_history(self) -> None:
+        points = [
+            (0.0, 60.0, "ok"),
+            (10.0, 0.0, "recovery"),
+            (12.0, 42.0, "recovery"),
+            (14.0, 58.0, "ok"),
+        ]
+
+        latest = graph_latest_display_value_for_context(
+            points,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+        )
+
+        self.assertEqual(latest, 58.0)
 
     def test_graph_latest_display_value_uses_stable_value_without_mutating_raw_points(self) -> None:
         points = [(0.0, 60.0, "ok"), (1.0, 0.0, "limited")]
@@ -2516,6 +2553,17 @@ class GraphScrollBehaviorTest(unittest.TestCase):
 
         self.assertEqual(issue_axis, 106.4)
         self.assertEqual(real_axis, 95.0)
+
+    def test_report_fps_axis_uses_30_60_120_gears(self) -> None:
+        self.assertEqual(report_chart_axis_max("fps", [18.0, 29.0]), 30.0)
+        self.assertEqual(report_chart_axis_max("fps", [31.0, 60.0]), 60.0)
+        self.assertEqual(report_chart_axis_max("fps", [61.0, 101.3]), 120.0)
+        self.assertEqual(report_chart_axis_max("fps", [180.0]), 120.0)
+
+    def test_report_cpu_display_and_axis_are_capped_at_100_percent(self) -> None:
+        self.assertEqual(report_metric_display_value("cpu_percent", 136.9), 100.0)
+        self.assertEqual(report_chart_axis_max("cpu_percent", [40.0, 136.9]), 100.0)
+        self.assertEqual(report_metric_display_value("fps", 180.0), 120.0)
 
 
 class QualityModeLabelTest(unittest.TestCase):
@@ -2824,7 +2872,7 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("采样间隔 1.0s -> 2.0s", app.performance_conclusion_var.value)
         self.assertIn((True, True), app.graphs["fps"].smoothing_contexts)
 
-    def test_handle_sample_records_same_quality_event_tag_shown_on_graphs(self) -> None:
+    def test_handle_sample_keeps_pure_slow_sampling_out_of_quality_events(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
                 self.value = ""
@@ -2917,13 +2965,12 @@ class QualityModeLabelTest(unittest.TestCase):
         App._handle_sample(app, PerfSample(timestamp=2.8, elapsed=2.8, fps=55.0))
 
         self.assertEqual(app.graphs["fps"].points[-1][0], 2.8)
-        self.assertEqual(app.graphs["fps"].points[-1][2], "issue")
+        self.assertEqual(app.graphs["fps"].points[-1][2], "ok")
         self.assertGreater(app.graphs["fps"].points[-1][1], 55.0)
         self.assertEqual(app.recorder.samples[-1].fps, 55.0)
-        self.assertEqual(app.quality_event_tree.rows[-1], ("2.8s", "采样节奏异常", "采样间隔超过预期，曲线时间窗可能失真"))
-        self.assertEqual(app.quality_event_tree.tags[-1], ("quality_issue",))
+        self.assertEqual(app.quality_event_tree.rows, [])
 
-    def test_quality_events_dedupe_repeated_issue_samples_by_event_content(self) -> None:
+    def test_quality_events_emit_issue_entry_and_exit_only(self) -> None:
         class FakeTree:
             def __init__(self) -> None:
                 self.rows: list[tuple[str, str, str]] = []
@@ -2945,21 +2992,25 @@ class QualityModeLabelTest(unittest.TestCase):
 
         app = object.__new__(App)
         app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
         app.quality_event_tree = FakeTree()
 
         App._append_quality_event(app, PerfSample(timestamp=1.0, elapsed=1.0, note="Android FPS 未采集到 Surface"), "issue")
         App._append_quality_event(app, PerfSample(timestamp=2.0, elapsed=2.0, note="Android FPS 未采集到 Surface"), "issue")
         App._append_quality_event(app, PerfSample(timestamp=3.0, elapsed=3.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=4.0, elapsed=4.0, fps=60.0), "ok")
+        App._append_quality_event(app, PerfSample(timestamp=5.0, elapsed=5.0, fps=60.0), "ok")
 
         self.assertEqual(
             app.quality_event_tree.rows,
             [
-                ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
+                ("00:01", "异常进入", "Android FPS 未采集到 Surface"),
+                ("00:05", "异常退出", "恢复正常"),
             ],
         )
-        self.assertEqual(app.quality_event_tree.tags, [("quality_issue",)])
+        self.assertEqual(app.quality_event_tree.tags, [("quality_issue",), ("quality_ok",)])
 
-    def test_quality_events_keep_different_issue_details_when_stream_is_noisy(self) -> None:
+    def test_quality_events_do_not_emit_repeated_same_issue_detail_until_state_exits(self) -> None:
         class FakeTree:
             def __init__(self) -> None:
                 self.rows: list[tuple[str, str, str]] = []
@@ -2978,20 +3029,135 @@ class QualityModeLabelTest(unittest.TestCase):
 
         app = object.__new__(App)
         app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
         app.quality_event_tree = FakeTree()
 
         App._append_quality_event(app, PerfSample(timestamp=1.0, elapsed=1.0, note="Android FPS 未采集到 Surface"), "issue")
-        App._append_quality_event(app, PerfSample(timestamp=2.0, elapsed=2.0, note="Android CPU 当前无进程增量"), "limited")
-        App._append_quality_event(app, PerfSample(timestamp=3.0, elapsed=3.0, note="Android 网络使用设备级网络兜底，非目标 App 独占流量。"), "fallback")
+        App._append_quality_event(app, PerfSample(timestamp=2.0, elapsed=2.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=3.0, elapsed=3.0, note="Android FPS 未采集到 Surface"), "issue")
 
         self.assertEqual(
             app.quality_event_tree.rows,
             [
-                ("1.0s", "采集异常", "Android FPS 未采集到 Surface"),
-                ("2.0s", "受限样本", "Android CPU 当前无进程增量"),
-                ("3.0s", "设备级兜底", "非目标 App 独占流量"),
+                ("00:01", "异常进入", "Android FPS 未采集到 Surface"),
             ],
         )
+
+    def test_quality_events_keep_ios_issue_open_across_single_ok_gap(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
+        app.quality_event_tree = FakeTree()
+        issue_note = "iOS 网络采集失败：缺少 pymobiledevice3 网络模块：No module named 'pymobiledevice3'"
+
+        App._append_quality_event(app, PerfSample(timestamp=67.0, elapsed=67.0, note=issue_note), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=72.0, elapsed=72.0, fps=60.0), "ok")
+        App._append_quality_event(app, PerfSample(timestamp=77.0, elapsed=77.0, note=issue_note), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=82.0, elapsed=82.0, fps=60.0), "ok")
+
+        self.assertEqual(app.quality_event_tree.rows, [("01:07", "异常进入", issue_note[:80])])
+
+    def test_quality_events_close_ios_issue_after_consecutive_ok_confirmation(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+                self.tags.append(tags)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+                del self.tags[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
+        app.quality_event_tree = FakeTree()
+        issue_note = "iOS 网络采集失败：缺少 pymobiledevice3 网络模块：No module named 'pymobiledevice3'"
+
+        App._append_quality_event(app, PerfSample(timestamp=67.0, elapsed=67.0, note=issue_note), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=72.0, elapsed=72.0, fps=60.0), "ok")
+        App._append_quality_event(app, PerfSample(timestamp=77.0, elapsed=77.0, note=issue_note), "issue")
+        App._append_quality_event(app, PerfSample(timestamp=82.0, elapsed=82.0, fps=60.0), "ok")
+        App._append_quality_event(app, PerfSample(timestamp=87.0, elapsed=87.0, fps=60.0), "ok")
+
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("01:07", "异常进入", issue_note[:80]),
+                ("01:27", "异常退出", "恢复正常"),
+            ],
+        )
+        self.assertEqual(app.quality_event_tree.tags, [("quality_issue",), ("quality_ok",)])
+
+    def test_quality_events_split_different_issue_details_into_own_lifecycles(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+                self.tags.append(tags)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+                del self.tags[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
+        app.quality_event_tree = FakeTree()
+
+        App._append_quality_event(app, PerfSample(timestamp=1.0, elapsed=1.0, note="Android FPS 未采集到 Surface"), "issue")
+        App._append_quality_event(
+            app,
+            PerfSample(timestamp=3.0, elapsed=3.0, note="Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"),
+            "issue",
+        )
+        App._append_quality_event(app, PerfSample(timestamp=5.0, elapsed=5.0, fps=60.0), "ok")
+        App._append_quality_event(app, PerfSample(timestamp=7.0, elapsed=7.0, fps=60.0), "ok")
+
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("00:01", "异常进入", "Android FPS 未采集到 Surface"),
+                ("00:03", "异常退出", "恢复正常"),
+                ("00:03", "异常进入", "Android 网络采集不可用：未读取到 per-UID 或设备级网络计数。"),
+                ("00:07", "异常退出", "恢复正常"),
+            ],
+        )
+        self.assertEqual(app.quality_event_tree.tags, [("quality_issue",), ("quality_ok",), ("quality_issue",), ("quality_ok",)])
 
     def test_quality_events_show_limited_samples_that_are_marked_on_graphs(self) -> None:
         class FakeTree:
@@ -3015,6 +3181,7 @@ class QualityModeLabelTest(unittest.TestCase):
 
         app = object.__new__(App)
         app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
         app.quality_event_tree = FakeTree()
 
         App._append_quality_event(
@@ -3023,8 +3190,165 @@ class QualityModeLabelTest(unittest.TestCase):
             "limited",
         )
 
-        self.assertEqual(app.quality_event_tree.rows, [("2.0s", "受限样本", "Android CPU 当前无进程增量")])
+        self.assertEqual(app.quality_event_tree.rows, [("00:02", "受限进入", "Android CPU 当前无进程增量")])
         self.assertEqual(app.quality_event_tree.tags, [("quality_limited",)])
+
+    def test_quality_events_label_ad_surface_entry_and_exit(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+                self.tags.append(tags)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+                del self.tags[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
+        app.quality_event_tree = FakeTree()
+
+        App._append_quality_event(
+            app,
+            PerfSample(
+                timestamp=10.0,
+                elapsed=10.0,
+                fps=58.0,
+                note="目标 App 正在播放广告 Surface：SurfaceView[com.example.game/com.applovin.adview.FullscreenActivity]@0(BLAST)#99。",
+            ),
+            "recovery",
+        )
+        App._append_quality_event(app, PerfSample(timestamp=12.0, elapsed=12.0, fps=60.0), "ok")
+
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("00:10", "广告进入", "广告播放中"),
+                ("00:10", "广告退出", "广告播放结束"),
+            ],
+        )
+        self.assertEqual(app.quality_event_tree.tags, [("quality_recovery",), ("quality_ok",)])
+
+    def test_quality_events_exit_ad_at_last_ad_sample_before_normal_recovery(self) -> None:
+        class FakeTree:
+            def __init__(self) -> None:
+                self.rows: list[tuple[str, str, str]] = []
+                self.tags: list[tuple[str, ...]] = []
+
+            def insert(self, _parent: str, _index: str, values: tuple[str, str, str], tags: tuple[str, ...] = ()) -> None:
+                self.rows.append(values)
+                self.tags.append(tags)
+
+            def get_children(self) -> list[int]:
+                return list(range(len(self.rows)))
+
+            def delete(self, item: int) -> None:
+                del self.rows[item]
+                del self.tags[item]
+
+            def yview_moveto(self, _fraction: float) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.last_quality_event_tag = "ok"
+        app.last_quality_event_state = "ok"
+        app.quality_event_tree = FakeTree()
+
+        App._append_quality_event(
+            app,
+            PerfSample(
+                timestamp=95.0,
+                elapsed=95.0,
+                fps=58.0,
+                note="目标 App 正在播放广告 Surface：SurfaceView[com.example.game/com.applovin.adview.FullscreenActivity]@0(BLAST)#99。",
+            ),
+            "recovery",
+        )
+        App._append_quality_event(
+            app,
+            PerfSample(
+                timestamp=97.0,
+                elapsed=97.0,
+                fps=59.0,
+                note="目标 App 正在播放广告 Surface：SurfaceView[com.example.game/com.applovin.adview.FullscreenActivity]@0(BLAST)#99。",
+            ),
+            "recovery",
+        )
+        App._append_quality_event(
+            app,
+            PerfSample(
+                timestamp=99.0,
+                elapsed=99.0,
+                fps=0.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            ),
+            "recovery",
+        )
+
+        self.assertEqual(
+            app.quality_event_tree.rows,
+            [
+                ("01:35", "广告进入", "广告播放中"),
+                ("01:37", "广告退出", "广告播放结束"),
+                ("01:39", "恢复进入", "目标应用刚回到前台"),
+            ],
+        )
+        self.assertEqual(app.quality_event_tree.tags, [("quality_recovery",), ("quality_ok",), ("quality_recovery",)])
+
+    def test_parse_timeline_seconds_supports_minute_and_hour_labels(self) -> None:
+        self.assertEqual(parse_timeline_seconds("01:35"), 95.0)
+        self.assertEqual(parse_timeline_seconds("1:02:03"), 3723.0)
+        self.assertIsNone(parse_timeline_seconds("01:70"))
+
+    def test_selecting_quality_event_focuses_all_graphs_at_event_time(self) -> None:
+        class FakeTree:
+            def selection(self) -> list[str]:
+                return ["row-1"]
+
+            def item(self, _item: str, _option: str) -> tuple[str, str, str]:
+                return ("01:35", "广告进入", "广告播放中")
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.focus: float | None = None
+                self.view: tuple[float, float] | None = None
+
+            def set_focus_time(self, elapsed: float | None) -> None:
+                self.focus = elapsed
+
+            def set_view(self, view_start: float, view_seconds: float) -> None:
+                self.view = (view_start, view_seconds)
+
+        app = object.__new__(App)
+        app.quality_event_tree = FakeTree()
+        app.graph_last_elapsed = 360.0
+        app.graph_view_start = 0.0
+        app.graph_view_seconds = 300.0
+        app.graph_follow_latest = True
+        app.graphs = {"fps": FakeGraph(), "jank_percent": FakeGraph(), "cpu_percent": FakeGraph()}
+
+        App._on_quality_event_selected(app)
+
+        self.assertFalse(app.graph_follow_latest)
+        self.assertEqual(app.graph_view_start, 0.0)
+        self.assertEqual([graph.focus for graph in app.graphs.values()], [95.0, 95.0, 95.0])
+        self.assertEqual([graph.view for graph in app.graphs.values()], [(0.0, 300.0), (0.0, 300.0), (0.0, 300.0)])
+
+        App._focus_graphs_at_time(app, 355.0)
+
+        self.assertFalse(app.graph_follow_latest)
+        self.assertEqual(app.graph_view_start, 60.0)
+        self.assertEqual([graph.focus for graph in app.graphs.values()], [355.0, 355.0, 355.0])
 
     def test_handle_sample_adds_recent_average_and_peak_to_healthy_metric_cards(self) -> None:
         class FakeVar:
@@ -3258,6 +3582,187 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertIn("恢复中：FPS/CPU/下行/上行", app.quality_var.value)
         self.assertNotIn("FPS/CPU/网络不可用", app.performance_conclusion_var.value)
 
+    def test_handle_sample_keeps_jank_recovering_when_ad_return_temporarily_misses_surface(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+
+        class FakeLiveQuality(LiveQualityTracker):
+            def quality_tag_for_sample(self, _sample: PerfSample) -> str:
+                return "recovery"
+
+        app.live_quality = FakeLiveQuality()
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda *_args: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=20.0,
+                elapsed=20.0,
+                fps=0.0,
+                jank_percent=0.0,
+                cpu_percent=20.0,
+                memory_mb=512.0,
+                note="Android FPS 未采集到 Surface，等待目标 Surface 恢复。",
+            ),
+        )
+
+        self.assertNotEqual(app.cards["jank_percent"].value, "不可用")
+        self.assertIn("Surface/FPS 刚恢复", app.cards["jank_percent"].sub)
+
+    def test_handle_sample_keeps_jank_recovering_for_surface_gap_after_ad_overlay(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def set_display_context(self, _smoothing_enabled: bool, _low_end_display_mode: bool) -> None:
+                pass
+
+            def append(self, _elapsed: float, _value: float, _quality: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker(expected_interval=2.0)
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda *_args: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=3.0,
+                elapsed=3.0,
+                fps=0.0,
+                jank_percent=0.0,
+                cpu_percent=20.0,
+                memory_mb=512.0,
+                note="目标 App 拉起广告/商店覆盖层，暂停前台/FPS质量判定。",
+            ),
+        )
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=5.0,
+                elapsed=5.0,
+                fps=0.0,
+                jank_percent=0.0,
+                cpu_percent=20.0,
+                memory_mb=512.0,
+                note="Android FPS 未采集到 Surface，请在目标页面停留 2-3 秒后重试，或确认目标 App 有可见界面。",
+            ),
+        )
+
+        self.assertNotEqual(app.cards["jank_percent"].value, "不可用")
+        self.assertIn("Surface/FPS 刚恢复", app.cards["jank_percent"].sub)
+
     def test_handle_sample_feeds_graphs_raw_values_while_cards_show_stable_values(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
@@ -3345,11 +3850,11 @@ class QualityModeLabelTest(unittest.TestCase):
 
         self.assertGreater(app.stabilizer.outputs[-1].fps, 0.0)
         self.assertGreater(app.graphs["fps"].points[-1][1], 0.0)
-        self.assertEqual(app.graphs["fps"].points[-1][2], "limited")
+        self.assertEqual(app.graphs["fps"].points[-1][2], "ok")
         self.assertGreater(app.cards["fps"].value, 0.0)
         self.assertEqual(app.cards["jank_percent"].value, 0.0)
-        self.assertIn("受限样本", app.cards["fps"].sub)
-        self.assertIn("受限样本", app.cards["jank_percent"].sub)
+        self.assertNotIn("受限样本", app.cards["fps"].sub)
+        self.assertNotIn("受限样本", app.cards["jank_percent"].sub)
         self.assertEqual(app.recorder.samples[-1].fps, 0.0)
 
     def test_handle_sample_feeds_graphs_stable_values_for_ok_fps_spikes_when_smoothing_is_on(self) -> None:
@@ -3504,7 +4009,104 @@ class QualityModeLabelTest(unittest.TestCase):
         self.assertGreater(app.graphs["fps"].points[-1][1], 0.0)
         self.assertLess(app.graphs["cpu_percent"].points[-1][1], 95.0)
 
-    def test_handle_sample_caps_realtime_cpu_display_without_mutating_raw_sample(self) -> None:
+    def test_handle_sample_jank_card_uses_same_current_display_as_graph(self) -> None:
+        class FakeVar:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> bool:
+                return True
+
+        class FakeRecorder:
+            def __init__(self) -> None:
+                self.samples: list[PerfSample] = []
+
+            def append(self, sample: PerfSample) -> None:
+                self.samples.append(sample)
+
+        class FakeCard:
+            def __init__(self) -> None:
+                self.value: object = None
+                self.sub = ""
+
+            def set_value(self, value: object, sub: str) -> None:
+                self.value = value
+                self.sub = sub
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.points: list[tuple[float, float, str]] = []
+                self.smoothing_enabled = True
+                self.low_end_display_mode = False
+
+            def set_display_context(self, smoothing_enabled: bool, low_end_display_mode: bool) -> None:
+                self.smoothing_enabled = smoothing_enabled
+                self.low_end_display_mode = low_end_display_mode
+
+            def append(self, elapsed: float, value: float, quality: str) -> None:
+                self.points.append((elapsed, value, quality))
+
+            def set_diagnostic_detail(self, _detail: str) -> None:
+                pass
+
+        app = object.__new__(App)
+        app.recorder = FakeRecorder()
+        app.last_app_rx_kbps = 0.0
+        app.last_app_tx_kbps = 0.0
+        app.metric_health_vars = {}
+        app.collection_link_vars = {}
+        app.health_analyzer = MetricHealthAnalyzer()
+        app.live_quality = LiveQualityTracker(expected_interval=2.0)
+        app.quality_summary_var = FakeVar()
+        app.performance_conclusion_var = FakeVar()
+        app.quality_var = FakeVar()
+        app.quality_mode_var = FakeVar()
+        app.smoothing_var = FakeVar()
+        app.stabilizer = MetricStabilizer()
+        app.graph_last_elapsed = 0.0
+        app.session_var = FakeVar()
+        app.cards = {
+            "fps": FakeCard(),
+            "jank_percent": FakeCard(),
+            "cpu_percent": FakeCard(),
+            "memory_mb": FakeCard(),
+            "temperature_c": FakeCard(),
+            "power_w": FakeCard(),
+            "rx_kbps": FakeCard(),
+            "tx_kbps": FakeCard(),
+        }
+        app.graphs = {key: FakeGraph() for key in app.cards}
+        app._refresh_graph_time_axis = lambda: None
+        app._format_elapsed = lambda elapsed: f"{elapsed:.1f}s"
+        app._append_quality_event = lambda *_args: None
+        app._refresh_proxy_traffic = lambda: None
+
+        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, jank_percent=30.0, cpu_percent=20.0))
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=3.0,
+                elapsed=3.0,
+                fps=0.0,
+                jank_percent=0.0,
+                cpu_percent=20.0,
+                note="目标应用刚回到前台，恢复窗口内 FPS/CPU 可能受 Surface 和进程缓存重建影响。",
+            ),
+        )
+
+        graph_current = graph_latest_display_value_for_context(
+            app.graphs["jank_percent"].points,
+            smoothing_enabled=True,
+            low_end_display_mode=False,
+        )
+        self.assertIsNotNone(graph_current)
+        self.assertGreater(float(graph_current or 0.0), 0.0)
+        self.assertAlmostEqual(float(app.cards["jank_percent"].value), float(graph_current or 0.0), places=3)
+
+    def test_handle_sample_uses_normalized_cpu_display_without_mutating_raw_sample(self) -> None:
         class FakeVar:
             def __init__(self) -> None:
                 self.value = ""
@@ -3573,11 +4175,22 @@ class QualityModeLabelTest(unittest.TestCase):
         app._append_quality_event = lambda *_args: None
         app._refresh_proxy_traffic = lambda: None
 
-        App._handle_sample(app, PerfSample(timestamp=1.0, elapsed=1.0, fps=60.0, cpu_percent=158.5))
+        App._handle_sample(
+            app,
+            PerfSample(
+                timestamp=1.0,
+                elapsed=1.0,
+                fps=60.0,
+                cpu_percent=240.0,
+                cpu_normalized_percent=30.0,
+                cpu_core_count=8,
+            ),
+        )
 
-        self.assertEqual(app.recorder.samples[-1].cpu_percent, 158.5)
-        self.assertEqual(app.cards["cpu_percent"].value, 100.0)
-        self.assertEqual(app.graphs["cpu_percent"].points[-1], (1.0, 100.0, "ok"))
+        self.assertEqual(app.recorder.samples[-1].cpu_percent, 240.0)
+        self.assertEqual(app.recorder.samples[-1].cpu_normalized_percent, 30.0)
+        self.assertEqual(app.cards["cpu_percent"].value, 30.0)
+        self.assertEqual(app.graphs["cpu_percent"].points[-1], (1.0, 30.0, "ok"))
 
 
 class CollectionDiagnosticStatusRowsTest(unittest.TestCase):

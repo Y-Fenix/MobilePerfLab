@@ -59,9 +59,47 @@ class SlowMetricAndroidAdapter(AndroidAdapter):
         self._record("cpu")
         return 22.0
 
+    def _cpu_normalization_capacity(self, device: DeviceInfo) -> tuple[int, float, float]:
+        return 1, 1.0, 1.0
+
     def _memory_mb(self, device: DeviceInfo, app_id: str) -> float:
         self._record("memory")
         return 512.0
+
+
+class NormalizedCpuAndroidAdapter(SlowMetricAndroidAdapter):
+    def _cpu_percent(self, device: DeviceInfo, app_id: str) -> float:
+        self._record("cpu")
+        return 200.0
+
+    def _cpu_normalization_capacity(self, device: DeviceInfo) -> tuple[int, float, float]:
+        return 8, 12_000_000.0, 24_000_000.0
+
+
+class AdSurfaceMetricAndroidAdapter(SlowMetricAndroidAdapter):
+    def _fps_and_jank(self, device: DeviceInfo, app_id: str, now: float) -> tuple[float, float]:
+        self._record("fps")
+        self._surface_cache[(device.serial, app_id)] = f"SurfaceView[{app_id}/com.applovin.adview.FullscreenActivity]@0(BLAST)#99"
+        return 58.0, 0.0
+
+
+class InPackageAdActivityAndroidAdapter(SlowMetricAndroidAdapter):
+    def _light_foreground_app(self, device: DeviceInfo) -> str:
+        return ""
+
+    def foreground_app(self, device: DeviceInfo) -> str:
+        self._record("foreground")
+        return "com.example.game"
+
+    def _shell(self, serial: str, command: str, timeout: float = 8.0) -> str:
+        if command == "dumpsys window":
+            return (
+                "mCurrentFocus=Window{1624f58 u0 "
+                "com.example.game/com.applovin.adview.AppLovinFullscreenActivity}\n"
+                "mFocusedApp=ActivityRecord{191800158 u0 "
+                "com.example.game/com.applovin.adview.AppLovinFullscreenActivity t448}"
+            )
+        return ""
 
 
 class SlowDiagnosticAndroidAdapter(AndroidAdapter):
@@ -241,6 +279,17 @@ class AndroidAdapterTest(unittest.TestCase):
         )
 
         self.assertEqual(adapter.foreground_app(self.device), "com.example.game")
+
+    def test_parse_foreground_app_keeps_play_store_overlay_before_target_task(self) -> None:
+        output = "\n".join(
+            [
+                "topResumedActivity=ActivityRecord{1 u0 com.android.vending/com.google.android.finsky.MainActivity t449}",
+                "mCurrentFocus=Window{1 u0 com.android.vending/com.google.android.finsky.MainActivity}",
+                "* Hist #0: ActivityRecord{2 u0 com.example.game/.MainActivity t448}",
+            ]
+        )
+
+        self.assertEqual(AndroidAdapter._parse_foreground_app(output), "com.android.vending")
 
     def test_foreground_app_falls_back_to_activity_top_for_vendor_roms(self) -> None:
         adapter = FakeAndroidAdapter(
@@ -1133,6 +1182,112 @@ class AndroidAdapterTest(unittest.TestCase):
             )
         self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
 
+    def test_debounces_single_foreground_mismatch_after_ad_return(self) -> None:
+        adapter = FakeAndroidAdapter({})
+
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+
+        notes = [
+            adapter._foreground_session_note(self.device, "com.example.game", "com.ad.network"),
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
+            adapter._foreground_session_note(self.device, "com.example.game", "com.ad.network"),
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"),
+        ]
+
+        self.assertEqual(notes, ["", "", "", ""])
+
+    def test_marks_persistent_foreground_mismatch_after_confirmation(self) -> None:
+        adapter = FakeAndroidAdapter({})
+
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.home"), "")
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.home"),
+            "目标应用不在前台，当前前台为 com.example.home。",
+        )
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.example.home"),
+            "目标应用不在前台，当前前台为 com.example.home。",
+        )
+
+    def test_ignores_target_launched_store_overlay_as_ad_flow_not_background(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys activity activities": "\n".join(
+                    [
+                        "ACTIVITY MANAGER ACTIVITIES",
+                        "* Task{abc #449 A=10267:com.android.vending visible=true}",
+                        "  * Hist  #0: ActivityRecord{1 u0 com.android.vending/.MainActivity t449}",
+                        "    packageName=com.android.vending processName=com.android.vending",
+                        "    launchedFromUid=10861 launchedFromPackage=com.example.game launchedFromFeature=null",
+                        "    Intent { act=android.intent.action.VIEW dat=https://play.google.com/store/apps/details?id=com.other.game&referrer=applovin_test }",
+                        "* Task{def #448 A=10861:com.example.game visible=true}",
+                        "  * Hist  #0: ActivityRecord{2 u0 com.example.game/.MainActivity t448}",
+                        "    packageName=com.example.game processName=com.example.game",
+                    ]
+                )
+            }
+        )
+
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+        notes = [
+            adapter._foreground_session_note(self.device, "com.example.game", "com.android.vending")
+            for _index in range(4)
+        ]
+
+        self.assertTrue(all("广告/商店覆盖层" in note for note in notes))
+        self.assertTrue(all("目标应用不在前台" not in note for note in notes))
+
+    def test_treats_visible_ad_sdk_foreground_package_as_ad_overlay(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys activity activities": "\n".join(
+                    [
+                        "ACTIVITY MANAGER ACTIVITIES",
+                        "* Task{abc #449 A=10267:com.applovin.sdk visible=true}",
+                        "  * Hist  #0: ActivityRecord{1 u0 com.applovin.sdk/.FullscreenActivity t449}",
+                        "    packageName=com.applovin.sdk processName=com.applovin.sdk",
+                        "* Task{def #448 A=10861:com.example.game visible=true}",
+                        "  * Hist  #0: ActivityRecord{2 u0 com.example.game/.MainActivity t448}",
+                        "    packageName=com.example.game processName=com.example.game",
+                    ]
+                )
+            }
+        )
+
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+
+        note = adapter._foreground_session_note(self.device, "com.example.game", "com.applovin.sdk")
+
+        self.assertIn("广告/商店覆盖层", note)
+        self.assertNotIn("目标应用不在前台", note)
+
+    def test_does_not_ignore_stale_invisible_target_launched_store_task(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys activity activities": "\n".join(
+                    [
+                        "ACTIVITY MANAGER ACTIVITIES",
+                        "* Task{abc #449 A=10267:com.android.vending visible=false visibleRequested=false}",
+                        "  * Hist  #0: ActivityRecord{1 u0 com.android.vending/.MainActivity t449}",
+                        "    packageName=com.android.vending processName=com.android.vending",
+                        "    launchedFromUid=10861 launchedFromPackage=com.example.game launchedFromFeature=null",
+                        "* Task{xyz #450 A=10267:com.android.vending visible=true visibleRequested=true}",
+                        "  * Hist  #0: ActivityRecord{3 u0 com.android.vending/.AssetBrowserActivity t450}",
+                        "    packageName=com.android.vending processName=com.android.vending",
+                        "    launchedFromUid=2000 launchedFromPackage=com.android.shell launchedFromFeature=null",
+                    ]
+                )
+            }
+        )
+
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.example.game"), "")
+        self.assertEqual(adapter._foreground_session_note(self.device, "com.example.game", "com.android.vending"), "")
+        self.assertEqual(
+            adapter._foreground_session_note(self.device, "com.example.game", "com.android.vending"),
+            "目标应用不在前台，当前前台为 com.android.vending。",
+        )
+
     def test_foreground_recovery_window_covers_ad_return_surface_rebuild(self) -> None:
         adapter = FakeAndroidAdapter({})
 
@@ -1165,7 +1320,26 @@ class AndroidAdapterTest(unittest.TestCase):
             second = adapter._gfxinfo_counter_fps_and_jank(self.device, "com.example.game", 11.0)
 
         self.assertIsNone(first)
-        self.assertEqual(second, (60.0, 10.0))
+        self.assertEqual(second, (60.0, 0.0))
+
+    def test_gfxinfo_counter_jank_uses_fps_deficit_instead_of_raw_janky_ratio(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "dumpsys gfxinfo com.example.game": "\n---NEXT---\n".join(
+                    [
+                        "Total frames rendered: 100\nJanky frames: 10",
+                        "Total frames rendered: 190\nJanky frames: 60",
+                    ]
+                )
+            }
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[10.0, 12.0]):
+            first = adapter._gfxinfo_counter_fps_and_jank(self.device, "com.example.game", 10.0)
+            second = adapter._gfxinfo_counter_fps_and_jank(self.device, "com.example.game", 12.0)
+
+        self.assertIsNone(first)
+        self.assertEqual(second, (45.0, 25.0))
 
     def test_fps_counter_source_does_not_fall_back_to_heavy_collectors_on_no_frame_delta(self) -> None:
         adapter = FakeAndroidAdapter(
@@ -1248,7 +1422,7 @@ class AndroidAdapterTest(unittest.TestCase):
         with patch("mobileperflab.time.time", side_effect=[10.0, 11.0, 12.0]):
             self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 10.0), (0.0, 0.0))
             self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 11.0), (0.0, 0.0))
-            self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 12.0), (36.0, 8.333333333333332))
+            self.assertEqual(adapter._fps_and_jank(self.device, "com.example.game", 12.0), (36.0, 40.0))
 
         self.assertNotIn("dumpsys gfxinfo com.example.game framestats", adapter.calls)
         self.assertNotIn("dumpsys SurfaceFlinger --list", adapter.calls)
@@ -1320,6 +1494,48 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertEqual(sample.memory_mb, 512.0)
         self.assertEqual(set(adapter.calls), {"foreground", "fps", "battery", "network", "cpu", "memory"})
 
+    def test_collect_sample_keeps_raw_cpu_and_adds_perfdog_style_normalized_cpu(self) -> None:
+        adapter = NormalizedCpuAndroidAdapter(sleep_seconds=0.0)
+
+        sample = adapter.collect_sample(self.device, "com.example.game", time.time())
+
+        self.assertEqual(sample.cpu_percent, 200.0)
+        self.assertEqual(sample.cpu_core_count, 8)
+        self.assertEqual(sample.cpu_normalized_percent, 12.5)
+
+    def test_collect_sample_marks_in_app_ad_surface_even_when_fps_is_available(self) -> None:
+        adapter = AdSurfaceMetricAndroidAdapter(sleep_seconds=0.0)
+
+        sample = adapter.collect_sample(self.device, "com.example.game", time.time())
+
+        self.assertEqual(sample.fps, 58.0)
+        self.assertIn("目标 App 正在播放广告 Surface", sample.note)
+        self.assertIn("com.applovin.adview", sample.note)
+
+    def test_collect_sample_marks_in_package_ad_activity_even_when_package_stays_foreground(self) -> None:
+        adapter = InPackageAdActivityAndroidAdapter(sleep_seconds=0.0)
+
+        sample = adapter.collect_sample(self.device, "com.example.game", time.time())
+
+        self.assertEqual(sample.fps, 58.0)
+        self.assertIn("目标 App 正在播放广告 Activity", sample.note)
+        self.assertIn("com.applovin.adview.AppLovinFullscreenActivity", sample.note)
+
+    def test_cpu_normalization_capacity_ignores_partial_frequency_coverage(self) -> None:
+        adapter = FakeAndroidAdapter(
+            {
+                "getconf _NPROCESSORS_ONLN": "8",
+                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq": "1200000",
+                "cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq": "2400000",
+            }
+        )
+
+        core_count, current_total, max_total = adapter._cpu_normalization_capacity(self.device)
+
+        self.assertEqual(core_count, 8)
+        self.assertEqual(current_total, 0.0)
+        self.assertEqual(max_total, 0.0)
+
     def test_collect_sample_keeps_partial_android_data_when_one_metric_fails(self) -> None:
         adapter = FailingMetricAndroidAdapter(sleep_seconds=0.0)
 
@@ -1366,17 +1582,34 @@ class AndroidAdapterTest(unittest.TestCase):
         self.assertNotIn(key, adapter._cpu_proc_cache)
 
     def test_collect_sample_reuses_recent_foreground_result_to_avoid_slow_dumpsys_every_second(self) -> None:
-        adapter = ForegroundSequenceAndroidAdapter(["com.example.game", "com.example.home"])
+        adapter = ForegroundSequenceAndroidAdapter(["com.example.game", "com.example.home", "com.example.home"])
 
-        with patch("mobileperflab.time.time", side_effect=[100.0, 100.5, 103.0]):
+        with patch("mobileperflab.time.time", side_effect=[100.0, 100.5, 103.0, 105.5]):
             first = adapter.collect_sample(self.device, "com.example.game", 100.0)
             second = adapter.collect_sample(self.device, "com.example.game", 100.0)
             third = adapter.collect_sample(self.device, "com.example.game", 100.0)
+            fourth = adapter.collect_sample(self.device, "com.example.game", 100.0)
 
         self.assertNotIn("目标应用不在前台", first.note)
         self.assertNotIn("目标应用不在前台", second.note)
-        self.assertIn("目标应用不在前台", third.note)
-        self.assertEqual(adapter.calls.count("foreground"), 2)
+        self.assertNotIn("目标应用不在前台", third.note)
+        self.assertIn("目标应用不在前台", fourth.note)
+        self.assertEqual(adapter.calls.count("foreground"), 3)
+
+    def test_collect_sample_does_not_emit_alternating_foreground_events_for_single_ad_probe_mismatches(self) -> None:
+        adapter = ForegroundSequenceAndroidAdapter(
+            ["com.example.game", "com.ad.network", "com.example.game", "com.ad.network", "com.example.game"]
+        )
+
+        with patch("mobileperflab.time.time", side_effect=[100.0, 103.0, 106.0, 109.0, 112.0]):
+            samples = [
+                adapter.collect_sample(self.device, "com.example.game", 100.0)
+                for _index in range(5)
+            ]
+
+        notes = [sample.note for sample in samples]
+        self.assertTrue(all("目标应用不在前台" not in note for note in notes))
+        self.assertTrue(all("目标应用刚回到前台" not in note for note in notes))
 
     def test_cached_foreground_app_uses_light_probe_to_catch_fast_background_switch(self) -> None:
         adapter = FakeAndroidAdapter(
